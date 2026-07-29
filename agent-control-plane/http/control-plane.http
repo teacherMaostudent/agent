@@ -1,0 +1,131 @@
+@baseUrl = http://localhost:8080
+@tenant = tenant-a
+@user = architect@example.com
+
+### 1. 创建 Agent 草稿
+# @name createAgent
+POST {{baseUrl}}/v1/agents
+Content-Type: application/json
+X-Tenant-Id: {{tenant}}
+X-User-Id: {{user}}
+X-Roles: agent-admin
+X-Trace-Id: trace-demo-create
+
+{
+  "agent_id": "customer-service",
+  "spec": {
+    "display_name": "客户服务 Agent",
+    "description": "基于企业知识和受控工具回答客户问题",
+    "graph": {
+      "graph_id": "customer-service-graph",
+      "entrypoint": "understand",
+      "terminal_nodes": ["respond"],
+      "nodes": [
+        {"node_id": "understand", "kind": "llm"},
+        {"node_id": "retrieve", "kind": "retrieval"},
+        {"node_id": "respond", "kind": "llm"}
+      ],
+      "edges": [
+        {"from_node": "understand", "to_node": "retrieve"},
+        {"from_node": "retrieve", "to_node": "respond"}
+      ]
+    },
+    "prompt": {
+      "prompt_id": "customer-service-system",
+      "system_template": "你是 {{persona}}，请根据证据回答并给出引用。",
+      "variables": ["persona"]
+    },
+    "tools": [
+      {
+        "tool_name": "crm.lookup_customer",
+        "version": "2.1.0",
+        "risk": "read_only",
+        "approval_required": false
+      }
+    ],
+    "knowledge": [
+      {
+        "knowledge_base": "product-manual",
+        "version": "2026-07-25.3",
+        "top_k": 6
+      }
+    ],
+    "model_policy": {
+      "policy_id": "balanced-routing",
+      "default_route": "general",
+      "routes": [
+        {
+          "route_name": "general",
+          "capability": "reasoning",
+          "models": ["model-primary", "model-fallback"],
+          "data_region": "cn"
+        }
+      ]
+    },
+    "runtime_limits": {
+      "max_steps": 20,
+      "max_llm_calls": 10,
+      "max_tool_calls": 8,
+      "max_retrieval_rounds": 3,
+      "max_execution_seconds": 180,
+      "max_cost_usd": 1.5
+    },
+    "labels": {
+      "owner": "agent-platform",
+      "tier": "production"
+    }
+  }
+}
+
+### 2. 发布前校验
+POST {{baseUrl}}/v1/agents/customer-service/validate
+X-Tenant-Id: {{tenant}}
+X-User-Id: {{user}}
+X-Roles: agent-admin
+
+### 3. 生成不可变版本
+# @name publishVersion
+POST {{baseUrl}}/v1/agents/customer-service/versions
+Content-Type: application/json
+X-Tenant-Id: {{tenant}}
+X-User-Id: {{user}}
+X-Roles: agent-admin
+X-Trace-Id: trace-demo-publish
+
+{
+  "semantic_version": "1.0.0",
+  "change_summary": "首个可运行版本"
+}
+
+### 4. 首次发布（首次会强制为 100%）
+# @name createRelease
+POST {{baseUrl}}/v1/agents/customer-service/releases
+Content-Type: application/json
+X-Tenant-Id: {{tenant}}
+X-User-Id: {{user}}
+X-Roles: agent-admin
+X-Trace-Id: trace-demo-release
+
+{
+  "version_id": "{{publishVersion.response.body.$.version_id}}",
+  "environment": "production",
+  "rollout_percentage": 10,
+  "tenant_allowlist": [],
+  "reason": "首次生产发布"
+}
+
+### 5. Runtime 按会话解析版本
+GET {{baseUrl}}/v1/runtime/agents/customer-service/resolve?environment=production&session_id=session-001
+X-Tenant-Id: {{tenant}}
+X-User-Id: agent-runtime
+
+### 6. 按 Release 获取不可变快照
+GET {{baseUrl}}/v1/runtime/releases/{{createRelease.response.body.$.release_id}}/snapshot
+X-Tenant-Id: {{tenant}}
+X-User-Id: agent-runtime
+
+### 7. 查看配置事件
+GET {{baseUrl}}/v1/outbox?after_sequence=0&limit=100
+X-Tenant-Id: {{tenant}}
+X-User-Id: {{user}}
+X-Roles: agent-admin

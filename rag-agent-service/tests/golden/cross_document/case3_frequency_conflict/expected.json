@@ -1,0 +1,32 @@
+{
+  "set_name": "case3_frequency_conflict-检验频次矛盾",
+  "note": "临时手编样例(非真实文件)。同一检验项(悬浮粒子)频次不一致:A每月、B每季度。浮游菌两份一致做假阳性反例。后续须用真实SOP片段替换。",
+  "files": [
+    "A_环境监测管理规程.txt",
+    "B_洁净区监控操作规程.txt"
+  ],
+  "expected_conflicts": [
+    {
+      "topic": "检验频次",
+      "files": [
+        "A_环境监测管理规程.txt",
+        "B_洁净区监控操作规程.txt"
+      ],
+      "fileA_says": "悬浮粒子每月一次",
+      "fileB_says": "悬浮粒子每季度一次",
+      "type": "频次矛盾",
+      "object": "悬浮粒子"
+    }
+  ],
+  "expected_responsibility_issues": [],
+  "should_be_clean": [
+    {
+      "topic": "浮游菌监测频次",
+      "reason": "两份均为每月一次，一致，不应报矛盾"
+    },
+    {
+      "topic": "职责分离",
+      "reason": "两份均为QC检验员记录、QC主管复核，不同角色，无冲突"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://enterprise-agent-platform.local/contracts/governance-event.v1.json",
+  "title": "GovernanceEventV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eventId",
+    "eventType",
+    "sourceService",
+    "occurredAt",
+    "executionContext",
+    "payload"
+  ],
+  "properties": {
+    "eventId": {"type": "string", "minLength": 1, "maxLength": 160},
+    "eventType": {"type": "string", "minLength": 1, "maxLength": 160},
+    "sourceService": {"type": "string", "minLength": 1, "maxLength": 100},
+    "occurredAt": {"type": "string", "format": "date-time"},
+    "executionContext": {"$ref": "execution-context.v1.json"},
+    "payload": {"type": "object"}
+  }
+}

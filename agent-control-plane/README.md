@@ -1,0 +1,181 @@
+# agent-control-plane
+
+Agent 管理面与配置面。它负责定义、校验、版本化和发布 Agent，但**不执行 Agent
+推理**。线上 Runtime 只读取已经发布的不可变快照，不直接读取会持续变化的草稿表。
+
+模型路由发布编排也由 Control Plane 持有：读取 Governance 质量门禁，通过
+Gateway 执行灰度策略，监控 Gateway 性能后提升或回滚。Gateway 原有
+`/admin/releases` 仅作为兼容代理。
+
+## 已实现能力
+
+- 多租户 Agent 草稿与乐观并发控制
+- Graph、Prompt、Tool、知识库、模型路由、运行上限的统一定义
+- Graph 可达性、Prompt 变量、高危 Tool 审批、模型/数据区域策略校验
+- 语义版本发布与 SHA-256 内容指纹
+- 完整、不可变、自描述的 Runtime 快照
+- 模型路由质量门禁、灰度、监控、自动提升与回滚
+- 首次全量发布、确定性灰度、租户白名单和会话粘滞
+- 灰度推进、暂停、回滚，以及回滚后会话安全重绑定
+- 租户级模型、数据区域和最大灰度比例策略
+- 与业务写入同事务的 Outbox 事件
+- 管理端与 Runtime 端分离的鉴权入口
+- OpenAPI、Docker、Compose、调用样例和自动化测试
+
+## 边界
+
+```mermaid
+flowchart LR
+    Studio["Agent Studio / 管理后台"] --> CP["agent-control-plane"]
+    GOV["agent-governance"] -->|"发布 / 暂停 / 回滚指令"| CP
+    CP --> DB[("Control Plane DB")]
+    CP --> OUT["Transactional Outbox"]
+    OUT --> KAFKA["Kafka 配置事件"]
+    RT["agent-runtime"] -->|"按 Tenant + Agent + Env + Session 解析"| CP
+    CP -->|"ReleaseManifest + 不可变快照"| RT
+    RT --> CTX["agent-context-service"]
+    RT --> LLM["llm-gateway"]
+    RT --> TOOL["tool-gateway"]
+```
+
+本服务不会运行 LangGraph、保存聊天记录、检索知识、调用模型或执行业务工具。
+
+## 最重要的发布约束
+
+1. `AgentDefinition` 是可编辑草稿，更新必须携带 `expected_revision`。
+2. 发布前必须通过配置和租户策略校验。
+3. `AgentVersion` 一经生成不可修改；相同 Agent 不能重复使用语义版本号。
+4. `ReleaseManifest` 只引用已发布的 `version_id`。
+5. 首个环境版本强制 100% 发布，避免不存在回退基线。
+6. 新会话按稳定哈希进入灰度；已有会话固定到原 Release。
+7. 回滚后，绑定到问题 Release 的会话在下次解析时切回上一稳定版本。
+8. 配置变更与 Outbox 事件在同一数据库事务提交。
+
+发布后的快照同时包含可观察版本号和完整配置：
+
+```json
+{
+  "agent_version": "customer-service:1.8.2",
+  "graph_version": "customer-service-graph:17",
+  "prompt_version": "customer-service-system:17",
+  "knowledge_version": "kb:39b45ef83d97",
+  "tool_set_version": "tools:928d3e40c7f1",
+  "model_policy_version": "balanced-routing:17",
+  "spec": {
+    "graph": {},
+    "prompt": {},
+    "tools": [],
+    "knowledge": [],
+    "model_policy": {},
+    "runtime_limits": {}
+  }
+}
+```
+
+## 快速启动
+
+要求 Python 3.12。
+
+```powershell
+cd C:\Users\Administrator\Documents\AI工作\agent-control-plane
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+Copy-Item .env.example .env
+uvicorn app.main:app --reload --port 8080
+```
+
+打开 `http://localhost:8080/docs` 查看和调试 OpenAPI，或直接运行
+[http/control-plane.http](http/control-plane.http) 中的完整发布流程。
+
+也可以使用容器：
+
+```powershell
+docker compose up --build
+```
+
+## 身份与隔离
+
+管理 API 默认要求：
+
+```text
+X-Tenant-Id: tenant-a
+X-User-Id: architect@example.com
+X-Roles: agent-admin
+X-Trace-Id: trace-optional
+```
+
+本地默认不强制角色；生产设置 `CONTROL_PLANE_ENFORCE_ADMIN_ROLE=true`。Runtime API
+可通过 `CONTROL_PLANE_RUNTIME_API_KEY` 启用独立的 `X-Runtime-Key`。
+
+数据库查询、版本、发布、策略和 Outbox 均以 `tenant_id` 隔离。
+
+## API
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| `POST` | `/v1/agents` | 创建 Agent 草稿 |
+| `PUT` | `/v1/agents/{id}/draft` | 按 revision 更新草稿 |
+| `POST` | `/v1/agents/{id}/validate` | 执行发布前校验 |
+| `POST` | `/v1/agents/{id}/versions` | 生成不可变版本 |
+| `POST` | `/v1/agents/{id}/releases` | 首次发布或启动灰度 |
+| `POST` | `/v1/releases/{id}/promote` | 增加灰度比例或全量 |
+| `POST` | `/v1/releases/{id}/pause` | 暂停给新会话分配灰度 |
+| `POST` | `/v1/releases/{id}/rollback` | 回滚上一稳定 Release |
+| `GET` | `/v1/runtime/agents/{id}/resolve` | 为一次会话解析运行版本 |
+| `GET` | `/v1/runtime/releases/{id}/snapshot` | 按 Release 获取快照 |
+| `GET/PUT` | `/v1/tenant-policy` | 查询或更新租户策略 |
+| `GET` | `/v1/outbox` | 查看待集成的配置事件 |
+
+Runtime Resolve 示例：
+
+```http
+GET /v1/runtime/agents/customer-service/resolve
+    ?environment=production
+    &session_id=session-001
+X-Tenant-Id: tenant-a
+X-Runtime-Key: ...
+```
+
+返回值包含选中的 `release_id`、`version_id`、分配原因和完整快照。Runtime 可以用
+`release_id + content_hash` 作为本地缓存键。
+
+## Outbox 与 Kafka
+
+每个事件都包含：
+
+```text
+event_id
+event_type
+trace_id
+tenant_id
+aggregate_type
+aggregate_id
+occurred_at
+schema_version
+payload
+```
+
+本实现保存 Transactional Outbox，不在业务事务中同步调用 Kafka。生产环境建议使用
+CDC/Kafka Connect 发布 `outbox_events`，消费端以 `event_id` 幂等。当前事件包括
+`AgentCreated`、`AgentDraftUpdated`、`AgentVersionPublished`、
+`ReleaseCanaryStarted`、`ReleasePromoted`、`ReleasePaused`、
+`ReleaseRolledBack` 和 `TenantPolicyUpdated`。
+
+## 数据存储
+
+当前仓库使用 SQLite，目的是让领域规则、API 契约和端到端流程可在单机与 CI
+零依赖运行。数据库边界保持独立，没有跨服务查表。进入多实例生产部署时应将
+`SqliteRepository` 替换为 PostgreSQL 实现，并把高频 Session Binding 缓存在 Redis；
+上层领域服务与 API 契约无需改变。
+
+## 验证
+
+```powershell
+python -m ruff check .
+python -m ruff format --check .
+python -m pytest
+```
+
+测试覆盖配置校验、草稿并发冲突、快照不可变、多租户隔离、灰度会话粘滞、回滚重绑定、
+租户模型策略和 Outbox 事件。

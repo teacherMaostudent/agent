@@ -1,0 +1,57 @@
+from app.contracts.ingestion import IngestionJob
+
+
+class IngestionJobProcessor:
+    def __init__(self, container) -> None:
+        self.container = container
+
+    def process(self, job: IngestionJob) -> dict:
+        handlers = {
+            "PARSE": self._parse,
+            "OCR": self._ocr,
+            "REINDEX": self._reindex,
+        }
+        handler = handlers.get(job.job_type)
+        if handler is None:
+            raise ValueError(f"unsupported ingestion job type: {job.job_type}")
+        return handler(job)
+
+    def _document(self, job: IngestionJob):
+        if not job.document_id:
+            raise ValueError(f"{job.job_type} requires document_id")
+        document = self.container.repository.get_document(job.document_id)
+        if document is None:
+            raise ValueError("document not found")
+        return document
+
+    def _parse(self, job: IngestionJob) -> dict:
+        document = self._document(job)
+        text, metadata = self.container.parser.parse(document.file_path)
+        document.text = text
+        document.metadata.update(metadata)
+        document.status = "PARSED"
+        self.container.repository.save_document(document)
+        return {"document_id": document.document_id, "text_length": len(text)}
+
+    def _ocr(self, job: IngestionJob) -> dict:
+        document = self._document(job)
+        document.status = "OCR_RUNNING"
+        self.container.repository.save_document(document)
+
+        def progress(done: int, total: int) -> None:
+            document.metadata.update({"ocr_done": done, "ocr_total": total})
+            self.container.repository.save_document(document)
+
+        text = self.container.parser._ocr_pdf(document.file_path, progress=progress)
+        document.text = text
+        document.status = "PARSED"
+        document.metadata.update({"parser": "rapidocr", "source": "ocr"})
+        self.container.repository.save_document(document)
+        return {"document_id": document.document_id, "text_length": len(text)}
+
+    def _reindex(self, job: IngestionJob) -> dict:
+        stats = self.container.indexer.build(
+            source_dir=self.container.settings.regulation_source_dir,
+            store_path=self.container.settings.regulation_store_path,
+        )
+        return dict(stats)

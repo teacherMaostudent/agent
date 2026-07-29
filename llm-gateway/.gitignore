@@ -1,0 +1,39 @@
+# Maven build output
+target/
+
+# Frontend build output and dependencies
+frontend/node_modules/
+frontend/dist/
+frontend/*.log
+frontend/tsconfig.tsbuildinfo
+
+# Runtime logs and temporary files
+logs/
+*.log
+*.tmp
+*.temp
+
+# Local environment and secrets
+.env
+.env.*
+*.local
+application-local.yml
+application-secret.yml
+
+# IntelliJ IDEA / JetBrains
+.idea/
+*.iml
+*.iws
+out/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Java crash dumps
+hs_err_pid*
+replay_pid*
+
+# Codex/local attachments or scratch files
+.codex/

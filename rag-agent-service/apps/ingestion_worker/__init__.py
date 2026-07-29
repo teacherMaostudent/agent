@@ -1,0 +1,1 @@
+"""Knowledge ingestion worker process."""

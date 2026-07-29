@@ -1,0 +1,32 @@
+{
+  "set_name": "case4_temp_conflict-阴凉库温度矛盾",
+  "note": "临时手编样例(非真实文件)。同为阴凉库,A温度2~10℃、B温度2~8℃,上限不一致为真矛盾。常温库湿度两份一致做假阳性反例。后续须用真实SOP片段替换。",
+  "files": [
+    "A_仓储管理规程.txt",
+    "B_原辅料储存操作规程.txt"
+  ],
+  "expected_conflicts": [
+    {
+      "topic": "温湿度限度",
+      "files": [
+        "A_仓储管理规程.txt",
+        "B_原辅料储存操作规程.txt"
+      ],
+      "fileA_says": "阴凉库 2~10℃",
+      "fileB_says": "阴凉库 2~8℃",
+      "type": "数值矛盾",
+      "object": "阴凉库"
+    }
+  ],
+  "expected_responsibility_issues": [],
+  "should_be_clean": [
+    {
+      "topic": "常温库相对湿度",
+      "reason": "两份均为不超过65%,一致,不得报矛盾"
+    },
+    {
+      "topic": "温湿度记录职责",
+      "reason": "均为仓管员记录、仓库主管复核,分属不同角色,不得报冲突"
+    }
+  ]
+}

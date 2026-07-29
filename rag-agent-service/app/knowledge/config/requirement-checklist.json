@@ -1,0 +1,149 @@
+{
+  "version": "2026-07-seed-v2",
+  "description": "GMP 质量体系核心强制要求种子清单。覆盖率核查(设计文档 3.1/3.8)以此为基准，逐条在企业文件中查找证据。可后续用大模型从法规库扩充并人工校对。",
+  "items": [
+    {
+      "id": "REQ-CHANGE-001",
+      "module": "变更控制",
+      "dimension": "3.1",
+      "reviewer": "coverage",
+      "requirement": "企业应建立变更控制操作规程，对影响药品质量的变更(原辅料、包材、工艺、设备、文件等)进行分类、评估、审批、实施和记录。",
+      "source": "中国GMP-2010 第240-246条; ICH Q10 3.2.3",
+      "requiredFields": ["变更编号", "变更类型", "风险评估", "审批人", "实施记录"],
+      "severity": "高",
+      "keywords": ["变更控制", "变更", "change control", "变更审批", "变更评估"]
+    },
+    {
+      "id": "REQ-DEV-001",
+      "module": "偏差处理",
+      "dimension": "3.1",
+      "reviewer": "coverage",
+      "requirement": "企业应建立偏差处理操作规程，规定偏差的报告、记录、调查、分类、影响评估和纠正措施，重大偏差须由质量管理部门彻底调查并有调查报告。",
+      "source": "中国GMP-2010 第247-251条; FDA 21CFR 211.192",
+      "requiredFields": ["偏差编号", "发生日期", "责任人", "复核人", "影响评估", "调查报告"],
+      "severity": "高",
+      "keywords": ["偏差", "deviation", "偏差调查", "偏差处理", "偏差报告"]
+    },
+    {
+      "id": "REQ-CAPA-001",
+      "module": "纠正与预防措施(CAPA)",
+      "dimension": "3.1",
+      "reviewer": "coverage",
+      "requirement": "企业应建立CAPA系统，对投诉、召回、偏差、自检或外部检查结果、质量趋势等进行调查并采取纠正和预防措施，调查深度应与风险级别相适应。",
+      "source": "中国GMP-2010 第252-253条; ICH Q10 3.2.2",
+      "requiredFields": ["CAPA编号", "问题来源", "纠正措施", "预防措施", "责任人", "有效性验证"],
+      "severity": "高",
+      "keywords": ["纠正措施", "预防措施", "CAPA", "corrective action", "preventive action"]
+    },
+    {
+      "id": "REQ-AUDIT-001",
+      "module": "内部审核(自检)",
+      "dimension": "3.1",
+      "reviewer": "coverage",
+      "requirement": "企业应建立自检/内部审核制度，定期按计划对质量管理体系进行检查，记录发现并跟踪整改。",
+      "source": "中国GMP-2010 第306-309条; ISO9001 9.2",
+      "requiredFields": ["自检计划", "自检日期", "检查员", "发现问题", "整改跟踪"],
+      "severity": "高",
+      "keywords": ["自检", "内部审核", "internal audit", "自检计划", "内审"]
+    },
+    {
+      "id": "REQ-MGMT-001",
+      "module": "管理评审",
+      "dimension": "3.8",
+      "reviewer": "coverage",
+      "requirement": "企业管理层应定期开展管理评审，评估质量体系运行状况、质量目标达成、CAPA及改进机会，并形成评审记录和决议。",
+      "source": "ICH Q10 4.1; ISO9001 9.3",
+      "requiredFields": ["评审日期", "参加人员", "评审输入", "评审结论", "改进措施"],
+      "severity": "中",
+      "keywords": ["管理评审", "management review", "质量回顾", "评审会议"]
+    },
+    {
+      "id": "REQ-DOC-001",
+      "module": "文件控制",
+      "dimension": "3.4",
+      "reviewer": "coverage",
+      "requirement": "企业应建立文件管理规程，文件须有版本编号、起草/审核/批准、生效日期，并对分发、修订、回收、作废进行受控管理。",
+      "source": "中国GMP-2010 第150-160条; ISO9001 7.5",
+      "requiredFields": ["文件编号", "版本号", "起草人", "审核人", "批准人", "生效日期"],
+      "severity": "高",
+      "keywords": ["文件控制", "文件管理", "版本", "document control", "受控文件", "作废"]
+    },
+    {
+      "id": "REQ-REC-001",
+      "module": "记录控制",
+      "dimension": "3.3",
+      "reviewer": "data_integrity",
+      "requirement": "企业应对记录进行受控管理，记录须真实、及时、完整，包含日期、责任人、复核人签名，并规定记录的保存、归档和销毁期限。",
+      "source": "中国GMP-2010 第161-168条; FDA 21CFR 211.180",
+      "requiredFields": ["记录名称", "日期", "责任人签名", "复核人签名", "保存期限"],
+      "severity": "高",
+      "keywords": ["记录", "记录控制", "record", "记录保存", "归档", "签名"]
+    },
+    {
+      "id": "REQ-TRAIN-001",
+      "module": "人员培训管理",
+      "dimension": "3.1",
+      "reviewer": "coverage",
+      "requirement": "企业应建立培训管理规程，对人员进行GMP和岗位培训，评估培训效果并保存培训记录。",
+      "source": "中国GMP-2010 第27-31条; ISO9001 7.2",
+      "requiredFields": ["培训计划", "培训日期", "培训内容", "参加人员", "考核结果"],
+      "severity": "中",
+      "keywords": ["培训", "training", "培训记录", "岗位培训", "培训考核"]
+    },
+    {
+      "id": "REQ-DI-001",
+      "module": "数据可靠性(ALCOA+)",
+      "dimension": "3.3",
+      "reviewer": "data_integrity",
+      "requirement": "企业应确保数据完整性符合ALCOA+原则(可归属、清晰、同步、原始、准确、完整、一致、持久、可获得)，电子系统须有审计追踪，禁止事后补记和无痕修改。",
+      "source": "FDA 21CFR Part 11; ICH Q10; 数据完整性指南",
+      "requiredFields": ["审计追踪", "操作人", "操作时间", "修改原因", "原始数据"],
+      "severity": "高",
+      "keywords": ["数据完整性", "ALCOA", "审计追踪", "audit trail", "data integrity", "电子记录"]
+    },
+    {
+      "id": "REQ-TRACE-001",
+      "module": "可追溯性",
+      "dimension": "3.4",
+      "reviewer": "coverage",
+      "requirement": "企业应保证生产全过程可追溯，批记录须能追溯人、机、料、法、环，操作、审核、批准全程留痕。",
+      "source": "中国GMP-2010 第169-175条; ICH Q10",
+      "requiredFields": ["生产批号", "设备编号", "物料批号", "操作人", "审核人", "批准人"],
+      "severity": "高",
+      "keywords": ["可追溯", "追溯", "批记录", "traceability", "批号", "全程留痕"]
+    },
+    {
+      "id": "REQ-ROLE-001",
+      "module": "权限与职责分离",
+      "dimension": "3.5",
+      "reviewer": "cross_document",
+      "requirement": "企业应明确各岗位质量管理职责，职责不空缺、不重叠、不冲突，符合职责分离原则(操作与审核分离、审批与执行分离)。",
+      "source": "中国GMP-2010 第16-26条; FDA 21CFR 211.22",
+      "requiredFields": ["岗位名称", "岗位职责", "授权人", "职责分离说明"],
+      "severity": "高",
+      "keywords": ["职责", "权限", "职责分离", "岗位职责", "授权", "responsibility"]
+    },
+    {
+      "id": "REQ-PDCA-001",
+      "module": "持续改进(PDCA)",
+      "dimension": "3.8",
+      "reviewer": "coverage",
+      "requirement": "企业应建立文件定期评审、迭代更新机制，落地策划-执行-检查-改进(PDCA)持续改进闭环，并有文件超期、失效、废止的管控机制。",
+      "source": "ICH Q10 3.2.4; ISO9001 10",
+      "requiredFields": ["评审周期", "更新记录", "失效管控", "改进措施"],
+      "severity": "中",
+      "keywords": ["持续改进", "PDCA", "定期评审", "continual improvement", "文件评审", "超期"]
+    },
+    {
+      "id": "REQ-QRM-001",
+      "module": "质量风险管理",
+      "dimension": "3.8",
+      "reviewer": "coverage",
+      "requirement": "企业应建立质量风险管理流程，对产品和工艺进行风险识别、评估和控制(如FMEA)，风险管理应贯穿产品生命周期。",
+      "source": "ICH Q9; ICH Q10 3.2.1",
+      "requiredFields": ["风险识别", "风险评估", "风险控制措施", "风险审核"],
+      "severity": "中",
+      "keywords": ["风险管理", "质量风险", "risk management", "FMEA", "风险评估"]
+    }
+  ]
+}

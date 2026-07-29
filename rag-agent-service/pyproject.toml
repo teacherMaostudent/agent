@@ -1,0 +1,45 @@
+[project]
+name = "rag-agent-service"
+version = "0.1.0"
+description = "GMP-oriented RAG and agent review service for llm-gateway."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic-settings>=2.3.0",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27.0",
+    "pymupdf>=1.24.0",
+    "python-docx>=1.1.0",
+    "pandas>=2.2.0",
+    "openpyxl>=3.1.0",
+    "tabulate>=0.9.0",
+    "rapidocr-onnxruntime>=1.4.0",
+    "numpy>=1.26.0",
+    "langgraph>=1.0.0,<2.0.0",
+    "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
+    "opentelemetry-api>=1.30.0,<2.0.0",
+    "opentelemetry-sdk>=1.30.0,<2.0.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.30.0,<2.0.0",
+    "opentelemetry-instrumentation-fastapi>=0.51b0,<1.0.0",
+    "opentelemetry-instrumentation-httpx>=0.51b0,<1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+]
+
+rerank-local = [
+    "sentence-transformers>=5.0.0,<6.0.0",
+]
+
+[project.scripts]
+ingestion-worker = "apps.ingestion_worker.main:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["app*", "apps*"]

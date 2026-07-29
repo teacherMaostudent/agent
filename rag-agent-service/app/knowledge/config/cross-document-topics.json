@@ -1,0 +1,36 @@
+{
+  "version": "2026-07-crossdoc-v1",
+  "description": "跨文档聚合主题。numericTopics:数值/标准型,走结构化抽取+两两比对(解Q10/Q12);responsibilityTopics:职责型,走职责矩阵+规则粗筛(解Q8/Q9)。aliases:该主题在不同文件里的可能写法,用于关键词兜底召回(解Q6术语鸿沟)。sameScenarioNote:提醒判定时区分'同对象同场景才算矛盾'(解Q6误报)。",
+  "numericTopics": [
+    {
+      "topic": "洁净度等级",
+      "dimension": "3.2",
+      "aliases": ["洁净度", "洁净级别", "洁净等级", "环境控制级别", "洁净区级别", "A级", "B级", "C级", "D级"],
+      "unit_hint": "洁净度等级(A/B/C/D)",
+      "sameScenarioNote": "不同房间/场景(如灌装间 vs 仓库)标准不同是合理的,仅当同一房间/同一对象出现不同等级才算矛盾"
+    },
+    {
+      "topic": "检验频次",
+      "dimension": "3.2",
+      "aliases": ["检验频次", "检测频次", "监测频次", "检查频率", "取样频次"],
+      "unit_hint": "频次(如每月一次/每季度/每30天)",
+      "sameScenarioNote": "不同项目的检验频次不同是合理的,仅当同一检验项在不同文件出现不同频次才算矛盾"
+    },
+    {
+      "topic": "温湿度限度",
+      "dimension": "3.2",
+      "aliases": ["温度", "相对湿度", "湿度", "温湿度"],
+      "unit_hint": "温度℃/相对湿度%",
+      "sameScenarioNote": "不同区域温湿度要求不同是合理的,仅当同一区域出现不同限度才算矛盾"
+    }
+  ],
+  "responsibilityTopics": [
+    {
+      "topic": "操作与复核职责分离",
+      "dimension": "3.5",
+      "aliases": ["操作人", "复核人", "审核人", "批准人", "放行", "职责", "岗位"],
+      "actions": ["操作", "复核", "审核", "批准", "放行"],
+      "separationRule": "同一动作的操作人不得同时为其复核/审核人(职责分离)"
+    }
+  ]
+}

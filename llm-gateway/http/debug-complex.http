@@ -1,0 +1,101 @@
+@baseUrl = http://localhost:8080
+@apiKey = dev-demo-key
+
+### 1. Complex non-stream request
+# Debug coverage:
+# authentication -> prompt rendering -> cache -> routing -> quota -> policy
+# -> provider adapter -> fallback -> usage/cost/performance reporting
+POST {{baseUrl}}/v1/chat/completions
+Content-Type: application/json
+Accept: application/json
+X-Api-Key: {{apiKey}}
+X-User-Id: debug-user-will-be-overridden-by-api-key
+X-Request-Id: debug-complex-001
+
+{
+  "model": "qwen-plus",
+  "prompt_template": "interview-answer",
+  "variables": {
+    "topic": "设计一个支持多租户、动态模型路由、灰度发布、Token 配额、成本核算、熔断降级和 SSE 流式输出的 LLM Gateway",
+    "project": "当前 Java 21 + Spring Boot 3 + WebFlux 的 llm-gateway 工程"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "content": "约束条件：日调用量 1000 万，峰值 500 RPS；主模型故障时 3 秒内切换；按 tenantId 隔离；成本统计允许最终一致；计费流水不能重复。请给出请求链路、组件选型、数据模型、异常分类、幂等方案和扩容步骤，并指出当前代码至少 5 个生产风险。"
+    }
+  ],
+  "temperature": 0.2,
+  "top_p": 0.85,
+  "max_tokens": 1200,
+  "presence_penalty": 0.0,
+  "frequency_penalty": 0.1,
+  "stream": false
+}
+
+### 2. Send the same semantic request again to inspect cache hit
+# Keep the body exactly the same. requestId is a header and is not part of the cache key.
+POST {{baseUrl}}/v1/chat/completions
+Content-Type: application/json
+Accept: application/json
+X-Api-Key: {{apiKey}}
+X-Request-Id: debug-complex-002-cache
+
+{
+  "model": "qwen-plus",
+  "prompt_template": "interview-answer",
+  "variables": {
+    "topic": "设计一个支持多租户、动态模型路由、灰度发布、Token 配额、成本核算、熔断降级和 SSE 流式输出的 LLM Gateway",
+    "project": "当前 Java 21 + Spring Boot 3 + WebFlux 的 llm-gateway 工程"
+  },
+  "messages": [
+    {
+      "role": "user",
+      "content": "约束条件：日调用量 1000 万，峰值 500 RPS；主模型故障时 3 秒内切换；按 tenantId 隔离；成本统计允许最终一致；计费流水不能重复。请给出请求链路、组件选型、数据模型、异常分类、幂等方案和扩容步骤，并指出当前代码至少 5 个生产风险。"
+    }
+  ],
+  "temperature": 0.2,
+  "top_p": 0.85,
+  "max_tokens": 1200,
+  "presence_penalty": 0.0,
+  "frequency_penalty": 0.1,
+  "stream": false
+}
+
+### 3. Complex SSE request
+# This request skips RequestCacheService and enters ChatGatewayService.tryStream.
+POST {{baseUrl}}/v1/chat/completions
+Content-Type: application/json
+Accept: text/event-stream
+X-Api-Key: {{apiKey}}
+X-Request-Id: debug-complex-003-stream
+
+{
+  "model": "deepseek-v4-flash",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a senior Java performance engineer. Return concise numbered steps."
+    },
+    {
+      "role": "user",
+      "content": "分析 WebFlux LLM Gateway 在 500 RPS 下的线程、连接池、背压、超时、客户端取消、SSE 中途失败和数据库阻塞风险，并给出压测指标。"
+    }
+  ],
+  "temperature": 0.2,
+  "max_tokens": 800,
+  "stream": true
+}
+
+### 4. Inspect the authenticated user's quota after requests
+GET {{baseUrl}}/v1/usage/me
+X-Api-Key: {{apiKey}}
+X-Request-Id: debug-complex-004-usage
+
+### 5. Inspect cache statistics from Admin API
+GET {{baseUrl}}/admin/cache
+Authorization: Basic admin admin123
+
+### 6. Inspect route health, circuit state and rate-limit counters in overview.resilience
+GET {{baseUrl}}/admin/overview
+Authorization: Basic admin admin123

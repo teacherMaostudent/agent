@@ -1,0 +1,17 @@
+services:
+  agent-control-plane:
+    build:
+      context: .
+    image: agent-control-plane:local
+    environment:
+      CONTROL_PLANE_ENVIRONMENT: local
+      CONTROL_PLANE_DATABASE_PATH: /data/control-plane.db
+      CONTROL_PLANE_ENFORCE_ADMIN_ROLE: "false"
+    ports:
+      - "8080:8080"
+    volumes:
+      - control-plane-data:/data
+    restart: unless-stopped
+
+volumes:
+  control-plane-data:

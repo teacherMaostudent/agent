@@ -1,0 +1,12 @@
+{
+  "set_name": "case7_clean_version-版本迭代非矛盾",
+  "note": "临时手编样例(非真实文件)。同一文件偏差处理管理规程的 v1/v2，时限值不同(3天→2天、30天→20天)属正常版本迭代。版本去重后只留 v2，系统不得把版本差异报成矛盾(验 Q14)。",
+  "files": ["偏差处理管理规程_v1.txt", "偏差处理管理规程_v2.txt"],
+  "expected_conflicts": [],
+  "expected_responsibility_issues": [],
+  "should_be_clean": [
+    {"topic": "偏差调查启动时限", "reason": "3天vs2天是同一文件v1→v2的版本迭代，不是跨文件矛盾，去重后只留v2，不得报"},
+    {"topic": "重大偏差完成时限", "reason": "30天vs20天同上，属版本迭代"},
+    {"topic": "职责分离", "reason": "调查与审核批准分属QA调查员与质量受权人，无同人交叉"}
+  ]
+}

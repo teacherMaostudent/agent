@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://enterprise-agent-platform.local/contracts/error-envelope.v1.json",
+  "title": "ErrorEnvelopeV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["code", "message", "retryable", "requestId", "traceId"],
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "VALIDATION_ERROR",
+        "AUTHENTICATION_ERROR",
+        "AUTHORIZATION_DENIED",
+        "NOT_FOUND",
+        "CONFLICT",
+        "RATE_LIMITED",
+        "DEPENDENCY_TIMEOUT",
+        "DEPENDENCY_UNAVAILABLE",
+        "POLICY_BLOCKED",
+        "APPROVAL_REQUIRED",
+        "BUDGET_EXHAUSTED",
+        "DEADLINE_EXCEEDED",
+        "CANCELLED",
+        "INTERNAL_ERROR"
+      ]
+    },
+    "message": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "retryable": {"type": "boolean"},
+    "requestId": {"type": "string", "minLength": 1, "maxLength": 160},
+    "traceId": {"type": "string", "minLength": 1, "maxLength": 160},
+    "retryAfterMs": {"type": "integer", "minimum": 0},
+    "details": {"type": "object"}
+  }
+}

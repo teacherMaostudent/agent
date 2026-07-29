@@ -1,0 +1,75 @@
+{
+  "version": "2026-07-floor-v1",
+  "description": "法规底线表(3.2a 标准一致性第一条:企业标准不得低于法规底线)。预建+人工校对,建一次长期用,不每次审查现抽。每条:attribute属性、direction严格方向、floor底线值(含数值与单位)、scope适用对象(可空=通用)、aliases别名(抽取/匹配用)、source法规来源、severity。direction取值:smaller_stricter(值越小越严,如微生物限度/电导率)、larger_stricter(值越大越严,如留样量/保存期)、grade(等级序,用gradeOrder)。方向判不了或法规无明确底线的属性,不列入本表——运行时抽到但表里没有→标'无法自动判定,交人工',绝不瞎判。",
+  "gradeOrders": {
+    "洁净度等级": ["A", "B", "C", "D"]
+  },
+  "floors": [
+    {
+      "attribute": "洁净度等级",
+      "aliases": ["洁净度", "洁净级别", "洁净等级", "环境控制级别"],
+      "direction": "grade",
+      "gradeOrderKey": "洁净度等级",
+      "floor": "D",
+      "scope": "",
+      "source": "GMP附录1 无菌药品",
+      "severity": "高",
+      "note": "洁净区最低不得低于D级;具体房间的法规要求可能更严(如无菌灌装A级),此处为通用底线。"
+    },
+    {
+      "attribute": "纯化水微生物限度",
+      "aliases": ["纯化水微生物", "纯化水 微生物限度", "纯化水细菌总数"],
+      "direction": "smaller_stricter",
+      "floor": "100",
+      "unit": "CFU/mL",
+      "scope": "纯化水",
+      "source": "中国药典 纯化水标准",
+      "severity": "高",
+      "note": "纯化水微生物限度不得超过100 CFU/mL(企业标准数值应≤此值)。"
+    },
+    {
+      "attribute": "注射用水微生物限度",
+      "aliases": ["注射用水微生物", "注射用水细菌总数"],
+      "direction": "smaller_stricter",
+      "floor": "10",
+      "unit": "CFU/100mL",
+      "scope": "注射用水",
+      "source": "中国药典 注射用水标准",
+      "severity": "高",
+      "note": "注射用水微生物限度不得超过10 CFU/100mL。"
+    },
+    {
+      "attribute": "纯化水电导率",
+      "aliases": ["纯化水 电导率", "纯化水电导"],
+      "direction": "smaller_stricter",
+      "floor": "5.1",
+      "unit": "μS/cm",
+      "scope": "纯化水",
+      "source": "中国药典 纯化水标准(25℃)",
+      "severity": "中",
+      "note": "25℃下纯化水电导率限度5.1 μS/cm。"
+    },
+    {
+      "attribute": "纯化水总有机碳",
+      "aliases": ["纯化水TOC", "纯化水 总有机碳", "TOC"],
+      "direction": "smaller_stricter",
+      "floor": "500",
+      "unit": "ppb",
+      "scope": "纯化水",
+      "source": "中国药典 纯化水标准",
+      "severity": "中",
+      "note": "纯化水TOC限度500 ppb。"
+    },
+    {
+      "attribute": "记录保存期限",
+      "aliases": ["记录保存", "文件保存期限", "批记录保存"],
+      "direction": "larger_stricter",
+      "floor": "1",
+      "unit": "年(产品有效期后)",
+      "scope": "",
+      "source": "GMP 第一百六十条",
+      "severity": "中",
+      "note": "批记录至少保存至产品有效期后一年;企业标准保存期应≥此值。方向为'越长越合规'。"
+    }
+  ]
+}

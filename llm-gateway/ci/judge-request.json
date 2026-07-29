@@ -1,0 +1,12 @@
+{
+  "candidateModel": "deepseek-v4-flash",
+  "caseIds": [],
+  "rubricId": "default",
+  "promptVersionId": "ci-current",
+  "retrievalStrategyId": "ci-current",
+  "candidateAnswers": {},
+  "metadata": {
+    "source": "ci",
+    "suite": "golden-dataset"
+  }
+}

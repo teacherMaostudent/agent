@@ -1,0 +1,88 @@
+# agent-governance
+
+独立的 Agent 治理服务。它接收各服务已经发生的事件，持久化不可变审计记录，按租户策略生成评测发现（findings），并提供处置与合规汇总查询。
+
+它**不是** `agent-control-plane`：控制面决定 Agent 的定义、版本和发布；治理服务拥有评测资产、Judge、质量门禁、线上样本和合规工作流。Control Plane 可以同步读取质量门禁结论，但治理服务不直接修改 Gateway 路由，也不执行 Agent 或业务工具。
+
+需要模型语义判断时，Governance 只通过 `GOVERNANCE_LLM_GATEWAY_BASE_URL`
+调用 `llm-gateway`，不持有模型厂商密钥。核心接口位于
+`/v1/governance/evaluations` 与 `/v1/governance/compliance`；Gateway 原有
+`/admin/eval`、`/v1/feedback` 和 `/admin/compliance` 接口保留为兼容代理。
+
+```mermaid
+flowchart LR
+    CP["agent-control-plane"] -->|"Outbox events"| GOV["agent-governance"]
+    RT["agent-runtime"] -->|"run completion events"| GOV
+    LLM["llm-gateway"] -->|"model request events"| GOV
+    TOOL["tool-gateway"] -->|"tool execution events"| GOV
+    GOV --> AUDIT[("Immutable audit log")]
+    GOV --> FINDINGS["Findings and compliance reports"]
+```
+
+## 当前能力
+
+- 幂等接收事件：同一 `event_id` 只会记录和评测一次。
+- 记录不可变审计事件，按租户隔离并可使用游标查询。
+- 规则评测：未获批准的高风险工具调用、违规模型、违规数据区域、缺少知识证据、成本或时延超限。
+- 管理每个租户的治理策略；处置发现保留处理人、处理时间和说明。
+- 策略变更同样作为 `governance.policy.updated` 事件写入审计日志。
+- 输出按事件来源、风险等级和未处理发现汇总的合规报告。
+
+## 事件契约
+
+生产者将 Outbox 事件转换为如下 HTTP 载荷后，投递到 `POST /v1/governance/events`。服务只消费事件，不向生产者回调或发出控制指令。
+
+```json
+{
+  "event_id": "evt_01J...",
+  "source_service": "tool-gateway",
+  "event_type": "tool.execution.completed",
+  "trace_id": "trace_01J...",
+  "tenant_id": "tenant-a",
+  "occurred_at": "2026-07-25T00:00:00Z",
+  "payload": {
+    "run_id": "run-123",
+    "tool_name": "payments.refund",
+    "risk": "write_high_risk",
+    "approval_granted": false
+  }
+}
+```
+
+支持的首批评测事件是 `tool.execution.completed`、`llm.request.completed` 与 `agent.run.completed`。未知事件仍会完整审计，只是不触发内置规则。
+
+## 快速启动
+
+需要 Python 3.12：
+
+```powershell
+cd C:\Users\Administrator\Documents\AI工作\agent-governance
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+Copy-Item .env.example .env
+uvicorn app.main:app --reload --port 8081
+```
+
+打开 `http://localhost:8081/docs` 查看 OpenAPI。审计查询与策略管理默认使用 `X-Tenant-Id`、`X-User-Id` 和可选的 `X-Roles: governance-auditor`。设置 `GOVERNANCE_ENFORCE_AUDITOR_ROLE=true` 后会强制该角色；设置 `GOVERNANCE_EVENT_INGESTION_KEY` 后，事件生产者必须携带 `X-Governance-Event-Key`。
+
+也可通过 Docker Compose 启动：`docker compose up --build`。
+
+## API
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `POST` | `/v1/governance/events` | 异步接收并评测事件 |
+| `GET` | `/v1/governance/audit-events` | 查询不可变审计记录 |
+| `GET` | `/v1/governance/findings` | 查询风险发现 |
+| `POST` | `/v1/governance/findings/{id}/resolve` | 记录发现处置 |
+| `GET/PUT` | `/v1/governance/tenant-policy` | 查询或更新治理策略 |
+| `GET` | `/v1/governance/reports/compliance` | 查询租户合规汇总 |
+
+## 验证
+
+```powershell
+python -m ruff check .
+python -m ruff format --check .
+python -m pytest
+```

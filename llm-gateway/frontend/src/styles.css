@@ -1,0 +1,199 @@
+:root {
+  font-family: "Microsoft YaHei", Inter, system-ui, sans-serif;
+  color: #1f2937;
+  background: #f5f7fb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.shell {
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: #101827;
+  color: #e5edf7;
+  padding: 18px 12px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px 22px;
+}
+
+.brand-mark {
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: #1d6f74;
+  color: white;
+  font-weight: 800;
+}
+
+.brand strong {
+  display: block;
+  font-size: 17px;
+}
+
+.brand span {
+  color: #92a3b8;
+  font-size: 12px;
+}
+
+.nav {
+  border-right: none;
+}
+
+.nav .el-menu-item {
+  color: #b8c4d6;
+  border-radius: 8px;
+  height: 44px;
+  margin: 3px 0;
+}
+
+.nav .el-menu-item.is-active,
+.nav .el-menu-item:hover {
+  color: #fff;
+  background: #1d6f74;
+}
+
+.topbar {
+  height: 76px;
+  background: #fff;
+  border-bottom: 1px solid #e6eaf0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 26px;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: 0;
+}
+
+.topbar p {
+  margin: 4px 0 0;
+  color: #667085;
+  font-size: 13px;
+}
+
+.content {
+  padding: 22px;
+  background: #f5f7fb;
+}
+
+.grid {
+  display: grid;
+  gap: 16px;
+}
+
+.grid.cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.grid.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.metric {
+  background: #fff;
+  border: 1px solid #e6eaf0;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.metric span {
+  color: #667085;
+  font-size: 13px;
+}
+
+.metric strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 26px;
+  color: #101827;
+}
+
+.panel {
+  background: #fff;
+  border: 1px solid #e6eaf0;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.panel + .panel,
+.grid + .panel,
+.panel + .grid {
+  margin-top: 16px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.panel h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.panel p {
+  margin: 4px 0 0;
+  color: #667085;
+  font-size: 13px;
+}
+
+.chart {
+  height: 280px;
+}
+
+.json-block {
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #d7e1f2;
+  overflow: auto;
+  min-height: 120px;
+  max-height: 520px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.muted {
+  color: #667085;
+}
+
+.mono {
+  font-family: "JetBrains Mono", Consolas, monospace;
+}
+
+@media (max-width: 1100px) {
+  .grid.cols-2,
+  .grid.cols-3 {
+    grid-template-columns: 1fr;
+  }
+}

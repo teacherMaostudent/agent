@@ -1,0 +1,11 @@
+{
+  "set_name": "case5_clean-不同房间不同洁净度-合理差异",
+  "note": "假阳性陷阱(最重要的一类clean case)。灌装间A级、包材暂存间D级、原辅料仓库无要求——是不同对象各自的合理标准,绝非矛盾。系统若报矛盾即为误报。临时手编样例,后续须用真实SOP替换。",
+  "files": ["A_灌装间洁净规程.txt", "B_仓库洁净规程.txt"],
+  "expected_conflicts": [],
+  "expected_responsibility_issues": [],
+  "should_be_clean": [
+    {"topic": "洁净度等级", "reason": "灌装间A级 vs 包材暂存间D级是不同对象的合理差异,不得报矛盾(核心假阳性测试)"},
+    {"topic": "职责分离", "reason": "两份均操作与复核分属不同角色,无同人交叉"}
+  ]
+}

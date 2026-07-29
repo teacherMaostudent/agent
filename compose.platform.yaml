@@ -1,0 +1,118 @@
+# Complete local integration topology. The seven logical services run as nine processes:
+# Runtime, Context, RAG Query, Ingestion API/Worker, Control Plane, LLM Gateway,
+# Tool Gateway, and Governance. Use scripts/platform_e2e.py after `docker compose up`.
+x-rag-env: &rag-env
+  RAG_DATA_DIR: /service/data
+  RAG_PERSISTENCE: sqlite
+  RAG_LLM_ENABLED: "false"
+  RAG_CONTEXT_SERVICE_BASE_URL: http://agent-context-service:8002
+  RAG_RAG_QUERY_BASE_URL: http://rag-query-api:8003
+  RAG_TOOL_GATEWAY_BASE_URL: http://tool-gateway:8090
+  RAG_TOOL_GATEWAY_API_KEY: local-tool-gateway-key
+  RAG_CONTROL_PLANE_BASE_URL: http://agent-control-plane:8080
+  RAG_CONTROL_PLANE_RUNTIME_KEY: local-control-plane-key
+  RAG_RUNTIME_SNAPSHOT_REQUIRED: "true"
+  RAG_GOVERNANCE_BASE_URL: http://agent-governance:8081
+  RAG_GOVERNANCE_EVENT_KEY: local-governance-key
+
+x-rag-service: &rag-service
+  build: ./rag-agent-service
+  restart: unless-stopped
+  environment: *rag-env
+  volumes:
+    - rag-data:/service/data
+
+services:
+  agent-control-plane:
+    build: ./agent-control-plane
+    environment:
+      CONTROL_PLANE_DATABASE_PATH: /data/control-plane.db
+      CONTROL_PLANE_ENFORCE_ADMIN_ROLE: "false"
+      CONTROL_PLANE_RUNTIME_API_KEY: local-control-plane-key
+      CONTROL_PLANE_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
+      CONTROL_PLANE_GOVERNANCE_BASE_URL: http://agent-governance:8081
+    ports: ["8082:8080"]
+    volumes: ["control-plane-data:/data"]
+
+  agent-governance:
+    build: ./agent-governance
+    environment:
+      GOVERNANCE_DATABASE_PATH: /data/governance.db
+      GOVERNANCE_ENFORCE_AUDITOR_ROLE: "false"
+      GOVERNANCE_EVENT_INGESTION_KEY: local-governance-key
+      GOVERNANCE_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
+      GOVERNANCE_LLM_GATEWAY_API_KEY: governance-service-key
+    ports: ["8081:8081"]
+    volumes: ["governance-data:/data"]
+
+  llm-gateway:
+    build: ./llm-gateway
+    environment:
+      MYSQL_URL: jdbc:mysql://mysql:3306/llm_gateway?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&createDatabaseIfNotExist=true
+      MYSQL_USERNAME: root
+      MYSQL_PASSWORD: local-mysql-password
+      REDIS_HOST: redis
+      ADMIN_SECURITY_ENABLED: "false"
+      GOVERNANCE_BASE_URL: http://agent-governance:8081
+      CONTROL_PLANE_BASE_URL: http://agent-control-plane:8080
+    ports: ["8080:8080"]
+    depends_on: [mysql, redis]
+
+  agent-runtime:
+    <<: *rag-service
+    command: uvicorn apps.agent_runtime.main:app --host 0.0.0.0 --port 8001
+    ports: ["8001:8001"]
+    depends_on: [agent-control-plane, agent-governance, agent-context-service, tool-gateway]
+
+  agent-context-service:
+    <<: *rag-service
+    command: uvicorn apps.agent_context_service.main:app --host 0.0.0.0 --port 8002
+    ports: ["8002:8002"]
+    depends_on: [rag-query-api]
+
+  rag-query-api:
+    <<: *rag-service
+    command: uvicorn apps.rag_query_api.main:app --host 0.0.0.0 --port 8003
+    ports: ["8003:8003"]
+
+  ingestion-api:
+    <<: *rag-service
+    command: uvicorn apps.ingestion_api.main:app --host 0.0.0.0 --port 8004
+    ports: ["8004:8004"]
+
+  ingestion-worker:
+    <<: *rag-service
+    command: python -m apps.ingestion_worker.main
+    depends_on: [ingestion-api]
+
+  tool-gateway:
+    build: ./tool-gateway
+    environment:
+      TOOL_GATEWAY_DATABASE_PATH: /service/data/tool-gateway.db
+      TOOL_GATEWAY_TOOLS_CONFIG_PATH: /service/config/tools.json
+      TOOL_GATEWAY_REQUIRE_SERVICE_AUTH: "true"
+      TOOL_GATEWAY_SERVICE_API_KEY: local-tool-gateway-key
+      TOOL_GATEWAY_ADMIN_API_KEY: local-tool-gateway-admin-key
+      TOOL_GATEWAY_ALLOW_PRIVATE_NETWORKS: "true"
+      TOOL_GATEWAY_GOVERNANCE_BASE_URL: http://agent-governance:8081
+      TOOL_GATEWAY_GOVERNANCE_EVENT_KEY: local-governance-key
+    ports: ["8090:8090"]
+    volumes: ["tool-gateway-data:/service/data"]
+    depends_on: [agent-governance, ingestion-api]
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: local-mysql-password
+      MYSQL_DATABASE: llm_gateway
+    volumes: ["mysql-data:/var/lib/mysql"]
+
+  redis:
+    image: redis:7-alpine
+
+volumes:
+  control-plane-data:
+  governance-data:
+  rag-data:
+  tool-gateway-data:
+  mysql-data:

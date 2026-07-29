@@ -1,0 +1,74 @@
+# Local multi-process topology. Production should replace shared SQLite with
+# PostgreSQL and the development ingestion queue with Kafka/Celery.
+x-service-env: &service-env
+  RAG_DATA_DIR: /service/data
+  RAG_PERSISTENCE: sqlite
+  RAG_LLM_ENABLED: "false"
+  RAG_CONTEXT_SERVICE_BASE_URL: http://agent-context-service:8002
+  RAG_RAG_QUERY_BASE_URL: http://rag-query-api:8003
+  RAG_TOOL_GATEWAY_BASE_URL: http://tool-gateway:8090
+  RAG_TOOL_GATEWAY_API_KEY: local-tool-gateway-key
+
+x-python-service: &python-service
+  build: .
+  restart: unless-stopped
+  environment: *service-env
+  volumes:
+    - rag-data:/service/data
+
+services:
+  agent-runtime:
+    <<: *python-service
+    command: uvicorn apps.agent_runtime.main:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    depends_on:
+      - agent-context-service
+      - tool-gateway
+
+  agent-context-service:
+    <<: *python-service
+    command: uvicorn apps.agent_context_service.main:app --host 0.0.0.0 --port 8002
+    ports:
+      - "8002:8002"
+    depends_on:
+      - rag-query-api
+
+  rag-query-api:
+    <<: *python-service
+    command: uvicorn apps.rag_query_api.main:app --host 0.0.0.0 --port 8003
+    ports:
+      - "8003:8003"
+
+  ingestion-api:
+    <<: *python-service
+    command: uvicorn apps.ingestion_api.main:app --host 0.0.0.0 --port 8004
+    ports:
+      - "8004:8004"
+
+  ingestion-worker:
+    <<: *python-service
+    command: python -m apps.ingestion_worker.main
+    depends_on:
+      - ingestion-api
+
+  tool-gateway:
+    build: ../tool-gateway
+    restart: unless-stopped
+    environment:
+      TOOL_GATEWAY_DATABASE_PATH: /service/data/tool-gateway.db
+      TOOL_GATEWAY_TOOLS_CONFIG_PATH: /service/config/tools.json
+      TOOL_GATEWAY_REQUIRE_SERVICE_AUTH: "true"
+      TOOL_GATEWAY_SERVICE_API_KEY: local-tool-gateway-key
+      TOOL_GATEWAY_ADMIN_API_KEY: local-tool-gateway-admin-key
+      TOOL_GATEWAY_ALLOW_PRIVATE_NETWORKS: "true"
+    volumes:
+      - tool-gateway-data:/service/data
+    ports:
+      - "8090:8090"
+    depends_on:
+      - ingestion-api
+
+volumes:
+  rag-data:
+  tool-gateway-data:

@@ -1,0 +1,36 @@
+name: LLM Quality Gate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/main/**"
+      - "ci/judge-request.json"
+
+jobs:
+  judge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Judge and quality gate against deployed gateway
+        env:
+          GATEWAY_URL: ${{ secrets.LLM_GATEWAY_URL }}
+          ADMIN_USERNAME: ${{ secrets.LLM_GATEWAY_ADMIN_USERNAME }}
+          ADMIN_PASSWORD: ${{ secrets.LLM_GATEWAY_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$GATEWAY_URL"
+          RUN_JSON=$(curl --fail-with-body -sS \
+            -u "$ADMIN_USERNAME:$ADMIN_PASSWORD" \
+            -H "Content-Type: application/json" \
+            --data-binary @ci/judge-request.json \
+            "$GATEWAY_URL/admin/eval/judge-runs")
+          RUN_ID=$(jq -r '.id' <<< "$RUN_JSON")
+          test -n "$RUN_ID" && test "$RUN_ID" != "null"
+          GATE_JSON=$(curl --fail-with-body -sS \
+            -u "$ADMIN_USERNAME:$ADMIN_PASSWORD" \
+            -H "Content-Type: application/json" \
+            --data '{}' \
+            "$GATEWAY_URL/admin/eval/judge-runs/$RUN_ID/quality-gate")
+          jq . <<< "$GATE_JSON"
+          test "$(jq -r '.passed' <<< "$GATE_JSON")" = "true"

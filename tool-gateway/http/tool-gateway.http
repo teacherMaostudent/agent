@@ -1,0 +1,54 @@
+@baseUrl = http://localhost:8090/api/v1
+@serviceKey = replace-with-a-long-random-secret
+@adminKey = replace-with-a-different-long-random-secret
+@tenant = demo-tenant
+@user = agent-runtime
+
+### Readiness
+GET {{baseUrl}}/health/ready
+
+### Discover only tools allowed by the caller's permissions
+GET {{baseUrl}}/tools
+X-Tool-Gateway-Key: {{serviceKey}}
+X-Tenant-Id: {{tenant}}
+X-User-Id: {{user}}
+X-Permissions: document:read,ingestion:write
+
+### Invoke a read-only tool
+POST {{baseUrl}}/tools/get_document/invoke
+X-Tool-Gateway-Key: {{serviceKey}}
+X-Tenant-Id: {{tenant}}
+X-User-Id: {{user}}
+X-Permissions: document:read
+X-Request-Id: tool-debug-001
+Content-Type: application/json
+
+{
+  "version": "1.0.0",
+  "arguments": {
+    "document_id": "doc_example"
+  }
+}
+
+### Invoke a write tool; the idempotency key is mandatory
+POST {{baseUrl}}/tools/create_ingestion_job/invoke
+X-Tool-Gateway-Key: {{serviceKey}}
+X-Tenant-Id: {{tenant}}
+X-User-Id: {{user}}
+X-Permissions: ingestion:write
+X-Request-Id: tool-debug-002
+X-Idempotency-Key: ingestion-job-example-001
+Content-Type: application/json
+
+{
+  "arguments": {
+    "job_type": "REINDEX",
+    "payload": {}
+  }
+}
+
+### Inspect tenant-scoped audit metadata (arguments are hashed)
+GET {{baseUrl}}/audit?limit=50
+X-Tool-Gateway-Key: {{serviceKey}}
+X-Tenant-Id: {{tenant}}
+X-User-Id: {{user}}

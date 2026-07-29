@@ -1,0 +1,405 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: llm-gateway
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/llm_gateway?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&createDatabaseIfNotExist=true}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:970402}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  sql:
+    init:
+      mode: ${MYSQL_INIT_MODE:always}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+
+management:
+  health:
+    redis:
+      enabled: ${REDIS_HEALTH_ENABLED:false}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+otel:
+  sdk:
+    disabled: ${OTEL_SDK_DISABLED:true}
+  exporter:
+    otlp:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}
+      protocol: http/protobuf
+  propagators:
+    - tracecontext
+    - baggage
+  resource:
+    attributes:
+      deployment.environment: ${DEPLOYMENT_ENVIRONMENT:local}
+      service.namespace: ai-platform
+
+gateway:
+  request-timeout: 60s
+  max-retries: 0
+  quota-store: ${GATEWAY_QUOTA_STORE:memory}
+  compatibility:
+    agent-memory:
+      # Historical demo only. Session memory is owned by rag-agent-service.
+      enabled: ${GATEWAY_AGENT_MEMORY_ENABLED:false}
+  # 成本报表统一换算为 CNY。官方价格仍按各厂商原生币种保存，USD 汇率可由部署环境覆盖。
+  billing:
+    base-currency: CNY
+    exchange-rate-version: ${FX_RATE_VERSION:2026-07-manual}
+    exchange-rates:
+      CNY: 1.0
+      USD: ${USD_TO_CNY:7.20}
+  cost-prediction:
+    enabled: true
+    reservation-quantile: 0.95
+    learning-rate: 2.0
+    conformal-window: 1000
+    min-samples: 30
+    cold-start-p50: 512
+    cold-start-p90: 1536
+    cold-start-p95: 2048
+    cold-start-p99: 4096
+  persistence:
+    enabled: ${GATEWAY_PERSISTENCE_ENABLED:true}
+  admin:
+    security:
+      enabled: ${ADMIN_SECURITY_ENABLED:true}
+      username: ${ADMIN_USERNAME:admin}
+      password: ${ADMIN_PASSWORD:admin123}
+  cache:
+    enabled: true
+    max-entries: 1000
+    ttl: 10m
+    random-ttl-jitter: 30s
+    mutex-protection-enabled: true
+  resilience:
+    circuit-failure-threshold: 3
+    circuit-open-duration: 30s
+    route-rate-limit-per-minute: 120
+  default-model: deepseek-v4-flash
+  providers:
+    deepseek:
+      protocol: openai-compatible
+      base-url: https://api.deepseek.com
+      api-key: ${DEEPSEEK_API_KEY:}
+      models:
+        deepseek-v4-flash:
+          upstream-model: deepseek-v4-flash
+          input-price-per-1k: 0.00014
+          cached-input-price-per-1k: 0.0000028
+          output-price-per-1k: 0.00028
+          currency: USD
+          price-version: 2026-07-14
+          price-source: https://api-docs.deepseek.com/quick_start/pricing/
+        deepseek-v4-pro:
+          upstream-model: deepseek-v4-pro
+          input-price-per-1k: 0.000435
+          cached-input-price-per-1k: 0.000003625
+          output-price-per-1k: 0.00087
+          currency: USD
+          price-version: 2026-07-14
+          price-source: https://api-docs.deepseek.com/quick_start/pricing/
+    openai:
+      protocol: openai-compatible
+      base-url: https://api.openai.com/v1
+      api-key: ${OPENAI_API_KEY:}
+      models:
+        gpt-4o-mini:
+          upstream-model: gpt-4o-mini
+          input-price-per-1k: 0.00015
+          cached-input-price-per-1k: 0.000075
+          output-price-per-1k: 0.00060
+          currency: USD
+          price-version: 2026-07-14
+          price-source: https://developers.openai.com/api/docs/models/gpt-4o-mini
+        "[gpt-4.1-mini]":
+          upstream-model: "gpt-4.1-mini"
+          input-price-per-1k: 0.00040
+          cached-input-price-per-1k: 0.00010
+          output-price-per-1k: 0.00160
+          currency: USD
+          price-version: 2026-07-14
+          price-source: https://developers.openai.com/api/docs/models/gpt-4.1-mini
+    qwen:
+      protocol: openai-compatible
+      base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+      api-key: ${DASHSCOPE_API_KEY:}
+      models:
+        qwen-plus:
+          upstream-model: qwen-plus
+          input-price-per-1k: 0.002
+          cached-input-price-per-1k: 0.0008
+          output-price-per-1k: 0.008
+          currency: CNY
+          price-version: 2026-07-14-global-0-128k
+          price-source: https://help.aliyun.com/en/model-studio/model-pricing
+          price-tiers:
+            - max-input-tokens: 128000
+              cached-input-price-per-1k: 0.0008
+              input-price-per-1k: 0.002
+              output-price-per-1k: 0.008
+            - max-input-tokens: 256000
+              cached-input-price-per-1k: 0.0024
+              input-price-per-1k: 0.020
+              output-price-per-1k: 0.024
+            - max-input-tokens: 1000000
+              cached-input-price-per-1k: 0.0048
+              input-price-per-1k: 0.048
+              output-price-per-1k: 0.064
+        qwen-turbo:
+          upstream-model: qwen-turbo
+          input-price-per-1k: 0.0003
+          output-price-per-1k: 0.0006
+          currency: CNY
+          price-version: 2026-07-14-cn-non-thinking
+          price-source: https://help.aliyun.com/en/model-studio/model-pricing
+        qwen-max:
+          upstream-model: qwen-max
+          input-price-per-1k: 0.0024
+          output-price-per-1k: 0.0096
+          currency: CNY
+          price-version: 2026-07-14-cn
+          price-source: https://help.aliyun.com/en/model-studio/model-pricing
+    kimi:
+      protocol: openai-compatible
+      base-url: ${MOONSHOT_BASE_URL:https://api.moonshot.ai/v1}
+      api-key: ${MOONSHOT_API_KEY:}
+      models:
+        moonshot-v1-8k:
+          upstream-model: moonshot-v1-8k
+          input-price-per-1k: 0.002
+          output-price-per-1k: 0.010
+          currency: CNY
+          price-version: 2026-07-14
+          price-source: https://platform.kimi.com/docs/pricing/chat-v1
+        moonshot-v1-32k:
+          upstream-model: moonshot-v1-32k
+          input-price-per-1k: 0.005
+          output-price-per-1k: 0.020
+          currency: CNY
+          price-version: 2026-07-14
+          price-source: https://platform.kimi.com/docs/pricing/chat-v1
+        moonshot-v1-128k:
+          upstream-model: moonshot-v1-128k
+          input-price-per-1k: 0.010
+          output-price-per-1k: 0.030
+          currency: CNY
+          price-version: 2026-07-14
+          price-source: https://platform.kimi.com/docs/pricing/chat-v1
+    claude:
+      protocol: anthropic
+      base-url: https://api.anthropic.com
+      api-key: ${ANTHROPIC_API_KEY:}
+      models:
+        claude-sonnet-4:
+          upstream-model: claude-sonnet-4-20250514
+          input-price-per-1k: 0.003
+          cached-input-price-per-1k: 0.0003
+          cache-write-price-per-1k: 0.00375
+          output-price-per-1k: 0.015
+          currency: USD
+          price-version: 2026-07-14
+          price-source: https://docs.anthropic.com/en/docs/about-claude/pricing
+          price-tiers:
+            - max-input-tokens: 200000
+              cached-input-price-per-1k: 0.0003
+              cache-write-price-per-1k: 0.00375
+              input-price-per-1k: 0.003
+              output-price-per-1k: 0.015
+            - max-input-tokens: 1000000
+              cached-input-price-per-1k: 0.0006
+              cache-write-price-per-1k: 0.0075
+              input-price-per-1k: 0.006
+              output-price-per-1k: 0.0225
+        claude-opus-4:
+          upstream-model: claude-opus-4-20250514
+          input-price-per-1k: 0.015
+          cached-input-price-per-1k: 0.0015
+          cache-write-price-per-1k: 0.01875
+          output-price-per-1k: 0.075
+          currency: USD
+          price-version: 2026-07-14
+          price-source: https://docs.anthropic.com/en/docs/about-claude/pricing
+        claude-3-5-haiku:
+          upstream-model: claude-3-5-haiku-20241022
+          input-price-per-1k: 0.0008
+          cached-input-price-per-1k: 0.00008
+          cache-write-price-per-1k: 0.001
+          output-price-per-1k: 0.004
+          currency: USD
+          price-version: 2026-07-14
+          price-source: https://docs.anthropic.com/en/docs/about-claude/pricing
+    ollama:
+      protocol: openai-compatible
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434/v1}
+      api-key: ${OLLAMA_API_KEY:ollama}
+      models:
+        "[llama3.1]":
+          upstream-model: "llama3.1"
+          input-price-per-1k: 0.0
+          output-price-per-1k: 0.0
+        "[qwen2.5]":
+          upstream-model: "qwen2.5"
+          input-price-per-1k: 0.0
+          output-price-per-1k: 0.0
+    vllm:
+      protocol: openai-compatible
+      base-url: ${VLLM_BASE_URL:http://localhost:8000/v1}
+      api-key: ${VLLM_API_KEY:vllm}
+      models:
+        local-chat:
+          upstream-model: ${VLLM_MODEL:local-chat}
+          input-price-per-1k: 0.0
+          output-price-per-1k: 0.0
+  routes:
+    deepseek-v4-flash:
+      primary: deepseek:deepseek-v4-flash
+      weighted:
+        - target: deepseek:deepseek-v4-flash
+          weight: 90
+        - target: qwen:qwen-plus
+          weight: 10
+      canary:
+        - target: kimi:moonshot-v1-8k
+          percent: 0
+      fallbacks:
+        - deepseek:deepseek-v4-pro
+    deepseek-v4-pro:
+      primary: deepseek:deepseek-v4-pro
+      fallbacks:
+        - deepseek:deepseek-v4-flash
+    gpt-4o-mini:
+      primary: openai:gpt-4o-mini
+      fallbacks:
+        - "openai:gpt-4.1-mini"
+    qwen-plus:
+      primary: qwen:qwen-plus
+      fallbacks:
+        - qwen:qwen-turbo
+        - deepseek:deepseek-v4-flash
+    qwen-turbo:
+      primary: qwen:qwen-turbo
+      fallbacks:
+        - deepseek:deepseek-v4-flash
+    qwen-max:
+      primary: qwen:qwen-max
+      fallbacks:
+        - qwen:qwen-plus
+    kimi-chat:
+      primary: kimi:moonshot-v1-8k
+      fallbacks:
+        - deepseek:deepseek-v4-flash
+    kimi-long:
+      primary: kimi:moonshot-v1-128k
+      fallbacks:
+        - kimi:moonshot-v1-32k
+    claude-sonnet-4:
+      primary: claude:claude-sonnet-4
+      fallbacks:
+        - claude:claude-3-5-haiku
+        - deepseek:deepseek-v4-flash
+    claude-opus-4:
+      primary: claude:claude-opus-4
+      fallbacks:
+        - claude:claude-sonnet-4
+    claude-3-5-haiku:
+      primary: claude:claude-3-5-haiku
+      fallbacks:
+        - deepseek:deepseek-v4-flash
+    "[ollama-llama3.1]":
+      primary: "ollama:llama3.1"
+      fallbacks:
+        - deepseek:deepseek-v4-flash
+    "[ollama-qwen2.5]":
+      primary: "ollama:qwen2.5"
+      fallbacks:
+        - deepseek:deepseek-v4-flash
+    vllm-local:
+      primary: vllm:local-chat
+      fallbacks:
+        - deepseek:deepseek-v4-flash
+  user-quotas:
+    demo:
+      daily-token-limit: 200000
+      daily-cost-limit: 5.0
+    anonymous:
+      daily-token-limit: 50000
+      daily-cost-limit: 1.0
+    evaluation-judge:
+      # Judge 调用单独计量，避免消耗普通用户额度；生产环境应按每日评估集规模重新设定。
+      daily-token-limit: ${EVALUATION_DAILY_TOKEN_LIMIT:2000000}
+      daily-cost-limit: ${EVALUATION_DAILY_COST_LIMIT:500.0}
+  api-keys:
+    dev-demo-key:
+      enabled: true
+      tenant-id: demo-tenant
+      user-id: demo
+      allowed-models:
+        - deepseek-v4-flash
+        - qwen-plus
+        - kimi-chat
+        - claude-sonnet-4
+        - "ollama-llama3.1"
+        - vllm-local
+    governance-service-key:
+      enabled: true
+      tenant-id: internal
+      user-id: agent-governance
+      trusted-service: true
+      allowed-models:
+        - deepseek-v4-flash
+        - deepseek-v4-pro
+        - qwen-plus
+        - claude-sonnet-4
+        - claude-3-5-haiku
+  prompt-templates:
+    interview-answer:
+      system: |
+        You are a senior Java backend and LLM gateway architect. Answer in a structured way for technical interviews.
+      user: |
+        Please explain the topic {{topic}} with project {{project}}, including technical details, challenges, and an interview-ready answer.
+    code-review:
+      system: |
+        You are a strict code review assistant. Prioritize risks, bugs, edge cases, and missing tests.
+      user: |
+        Please review the following code or design: {{content}}
+
+enhancement:
+  langchain4j:
+    # Legacy demo only. Agent/RAG/Tool orchestration belongs in rag-agent-service.
+    enabled: ${ENHANCEMENT_LANGCHAIN4J_ENABLED:false}
+    base-url: https://api.deepseek.com
+    api-key: ${DEEPSEEK_API_KEY:}
+    model-name: deepseek-v4-flash
+    timeout: 60s
+
+rag-agent:
+  # Legacy reverse proxy only. Production Agent services call the gateway for model access.
+  enabled: ${RAG_AGENT_ENABLED:false}
+  base-url: ${RAG_AGENT_BASE_URL:http://localhost:8000}
+  api-key: ${RAG_AGENT_API_KEY:dev-rag-key}
+  connect-timeout: ${RAG_AGENT_CONNECT_TIMEOUT:3s}
+  response-timeout: ${RAG_AGENT_RESPONSE_TIMEOUT:60s}
+  permissions: ${RAG_AGENT_PERMISSIONS:rag:read,document:read}
+
+# Workflow ownership lives outside Gateway. These URLs power only the legacy
+# compatibility facade and asynchronous trace export.
+platform-services:
+  default-tenant: ${PLATFORM_DEFAULT_TENANT:demo-tenant}
+  governance:
+    base-url: ${GOVERNANCE_BASE_URL:http://localhost:8081}
+  control-plane:
+    base-url: ${CONTROL_PLANE_BASE_URL:http://localhost:8082}

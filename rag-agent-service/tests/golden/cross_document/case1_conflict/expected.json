@@ -1,0 +1,38 @@
+{
+  "set_name": "case1_conflict",
+  "note": "临时手编样例(非真实文件)。灌装间洁净度打架 + 张三自操作自复核。含温湿度一致项作假阳性反例。后续须用真实SOP片段替换。",
+  "files": [
+    "A_洁净区管理规程.txt",
+    "B_无菌灌装操作规程.txt"
+  ],
+  "expected_conflicts": [
+    {
+      "topic": "洁净度等级",
+      "files": [
+        "A_洁净区管理规程.txt",
+        "B_无菌灌装操作规程.txt"
+      ],
+      "fileA_says": "灌装间 D 级",
+      "fileB_says": "灌装间 B 级",
+      "type": "数值矛盾",
+      "object": "灌装间"
+    }
+  ],
+  "expected_responsibility_issues": [
+    {
+      "type": "职责分离冲突",
+      "role": "张三",
+      "detail": "在A中既是灌装操作人又是记录复核人，违反职责分离"
+    }
+  ],
+  "should_be_clean": [
+    {
+      "topic": "洁净区温度",
+      "reason": "两份文件均为 18~26℃，一致，不应报矛盾"
+    },
+    {
+      "topic": "洁净区相对湿度",
+      "reason": "两份文件均为 45%~65%，一致，不应报矛盾"
+    }
+  ]
+}

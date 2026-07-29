@@ -1,0 +1,1 @@
+"""rag-query-api application."""

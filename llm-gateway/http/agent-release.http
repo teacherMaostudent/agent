@@ -1,0 +1,35 @@
+### Run Agent through Gateway
+POST http://localhost:8080/v1/agent/run
+X-Api-Key: dev-demo-key
+X-Request-Id: agent-e2e-001
+Content-Type: application/json
+
+{
+  "task": "检索审计追踪和记录保存要求，引用证据后回答",
+  "session_id": "debug-session-001",
+  "max_steps": 6,
+  "metadata": {"business": "gmp-review"}
+}
+
+### Start canary after an existing Judge Run passed
+POST http://localhost:8080/admin/releases
+Authorization: Basic admin admin123
+Content-Type: application/json
+
+{
+  "routeName": "deepseek-v4-flash",
+  "canaryTarget": "qwen:qwen-plus",
+  "judgeRunId": "replace-with-judge-run-id",
+  "canaryPercent": 5
+}
+
+### Monitor and automatically promote/rollback
+POST http://localhost:8080/admin/releases/replace-with-release-id/monitor
+Authorization: Basic admin admin123
+
+### Manual rollback
+POST http://localhost:8080/admin/releases/replace-with-release-id/rollback
+Authorization: Basic admin admin123
+Content-Type: application/json
+
+{"reason":"manual rollback during verification"}

@@ -1,0 +1,17 @@
+services:
+  agent-governance:
+    build:
+      context: .
+    image: agent-governance:local
+    environment:
+      GOVERNANCE_ENVIRONMENT: local
+      GOVERNANCE_DATABASE_PATH: /data/governance.db
+      GOVERNANCE_ENFORCE_AUDITOR_ROLE: "false"
+    ports:
+      - "8081:8081"
+    volumes:
+      - governance-data:/data
+    restart: unless-stopped
+
+volumes:
+  governance-data:

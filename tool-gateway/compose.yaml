@@ -1,0 +1,29 @@
+services:
+  tool-gateway:
+    build: .
+    restart: unless-stopped
+    environment:
+      TOOL_GATEWAY_DATABASE_PATH: /service/data/tool-gateway.db
+      TOOL_GATEWAY_TOOLS_CONFIG_PATH: /service/config/tools.json
+      TOOL_GATEWAY_REQUIRE_SERVICE_AUTH: "true"
+      TOOL_GATEWAY_SERVICE_API_KEY: ${TOOL_GATEWAY_SERVICE_API_KEY:?set TOOL_GATEWAY_SERVICE_API_KEY}
+      TOOL_GATEWAY_ADMIN_API_KEY: ${TOOL_GATEWAY_ADMIN_API_KEY:?set TOOL_GATEWAY_ADMIN_API_KEY}
+      TOOL_GATEWAY_ALLOW_PRIVATE_NETWORKS: "true"
+    volumes:
+      - tool-gateway-data:/service/data
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8090/api/v1/health/ready')",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  tool-gateway-data:

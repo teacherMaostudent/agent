@@ -1,0 +1,534 @@
+@baseUrl = http://localhost:8080
+@adminAuth = Basic YWRtaW46YWRtaW4xMjM=
+
+### Non-streaming chat through local gateway - DeepSeek
+POST {{baseUrl}}/v1/chat/completions
+Content-Type: application/json
+X-User-Id: demo
+X-Trace-Id: trace-demo-001
+X-Agent-Id: rag-agent-service
+X-Agent-Version: 1.0.0
+X-Session-Id: session-demo-001
+X-Run-Id: run-demo-001
+X-Purpose: gmp-compliance-review
+X-Cost-Budget: 1.00
+
+{
+  "model": "deepseek-v4-flash",
+  "messages": [
+    {"role": "system", "content": "You are a concise AI engineering assistant."},
+    {"role": "user", "content": "解释一下 LLM Gateway 的价值。"}
+  ],
+  "temperature": 0.2
+}
+
+### Streaming chat through local gateway - DeepSeek
+POST {{baseUrl}}/v1/chat/completions
+Content-Type: application/json
+Accept: text/event-stream
+X-User-Id: demo
+X-Trace-Id: trace-demo-stream-001
+X-Agent-Id: rag-agent-service
+X-Agent-Version: 1.0.0
+X-Session-Id: session-demo-001
+X-Run-Id: run-demo-stream-001
+X-Purpose: gmp-compliance-review
+X-Cost-Budget: 1.00
+
+{
+  "model": "deepseek-v4-flash",
+  "messages": [
+    {"role": "user", "content": "用要点输出 WebFlux SSE 的实现注意事项。"}
+  ],
+  "stream": true
+}
+
+### Non-streaming chat through local gateway - OpenAI fallback route
+POST {{baseUrl}}/v1/chat/completions
+Content-Type: application/json
+X-User-Id: demo
+
+{
+  "model": "gpt-4o-mini",
+  "messages": [
+    {"role": "user", "content": "解释一下模型路由和 fallback。"}
+  ],
+  "temperature": 0.2
+}
+
+### Legacy only: LangChain4j enhanced chat (requires ENHANCEMENT_LANGCHAIN4J_ENABLED=true)
+POST {{baseUrl}}/v1/enhanced/chat
+Content-Type: application/json
+
+{
+  "message": "结合知识库说明这个 LLM Gateway 的架构，并调用工具列出当前支持的能力。"
+}
+
+### Qwen chat through OpenAI-compatible gateway
+POST {{baseUrl}}/v1/chat/completions
+Content-Type: application/json
+X-User-Id: demo
+
+{
+  "model": "qwen-plus",
+  "messages": [
+    {"role": "user", "content": "用三点说明千问接入 LLM Gateway 的价值。"}
+  ],
+  "temperature": 0.2
+}
+
+### Kimi chat through OpenAI-compatible gateway
+POST {{baseUrl}}/v1/chat/completions
+Content-Type: application/json
+X-User-Id: demo
+
+{
+  "model": "kimi-chat",
+  "messages": [
+    {"role": "user", "content": "说明 Kimi 长上下文模型适合放在网关里的哪些场景。"}
+  ],
+  "temperature": 0.2
+}
+
+### Claude chat through Anthropic Messages API adapter
+POST {{baseUrl}}/v1/chat/completions
+Content-Type: application/json
+X-User-Id: demo
+
+{
+  "model": "claude-sonnet-4",
+  "messages": [
+    {"role": "system", "content": "You are a senior Java backend architect."},
+    {"role": "user", "content": "解释为什么 Claude 需要单独的 Anthropic client，而不是复用 OpenAI-compatible client。"}
+  ],
+  "max_tokens": 1024,
+  "temperature": 0.2
+}
+
+### LangChain4j enhanced chat - cost tool
+POST {{baseUrl}}/v1/enhanced/chat
+Content-Type: application/json
+
+{
+  "message": "帮我估算一次调用成本：输入 2000 token，输出 800 token，输入单价 0.00015，输出单价 0.00060。"
+}
+
+### Usage snapshot
+GET {{baseUrl}}/v1/usage/me
+X-User-Id: demo
+
+### Chat with tenant API key
+POST {{baseUrl}}/v1/chat/completions
+Content-Type: application/json
+X-Api-Key: dev-demo-key
+
+{
+  "model": "deepseek-v4-flash",
+  "messages": [
+    {"role": "user", "content": "说明多租户 API Key 管理在 LLM Gateway 里的作用。"}
+  ],
+  "temperature": 0.2
+}
+
+### Chat with prompt template
+POST {{baseUrl}}/v1/chat/completions
+Content-Type: application/json
+X-Api-Key: dev-demo-key
+
+{
+  "model": "deepseek-v4-flash",
+  "prompt_template": "interview-answer",
+  "variables": {
+    "topic": "LLM Gateway 的请求缓存、灰度路由和熔断限流",
+    "project": "Java Spring Boot WebFlux 自研大模型网关"
+  },
+  "temperature": 0.2
+}
+
+### Admin overview
+GET {{baseUrl}}/admin/overview
+Authorization: {{adminAuth}}
+
+### Admin providers
+GET {{baseUrl}}/admin/providers
+Authorization: {{adminAuth}}
+
+### Admin routes
+GET {{baseUrl}}/admin/routes
+Authorization: {{adminAuth}}
+
+### Admin API keys
+GET {{baseUrl}}/admin/api-keys
+Authorization: {{adminAuth}}
+
+### Admin prompt templates
+GET {{baseUrl}}/admin/prompt-templates
+Authorization: {{adminAuth}}
+
+### Admin cache stats
+GET {{baseUrl}}/admin/cache
+Authorization: {{adminAuth}}
+
+### Admin clear cache
+DELETE {{baseUrl}}/admin/cache
+Authorization: {{adminAuth}}
+
+### Admin model health and circuit state
+GET {{baseUrl}}/admin/models/health
+Authorization: {{adminAuth}}
+
+### Admin cost report
+GET {{baseUrl}}/admin/reports/cost
+Authorization: {{adminAuth}}
+
+### Admin daily cost report
+GET {{baseUrl}}/admin/reports/cost/daily
+Authorization: {{adminAuth}}
+
+### Admin model performance report - TTFT/TPOT/QPS/Tokens/s/error/timeout
+GET {{baseUrl}}/admin/reports/performance
+Authorization: {{adminAuth}}
+
+### Admin daily model performance report
+GET {{baseUrl}}/admin/reports/performance/daily
+Authorization: {{adminAuth}}
+
+### Admin hot update model under existing provider
+PUT {{baseUrl}}/admin/providers/deepseek/models/deepseek-test
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "upstreamModel": "deepseek-v4-flash",
+  "inputPricePer1k": 0.0,
+  "outputPricePer1k": 0.0
+}
+
+### Admin hot update route
+PUT {{baseUrl}}/admin/routes/deepseek-test
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "primary": "deepseek:deepseek-test",
+  "fallbacks": [
+    "deepseek:deepseek-v4-flash"
+  ]
+}
+
+### Admin evaluation snapshot
+GET {{baseUrl}}/admin/eval
+Authorization: {{adminAuth}}
+
+### Admin upsert prompt version
+PUT {{baseUrl}}/admin/eval/prompt-versions
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "name": "gateway-answer",
+  "version": "v1",
+  "model": "deepseek-v4-flash",
+  "parameters": {
+    "temperature": 0.2
+  },
+  "template": "请基于上下文回答问题，并指出依据。"
+}
+
+### Admin upsert retrieval strategy
+PUT {{baseUrl}}/admin/eval/retrieval-strategies
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "name": "default-rag",
+  "embeddingModel": "bge-m3",
+  "vectorStore": "milvus",
+  "topK": 5,
+  "scoreThreshold": 0.6,
+  "rerank": true
+}
+
+### Admin upsert golden case
+PUT {{baseUrl}}/admin/eval/golden-dataset
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "question": "LLM Gateway 的核心价值是什么？",
+  "groundTruth": "统一接入、路由、限额、缓存、成本统计、观测和安全治理。",
+  "contexts": [
+    "LLM Gateway 统一封装多模型调用，并提供路由、fallback、限额和成本治理。"
+  ],
+  "tags": ["gateway", "cost"]
+}
+
+### Admin run regression
+POST {{baseUrl}}/admin/eval/regression-runs
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "promptVersionId": "gateway-answer-v1",
+  "retrievalStrategyId": "default-rag",
+  "answerByQuestion": {
+    "LLM Gateway 的核心价值是什么？": "统一接入多模型，提供路由、限额、缓存、成本和观测治理。"
+  }
+}
+
+### Upsert a versioned LLM Judge rubric
+PUT {{baseUrl}}/admin/eval/judge-rubrics
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "id": "gateway-rag-v1",
+  "name": "LLM Gateway RAG 质量量表",
+  "version": "1.0.0",
+  "instructions": "重点检查答案是否基于上下文，以及是否正确说明网关治理能力。",
+  "passScore": 75,
+  "dimensions": [
+    {"name":"correctness","description":"事实和结论正确","weight":0.35,"minimumScore":70},
+    {"name":"faithfulness","description":"关键主张有上下文支持","weight":0.30,"minimumScore":75},
+    {"name":"relevance","description":"直接回答问题","weight":0.15,"minimumScore":65},
+    {"name":"completeness","description":"覆盖关键要求","weight":0.10,"minimumScore":60},
+    {"name":"safetyCompliance","description":"遵守安全和合规边界","weight":0.10,"minimumScore":80}
+  ]
+}
+
+### Run candidate generation, two Judges and conditional arbitration
+POST {{baseUrl}}/admin/eval/judge-runs
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "candidateModel": "deepseek-v4-flash",
+  "caseIds": [],
+  "rubricId": "gateway-rag-v1",
+  "promptVersionId": "gateway-answer-v1",
+  "retrievalStrategyId": "default-rag",
+  "candidateAnswers": {},
+  "metadata": {"source":"idea-http-client"}
+}
+
+> {% client.global.set("judgeRunId", response.body.id); %}
+
+### Apply deterministic CI quality gate to the Judge run
+POST {{baseUrl}}/admin/eval/judge-runs/{{judgeRunId}}/quality-gate
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "minAverageScore": 75,
+  "minPassRate": 0.90,
+  "maxArbitrationRate": 0.50,
+  "maxFailedCases": 0
+}
+
+### User downvote; use the X-Request-Id of a completed chat request
+POST {{baseUrl}}/v1/feedback
+Content-Type: application/json
+
+{
+  "requestId": "replace-with-chat-request-id",
+  "rating": "DOWN",
+  "reason": "遗漏了 fallback 触发条件",
+  "expectedAnswer": "答案应说明超时、限流、熔断和上游异常如何触发 fallback。",
+  "userId": "demo",
+  "metadata": {"source":"idea-http-client"}
+}
+
+### Online evaluation governance snapshot
+GET {{baseUrl}}/admin/eval/governance
+Authorization: {{adminAuth}}
+
+### Manually judge a sample from the sample pool
+POST {{baseUrl}}/admin/eval/governance/samples/replace-with-request-id/judge
+Authorization: {{adminAuth}}
+
+### Confirm a medium-confidence sample as Bad Case
+POST {{baseUrl}}/admin/eval/governance/samples/replace-with-request-id/review
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "action": "CONFIRM_BAD_CASE",
+  "reviewer": "qa-reviewer",
+  "rootCause": "Prompt 没有要求说明 fallback 的触发边界",
+  "expectedAnswer": "需要覆盖超时、限流、熔断和上游异常。",
+  "notes": "确认生成 Golden 候选"
+}
+
+### Approve Golden candidate; high-risk candidate requires expertApproval=true
+POST {{baseUrl}}/admin/eval/governance/golden-candidates/replace-with-candidate-id/review
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "action": "APPROVE",
+  "reviewer": "domain-expert",
+  "standardAnswer": "经专家确认的标准答案",
+  "notes": "证据与业务规则核对通过",
+  "expertApproval": true
+}
+
+### Compliance review
+POST {{baseUrl}}/v1/compliance/reviews
+Content-Type: application/json
+X-Api-Key: dev-demo-key
+
+{
+  "businessId": "BATCH-2026-001",
+  "documentType": "batch-record",
+  "content": "Temperature excursion occurred but no deviation was opened and product was released.",
+  "reviewerHint": "请重点关注偏差、放行和 CAPA 风险。",
+  "model": "deepseek-v4-flash",
+  "metadata": {
+    "site": "demo-site"
+  }
+}
+
+### Admin compliance snapshot
+GET {{baseUrl}}/admin/compliance
+Authorization: {{adminAuth}}
+
+### Admin compliance reviews
+GET {{baseUrl}}/admin/compliance/reviews
+Authorization: {{adminAuth}}
+
+### Admin compliance audit logs
+GET {{baseUrl}}/admin/compliance/audit-logs
+Authorization: {{adminAuth}}
+
+### Engineering governance overview
+GET {{baseUrl}}/admin/engineering
+Authorization: {{adminAuth}}
+
+### Create bad case
+POST {{baseUrl}}/admin/engineering/bad-cases
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "title": "模型没有按 JSON 输出",
+  "model": "deepseek-v4-flash",
+  "prompt": "请输出风险等级和 CAPA 建议，必须是 JSON。",
+  "modelParameters": {
+    "temperature": 0.7
+  },
+  "modelOutput": "这个问题风险比较高，建议人工复核。",
+  "expectedOutput": "{\"riskLevel\":\"HIGH\",\"capa\":{\"correctiveAction\":\"...\"}}",
+  "locationMethod": "对比 JSON Schema 校验失败日志和模型原始输出定位",
+  "rootCause": "Prompt 约束不够明确，且没有启用 response_format/json_object",
+  "fixStrategy": "降低 temperature，补充 required JSON schema，增加后处理校验",
+  "evaluationEvidence": "Golden Dataset 20 条用例中 JSON 合法率从 65% 提升到 95%",
+  "owner": "demo",
+  "tags": ["prompt", "json-schema", "bad-case"]
+}
+
+### Upsert output contract
+PUT {{baseUrl}}/admin/engineering/output-contracts
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "id": "compliance-risk-json",
+  "name": "合规风险 JSON 输出契约",
+  "description": "约束模型必须输出风险等级、摘要、缺陷列表和 CAPA 建议。",
+  "requiredFields": ["riskLevel", "summary", "defects", "capa"],
+  "schemaExample": {
+    "riskLevel": "HIGH",
+    "summary": "发现放行前未关闭偏差。",
+    "defects": [],
+    "capa": {}
+  }
+}
+
+### Validate output by contract
+POST {{baseUrl}}/admin/engineering/output-contracts/compliance-risk-json/validate
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "riskLevel": "HIGH",
+  "summary": "发现放行前未关闭偏差。",
+  "defects": [],
+  "capa": {
+    "correctiveAction": "补开偏差并完成影响评估"
+  }
+}
+
+### Upsert post-process chain
+PUT {{baseUrl}}/admin/engineering/post-process-chains
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "id": "compliance-json-guard",
+  "name": "合规审查后处理链",
+  "steps": [
+    "strip-markdown-code-fence",
+    "parse-json",
+    "validate-required-fields",
+    "normalize-risk-level",
+    "high-risk-force-human-review"
+  ]
+}
+
+### Record prompt experiment
+POST {{baseUrl}}/admin/engineering/prompt-experiments
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "promptVersionId": "compliance-risk-v2",
+  "model": "deepseek-v4-flash",
+  "parameters": {
+    "temperature": 0.0,
+    "response_format": "json_object"
+  },
+  "badCaseId": "manual-demo",
+  "beforeOutput": "风险较高，建议人工复核。",
+  "afterOutput": "{\"riskLevel\":\"HIGH\",\"summary\":\"...\",\"defects\":[],\"capa\":{}}",
+  "metricSummary": {
+    "jsonValidRate": 0.95,
+    "schemaPassRate": 0.9
+  },
+  "conclusion": "Prompt 版本 v2 加入 JSON Schema 和 few-shot 后，结构化稳定性明显提升。"
+}
+
+### Write project memory rule
+POST {{baseUrl}}/admin/engineering/memory
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "layer": "project",
+  "scopeId": "llm-gateway",
+  "content": "Admin 接口必须开启鉴权；模型输出进入业务库前必须经过结构化校验。",
+  "metadata": {
+    "source": "project-rule"
+  }
+}
+
+### Write reflection memory note
+POST {{baseUrl}}/admin/engineering/memory
+Authorization: {{adminAuth}}
+Content-Type: application/json
+
+{
+  "layer": "reflection",
+  "scopeId": "bad-case-review",
+  "content": "反思结果只用于评估和改进 Prompt，不直接注入普通用户上下文，避免污染回答。",
+  "metadata": {
+    "source": "bad-case-retrospective"
+  }
+}
+
+### Read isolated memory context
+GET {{baseUrl}}/v1/memory/context?sessionId=demo-session
+X-User-Id: demo
+
+### Redis structure demo
+POST {{baseUrl}}/admin/engineering/redis/demo?userId=demo&sessionId=demo-session
+Authorization: {{adminAuth}}
