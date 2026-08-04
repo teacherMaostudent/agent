@@ -1,3 +1,10 @@
+"""Transactional local persistence for approvals, idempotency and audit events.
+
+The production PostgreSQL repository has the same ownership model.  Approval
+consumption and idempotency claims are serialized so concurrent invocations
+cannot duplicate a protected external side effect.
+"""
+
 from __future__ import annotations
 
 import json
@@ -67,6 +74,7 @@ class SqliteRepository:
         request_hash: str,
         expires_at: datetime,
     ) -> IdempotencyClaim:
+        """Atomically claim a key or return its completed response for replay."""
         now = _now().isoformat()
         with self._lock:
             self.connection.execute("BEGIN IMMEDIATE")

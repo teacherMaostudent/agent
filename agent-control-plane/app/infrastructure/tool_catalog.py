@@ -1,3 +1,9 @@
+"""Release-time verification that published tool bindings actually exist.
+
+The Runtime only receives a snapshot after this validation passes in production,
+preventing an agent release from naming a deleted or unreviewed tool version.
+"""
+
 from __future__ import annotations
 
 import json

@@ -1,3 +1,10 @@
+"""Durable document facade with an in-memory read model.
+
+Persistence is written before the document is returned, while the local cache
+is rebuilt defensively.  Invalid historical data is skipped rather than making
+the entire RAG process unavailable at start-up.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -18,6 +25,7 @@ class DurableRepository(InMemoryRepository):
         self._load_all()
 
     def _load_all(self) -> None:
+        """Restore valid persisted documents without trusting corrupted records."""
         for payload in self._kv.all(_KIND_DOCUMENT):
             try:
                 document = Document(**payload)

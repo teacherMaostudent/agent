@@ -1,3 +1,9 @@
+"""Explicit, bounded DLQ replay command.
+
+Replay is opt-in and resets the delivery-attempt header only for records chosen
+by the operator.  It never drains a DLQ implicitly during consumer start-up.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -10,6 +16,7 @@ from app.infrastructure.kafka_consumer import _event
 
 
 async def replay(settings: Settings, event_id: str, max_records: int) -> int:
+    """Republish selected dead-letter events through normal idempotent ingestion."""
     consumer = AIOKafkaConsumer(
         settings.kafka_dlq_topic,
         bootstrap_servers=settings.kafka_bootstrap_servers,

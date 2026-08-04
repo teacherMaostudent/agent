@@ -1,3 +1,9 @@
+"""Local admission controls for tool calls.
+
+These controls fail closed before a side effect starts.  They complement, but
+do not replace, distributed rate limiting at the platform edge.
+"""
+
 from __future__ import annotations
 
 from collections import defaultdict, deque

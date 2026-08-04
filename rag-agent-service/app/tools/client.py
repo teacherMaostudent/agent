@@ -1,3 +1,9 @@
+"""Authenticated Tool Gateway client used by the Runtime graph.
+
+The client derives stable idempotency keys from an agent step and forwards the
+execution context; it does not perform local authorization or side effects.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -65,6 +71,7 @@ class ToolGatewayClient:
         return payload
 
     def execute(self, name: str, arguments: dict, context: ToolContext):
+        """Invoke one catalogued version with a deterministic replay key."""
         idempotency_key = _idempotency_key(context.request_id, name, arguments)
         headers = self._headers(
             context.tenant_id,

@@ -1,3 +1,9 @@
+"""Versioned tool catalog boundary.
+
+Only catalogued versions can be resolved.  Runtime plans therefore cannot
+escalate privileges by naming an adapter that was not published for the tenant.
+"""
+
 from __future__ import annotations
 
 import json

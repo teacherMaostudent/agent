@@ -12,6 +12,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+/**
+ * PostgreSQL-backed state for cache and operational documents.
+ *
+ * <p>JSON is stored as JSONB so callers can evolve document shapes without a
+ * schema migration, while cache reads still enforce expiry in SQL rather than
+ * trusting application memory across gateway replicas.</p>
+ */
 @Repository
 @ConditionalOnProperty(prefix = "gateway.persistence", name = "enabled", havingValue = "true")
 public class RuntimeStateRepository {
@@ -74,6 +81,8 @@ public class RuntimeStateRepository {
                 (rs, rowNum) -> fromJson(rs.getString("response_payload"), JsonNode.class),
                 cacheKey);
         if (result.isEmpty()) {
+            // Delete expired data on a miss so an absent background cleanup job
+            // cannot make the cache table grow without bound.
             jdbcTemplate.update("DELETE FROM llm_request_cache WHERE cache_key = ? OR expires_at <= CURRENT_TIMESTAMP", cacheKey);
             return Optional.empty();
         }
@@ -81,6 +90,8 @@ public class RuntimeStateRepository {
     }
 
     public void putCache(String cacheKey, String tenantId, JsonNode response, Instant expiresAt) {
+        // The cache key is already tenant-scoped by RequestCacheService; keep
+        // tenant id with the row to preserve an auditable ownership boundary.
         jdbcTemplate.update("""
                         INSERT INTO llm_request_cache(cache_key, tenant_id, response_payload, expires_at)
                         VALUES (?, ?, CAST(? AS JSONB), ?)

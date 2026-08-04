@@ -1,3 +1,10 @@
+"""Compile immutable Control Plane releases into Runtime executable plans.
+
+Compilation is the compatibility boundary between authoring and execution:
+Runtime accepts an explicit plan, never a mutable draft or loosely interpreted
+release document.
+"""
+
 from __future__ import annotations
 
 import hashlib

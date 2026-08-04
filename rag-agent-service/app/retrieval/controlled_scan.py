@@ -55,6 +55,7 @@ class ControlledFileScanner:
     def scan(
         self, scope: str, pattern: str, *, regex: bool = False, glob: str = "**/*"
     ) -> list[ScanMatch]:
+        """Search only approved trees and return bounded, redacted excerpts."""
         # Scope is an allow-list key, never a caller-provided filesystem path.
         # This keeps source/log search useful without granting arbitrary reads.
         if scope not in self.roots:

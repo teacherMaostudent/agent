@@ -16,6 +16,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Enforces an external policy decision after authentication and before model
+ * execution.  An unavailable policy service fails closed because allowing a
+ * request would bypass the tenant's authorization boundary.
+ */
 @Component
 public class OpaAuthorizationWebFilter implements WebFilter, Ordered {
     private final GatewayProperties properties;
@@ -48,6 +53,7 @@ public class OpaAuthorizationWebFilter implements WebFilter, Ordered {
                 .flatMap(document -> allowed(document)
                         ? chain.filter(exchange)
                         : deny(exchange))
+                // A policy outage is not equivalent to an allow decision.
                 .onErrorResume(error -> deny(exchange));
     }
 

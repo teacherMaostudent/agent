@@ -40,6 +40,9 @@ public class GovernanceTracePublisher {
 
     @EventListener
     public void publish(GatewayTraceEvent event) {
+        // Content policy is applied before either export path.  Trace delivery
+        // is intentionally best-effort: a governance outage cannot replay an
+        // already completed LLM request or change its client response.
         ObjectNode payload = objectMapper.valueToTree(event);
         if (!captureContent) {
             payload.set("request", redactContent(payload.path("request").deepCopy()));

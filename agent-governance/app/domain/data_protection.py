@@ -1,3 +1,10 @@
+"""Deterministic redaction and sampling rules for audit/trace persistence.
+
+This module is deliberately model-independent: protection happens before a
+payload reaches durable governance storage, rather than relying on a later
+viewer to hide secrets or personal data.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -25,6 +32,7 @@ _PHONE = re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)")
 
 
 def protect_payload(value: Any, *, capture_content: bool) -> Any:
+    """Redact secrets/PII and replace disabled content capture with a fingerprint."""
     if isinstance(value, dict):
         protected: dict[str, Any] = {}
         for key, item in value.items():
@@ -50,6 +58,7 @@ def classify_payload(*, capture_content: bool, protected: Any) -> str:
 
 
 def sampled(identifier: str, rate: float) -> bool:
+    """Use stable hashing so retries make the same sampling decision."""
     if rate >= 1:
         return True
     if rate <= 0:

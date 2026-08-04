@@ -1,3 +1,9 @@
+"""Hard Runtime resource limits independent of model cooperation.
+
+Reservations happen before LLM/tool calls.  This keeps a stochastic planner
+from exceeding the published budget even if a downstream provider later fails.
+"""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -74,6 +80,7 @@ class BudgetGuard:
         reserved_usd: float,
         actual_usd: float | None,
     ) -> RuntimeBudget:
+        """Replace an estimate with reported cost and fail closed on overrun."""
         if actual_usd is None:
             return budget
         next_cost = max(0.0, budget.spent_cost_usd - reserved_usd + actual_usd)

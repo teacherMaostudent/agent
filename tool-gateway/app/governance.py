@@ -1,3 +1,10 @@
+"""Tool invocation audit publication with an outbox-style failure boundary.
+
+Tool execution must not be retried merely because the audit sink is down.  The
+publisher records the execution outcome locally first and treats downstream
+governance delivery as an independently retryable concern.
+"""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime

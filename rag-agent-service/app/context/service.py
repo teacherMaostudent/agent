@@ -1,3 +1,10 @@
+"""Context assembly with explicit evidence/memory degradation semantics.
+
+Conversation history is tenant-scoped and ranked independently from retrieved
+evidence.  When optional RAG is unavailable the service returns a labelled
+memory-only package, never an unmarked empty evidence result.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -52,6 +59,8 @@ class AgentContextService:
         tenant_id: str = "default",
         user_id: str = "anonymous",
     ) -> None:
+        # Tenant and user are part of the storage key; session ids alone are
+        # not safe isolation boundaries in a multi-tenant runtime.
         self.store.append(self._session_key(tenant_id, user_id, session_id), message)
 
     def messages(
@@ -71,6 +80,7 @@ class AgentContextService:
         return self.store.delete(self._session_key(tenant_id, user_id, session_id))
 
     def assemble(self, request: ContextAssembleRequest) -> ContextPackage:
+        """Produce a deterministic, token-bounded prompt context package."""
         budget = request.token_budget or self.default_token_budget
         with trace.get_tracer(__name__).start_as_current_span("context.assemble") as span:
             messages = self.messages(
@@ -152,6 +162,7 @@ class AgentContextService:
         query: str,
         budget: int,
     ) -> tuple[list[ConversationMessage], list[Evidence], ContextBudgetReport]:
+        """Allocate token budget by ranked value while retaining both context types."""
         ranked_messages = self._rank_messages(messages, query)
         ranked_evidence = self._rank_evidence(evidence, query)
         if not ranked_evidence:

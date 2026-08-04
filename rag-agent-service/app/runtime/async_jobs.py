@@ -1,3 +1,10 @@
+"""Local durable queue for asynchronous Runtime requests.
+
+This development adapter persists submissions before worker dispatch and
+deduplicates by tenant/request id.  Production uses Temporal/Kafka-compatible
+execution paths rather than treating an in-process pool as durable HA.
+"""
+
 from __future__ import annotations
 
 import json
@@ -40,6 +47,7 @@ class AsyncRunQueue:
             self._pool.submit(self._run, json.loads(row["submission_json"]))
 
     def submit(self, submission: dict[str, Any]) -> dict[str, Any]:
+        """Persist first, then schedule; retries with the same request id are replays."""
         now = datetime.now(UTC).isoformat()
         run_id = submission.setdefault("run_id", f"run_{uuid4().hex}")
         with self._lock:

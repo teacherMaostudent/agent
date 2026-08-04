@@ -1,3 +1,9 @@
+"""LangGraph implementation of the bounded Runtime action loop.
+
+LangGraph persists graph control flow; this module adds platform invariants
+around published snapshots, approvals, budgets and untrusted observation data.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable

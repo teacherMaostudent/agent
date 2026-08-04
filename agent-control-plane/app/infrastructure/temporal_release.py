@@ -1,3 +1,10 @@
+"""Temporal ownership for release monitoring, not for release state.
+
+The Control Plane repository is authoritative for release transitions.  This
+workflow only drives periodic monitoring, so Temporal retries cannot invent or
+overwrite a release decision after a worker failover.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +23,7 @@ _monitor: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None
 
 
 def bind_monitor(executor: Callable[[str, str], Awaitable[dict[str, Any]]]) -> None:
+    """Bind the process-local activity implementation at worker start-up."""
     global _monitor
     _monitor = executor
 
@@ -31,6 +39,8 @@ async def monitor_model_release(tenant_id: str, release_id: str) -> dict[str, An
 class ModelReleaseWorkflow:
     @workflow.run
     async def run(self, tenant_id: str, release_id: str, interval_seconds: float) -> str:
+        # The activity is retryable; the release monitor itself must remain
+        # idempotent because a completed activity can be replayed by Temporal.
         while True:
             release = await workflow.execute_activity(
                 "monitor_model_release",
@@ -57,6 +67,8 @@ class TemporalReleaseOrchestrator:
         self._client = self._call(Client.connect(target, namespace=namespace))
 
     def start(self, tenant_id: str, release_id: str, interval_seconds: float) -> None:
+        # A deterministic workflow id turns a duplicate API request into a
+        # Temporal-level conflict instead of starting two release monitors.
         self._call(
             self._client.start_workflow(
                 ModelReleaseWorkflow.run,

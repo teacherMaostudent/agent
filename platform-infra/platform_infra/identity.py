@@ -15,12 +15,12 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 
 class OidcIdentityMiddleware:
-    """Verifies caller identity and reissues trusted internal identity headers.
+    """Validate OIDC JWTs and replace all caller-controlled identity headers.
 
-    Application handlers consume headers for framework compatibility, but
-    those headers are removed and reconstructed only after JWT verification.
+    Application handlers consume headers for framework compatibility, but they
+    are removed and reconstructed only after JWT verification.  Delegated
+    tenant headers are accepted solely from an authenticated workload role.
     """
-    """Validate OIDC JWTs and replace all caller-controlled identity headers."""
 
     def __init__(
         self,
@@ -180,6 +180,7 @@ class WorkloadTokenProvider:
         return {"Authorization": f"Bearer {self.access_token()}"}
 
     def access_token(self) -> str:
+        """Refresh under a lock so concurrent calls cannot stampede the IdP."""
         with self._lock:
             if self._token and monotonic() < self._expires_at:
                 return self._token

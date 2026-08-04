@@ -1,3 +1,10 @@
+"""At-least-once Governance event ingestion with bounded retry and a DLQ.
+
+Offsets are committed only after each batch has either been persisted or
+durably forwarded to retry/DLQ.  Consumers must therefore tolerate duplicate
+events; the Governance repository provides the deduplication boundary.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -14,6 +21,7 @@ from app.domain.models import GovernanceEvent
 
 
 def _event(value: bytes) -> GovernanceEvent:
+    """Normalize direct, outbox and Debezium envelopes into one event contract."""
     document: Any = json.loads(value)
     if isinstance(document, dict) and isinstance(document.get("payload"), dict):
         document = document["payload"]
@@ -42,6 +50,7 @@ def _event(value: bytes) -> GovernanceEvent:
 
 
 async def consume(settings: Settings) -> None:
+    """Consume with idempotent Kafka writes before committing source offsets."""
     container = AppContainer(settings)
     await container.start()
     consumer = AIOKafkaConsumer(
@@ -76,6 +85,9 @@ async def consume(settings: Settings) -> None:
                     try:
                         await container.service.ingest(_event(record.value))
                     except Exception as exc:
+                        # Do not abandon an offset silently: the failed record
+                        # is first made visible to a retry topic or DLQ, then
+                        # the source batch can be committed safely.
                         attempts = _attempts(record.headers) + 1
                         topic = (
                             settings.kafka_retry_topic

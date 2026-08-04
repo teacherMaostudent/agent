@@ -1,3 +1,10 @@
+"""Transactional repository reference implementation for Control Plane.
+
+SQLite is kept for local development and tests.  Its transaction boundaries
+mirror the PostgreSQL adapter: state change and outbox insert occur together so
+downstream consumers can retry delivery without losing the release fact.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -56,6 +63,7 @@ class SqliteRepository:
         return await asyncio.to_thread(operation)
 
     async def acquire_lease(self, lease_name: str, owner_id: str, ttl_seconds: float) -> bool:
+        """Acquire or renew only an expired/self-owned lease using one write transaction."""
         now = datetime.now(UTC)
         expires_at = now + timedelta(seconds=ttl_seconds)
 

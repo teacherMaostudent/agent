@@ -1,3 +1,10 @@
+"""Model-route rollout policy owned by Control Plane.
+
+The service changes a Gateway route only after Governance has accepted the
+quality evidence, and restores the recorded prior route on rollback.  Gateway
+executes route policy but does not own its release lifecycle.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -34,6 +41,7 @@ class ModelReleaseService:
         self._governance = governance
 
     async def start(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        """Start a bounded canary only when the referenced quality gate passed."""
         route_name = _required(request, "routeName")
         target = _required(request, "canaryTarget")
         if ":" not in target:
@@ -64,6 +72,7 @@ class ModelReleaseService:
         return await self._repository.save_model_release(tenant_id, release["id"], release)
 
     async def monitor(self, tenant_id: str, release_id: str) -> dict[str, Any]:
+        """Promote, continue, or roll back using recorded—not inferred—baseline state."""
         release = await self.get(tenant_id, release_id)
         if release["status"] not in {"CANARY_ACTIVE", "MONITORING"}:
             return release

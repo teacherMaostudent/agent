@@ -1,3 +1,9 @@
+"""Model-facing decision boundary for the bounded Agent graph.
+
+The model chooses an action proposal only.  Tool visibility, snapshot policy,
+budgets and final-output validation remain deterministic Runtime controls.
+"""
+
 import json
 from typing import Protocol
 
@@ -33,6 +39,7 @@ class GatewayDecisionEngine:
         self.model = model
 
     def decide(self, state: AgentState, tool_registry: ToolRegistry) -> AgentDecision:
+        """Ask the gateway for one schema-constrained next action proposal."""
         manifests = tool_registry.manifests(
             frozenset(state.get("permissions", [])),
             tenant_id=state["tenant_id"],

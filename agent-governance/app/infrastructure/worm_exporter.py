@@ -1,3 +1,10 @@
+"""Export verified audit history to retention-locked object storage.
+
+The exporter validates the internal hash chain, creates a Merkle commitment and
+signs the export before upload.  A storage object is evidence, not the source
+of truth for the live Governance audit ledger.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -28,6 +35,7 @@ def _merkle_root(hashes: list[str]) -> str:
 
 
 async def export_tenant(settings: Settings, tenant_id: str) -> dict:
+    """Create a signed WORM export only from an internally valid audit chain."""
     container = AppContainer(settings)
     await container.start()
     verification = await container.repository.verify_audit_chain(tenant_id)

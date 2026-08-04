@@ -1,3 +1,9 @@
+"""Evaluation assets, quality gates and privacy-preserving runtime traces.
+
+Governance owns evaluation decisions and retention.  The LLM Gateway reports
+execution facts but never decides whether a release passes a quality gate.
+"""
+
 from __future__ import annotations
 
 import json
@@ -81,10 +87,13 @@ class EvaluationService:
         )
 
     async def record_gateway_trace(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        """Persist an eligible trace only after applying capture and retention policy."""
         request_id = _id(request.get("requestId"))
         success = bool(request.get("success"))
         if success and not sampled(request_id, self._settings.online_trace_sample_rate):
             return {"id": request_id, "status": "NOT_SAMPLED"}
+        # Purging before insert keeps the retention guarantee true even when
+        # the producer is high-volume and no background janitor is running.
         cutoff = (
             datetime.now(UTC)
             - timedelta(days=self._settings.online_trace_retention_days)

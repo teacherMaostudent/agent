@@ -1,3 +1,10 @@
+"""Disposable OpenSearch projection guarded by tenant and user ACL filters.
+
+The projection accelerates retrieval only.  Source documents remain in the
+authoritative repository/object store so an index can be rebuilt or versioned
+without changing published knowledge history.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -75,6 +82,8 @@ class OpenSearchProjection:
             self.publish()
 
     def publish(self) -> None:
+        # Alias swapping gives readers an all-or-nothing index version change;
+        # they never observe a partially rebuilt index as the active corpus.
         current = httpx.get(f"{self.url}/_alias/{self.alias}", auth=self.auth, timeout=10)
         actions: list[dict[str, Any]] = []
         if current.status_code == 200:
@@ -110,6 +119,8 @@ class OpenSearchProjection:
             )
 
     def search(self, request: RagSearchRequest) -> RagSearchResponse:
+        # ACL constraints are filters, not post-processing.  Unauthorized
+        # chunks must not influence scores or candidate counts at all.
         acl_filter = [
             {"term": {"tenant_id": request.tenant_id}},
             {

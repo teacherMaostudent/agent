@@ -1,3 +1,10 @@
+"""Runtime clients and durable run/outbox state.
+
+Control Plane resolution is an authenticated cross-service boundary.  Runtime
+events are persisted with run state so a temporary Governance outage cannot
+erase an execution outcome.
+"""
+
 from __future__ import annotations
 
 import json
@@ -40,6 +47,7 @@ class ControlPlaneClient:
         session_id: str,
         trace_id: str,
     ) -> dict[str, Any]:
+        """Resolve the immutable execution snapshot for one tenant-scoped run."""
         headers = {
             "X-Tenant-Id": tenant_id,
             "X-User-Id": user_id,
