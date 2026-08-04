@@ -1,3 +1,5 @@
+"""Temporal ingestion workflow ownership and worker registration."""
+
 from __future__ import annotations
 
 import asyncio
@@ -28,6 +30,7 @@ async def execute_ingestion_job(job_id: str) -> dict:
 
 @workflow.defn(name="KnowledgeIngestionWorkflow")
 class KnowledgeIngestionWorkflow:
+    """Retry idempotent ingestion activities without duplicating source documents."""
     @workflow.run
     async def run(self, job_id: str, max_attempts: int) -> dict:
         return await workflow.execute_activity(
@@ -45,6 +48,7 @@ class KnowledgeIngestionWorkflow:
 
 
 class TemporalIngestionJobStore:
+    """Submit durable ingestion jobs using deterministic workflow identifiers."""
     def __init__(self, backing, target: str, namespace: str, task_queue: str) -> None:
         self.backing = backing
         self.task_queue = task_queue

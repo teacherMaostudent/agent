@@ -1,3 +1,5 @@
+"""Shared fail-closed Open Policy Agent authorization integration."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -9,6 +11,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 
 class OpaAuthorizer:
+    """Ask OPA for a policy decision; transport errors deny protected actions."""
     """Fail-closed client for a locally replicated OPA policy decision."""
 
     def __init__(self, base_url: str, decision_path: str, timeout: float = 2.0) -> None:
@@ -35,6 +38,7 @@ class OpaAuthorizer:
 
 
 class OpaAuthorizationMiddleware:
+    """Apply OPA after identity middleware has verified caller claims."""
     def __init__(
         self,
         app: ASGIApp,

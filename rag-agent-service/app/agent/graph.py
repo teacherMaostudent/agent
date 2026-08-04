@@ -177,6 +177,7 @@ class AgentGraph:
         return graph
 
     def run(self, initial: AgentState, thread_id: str) -> AgentRunResult:
+        """Execute a resumable published plan and surface approval interrupts safely."""
         config = self._config(thread_id, initial["max_steps"])
         try:
             with trace.get_tracer(__name__).start_as_current_span("agent.graph.run") as span:
@@ -295,6 +296,7 @@ class AgentGraph:
         return "agent"
 
     def _decide(self, state: AgentState) -> dict:
+        """Request one next action after enforcing the run's hard budget limits."""
         self._ensure_active(state)
         budget = self.budget_guard.count_step(self._budget(state))
         if getattr(self.decision_engine, "uses_llm", False):
@@ -446,6 +448,7 @@ class AgentGraph:
         return {"budget": budget.model_dump(mode="json")}
 
     def _tool(self, state: AgentState) -> dict:
+        """Execute an approved manifest and sanitize its output before re-prompting."""
         self._ensure_active(state)
         decision = AgentDecision.model_validate(state["decision"])
         published_version = self._published_tool_version(state, decision.tool_name)

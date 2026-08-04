@@ -1,3 +1,5 @@
+"""Shared S3-compatible object-storage primitives for durable platform artifacts."""
+
 from __future__ import annotations
 
 import hashlib
@@ -10,6 +12,7 @@ import boto3
 
 
 class S3ObjectStorage:
+    """Write tenant-prefixed objects with optional retention-lock semantics."""
     """Content-addressed S3 storage with optional WORM retention."""
 
     def __init__(

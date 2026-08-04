@@ -1,3 +1,5 @@
+"""Outbound adapter implementations behind the Tool Gateway security boundary."""
+
 from __future__ import annotations
 
 import asyncio
@@ -17,12 +19,14 @@ _PATH_ARGUMENT = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 class ToolAdapter(Protocol):
+    """Execute a catalogued tool after Gateway authorization has already passed."""
     async def execute(self, arguments: dict[str, Any], context: InvocationContext) -> Any: ...
 
     async def close(self) -> None: ...
 
 
 class HttpToolAdapter:
+    """HTTP adapter that validates outbound destinations against the tool manifest."""
     def __init__(
         self,
         config: HttpTransport,
@@ -97,6 +101,7 @@ class HttpToolAdapter:
 
 
 class McpToolAdapter:
+    """MCP adapter with explicit server and method bindings from the catalog."""
     """Official MCP SDK client using the production Streamable HTTP transport."""
 
     def __init__(

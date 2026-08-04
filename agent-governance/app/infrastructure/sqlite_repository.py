@@ -1,3 +1,9 @@
+"""Local transactional audit ledger reference implementation.
+
+Production PostgreSQL uses the same append-only ownership and hash-chain
+semantics; this adapter exists for deterministic development and tests.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -14,6 +20,7 @@ T = TypeVar("T")
 
 
 class SqliteRepository:
+    """Serialize audit ledger writes so every tenant chain has one predecessor."""
     def __init__(self, database_path: Path, schema_path: Path) -> None:
         self._database_path = database_path
         self._schema_path = schema_path

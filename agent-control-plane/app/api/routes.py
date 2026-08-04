@@ -1,3 +1,5 @@
+"""Control Plane HTTP surface; handlers delegate state semantics to services."""
+
 from __future__ import annotations
 
 from typing import Annotated, Any
@@ -67,6 +69,7 @@ async def create_agent(
     container: Container,
     trace_id: TraceId,
 ) -> AgentDefinition:
+    """Create a tenant-scoped mutable draft; it is not Runtime-executable yet."""
     return await service(container).create_agent(identity, request, trace_id)
 
 
@@ -95,6 +98,7 @@ async def update_agent_draft(
     container: Container,
     trace_id: TraceId,
 ) -> AgentDefinition:
+    """Apply an optimistic-concurrency draft update using the supplied revision."""
     return await service(container).update_draft(identity, agent_id, request, trace_id)
 
 
@@ -108,6 +112,7 @@ async def validate_agent_draft(
     identity: ManagementIdentity,
     container: Container,
 ) -> ValidationReport:
+    """Return deterministic validation findings without publishing the draft."""
     return await service(container).validate_draft(identity, agent_id)
 
 
@@ -248,6 +253,7 @@ async def resolve_runtime(
     environment: str = Query(default="production"),
     session_id: str = Query(min_length=1, max_length=200),
 ) -> RuntimeResolution:
+    """Return the published snapshot selected for one authenticated Runtime run."""
     return await service(container).resolve_runtime(identity, agent_id, environment, session_id)
 
 

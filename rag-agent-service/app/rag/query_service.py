@@ -1,3 +1,5 @@
+"""RAG query orchestration with ACL-preserving retrieval and reranking."""
+
 from opentelemetry import trace
 
 from app.contracts.rag import RagSearchRequest, RagSearchResponse
@@ -6,6 +8,7 @@ from app.retrieval.controlled_scan import ControlledFileScanner
 
 
 class RagQueryService:
+    """Return evidence only; decision making remains an Agent Runtime concern."""
     """Online retrieval plane. It never parses files or mutates the knowledge base."""
 
     def __init__(

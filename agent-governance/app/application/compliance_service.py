@@ -1,3 +1,5 @@
+"""Governance-owned compliance workflow state and approval evidence."""
+
 from __future__ import annotations
 
 import json
@@ -18,6 +20,7 @@ RISK_LEVELS = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 
 
 class ComplianceService:
+    """Persist compliance cases; it never synchronously controls business execution."""
     """Governance-owned AI review plus explicit human confirmation."""
 
     def __init__(

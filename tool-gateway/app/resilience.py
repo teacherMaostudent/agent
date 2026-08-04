@@ -22,6 +22,7 @@ class FixedWindowRateLimiter:
         self._lock = Lock()
 
     def acquire(self, key: str, limit_per_minute: int) -> None:
+        """Reject above-limit work before any external side effect begins."""
         now = monotonic()
         cutoff = now - 60
         with self._lock:
@@ -72,6 +73,7 @@ class CircuitBreaker:
         self._lock = Lock()
 
     def allow(self, key: str, reset_seconds: float) -> None:
+        """Fail fast while an unhealthy upstream circuit is open."""
         now = monotonic()
         with self._lock:
             state = self._states[key]
@@ -88,6 +90,7 @@ class CircuitBreaker:
             self._states[key] = _CircuitState()
 
     def record_failure(self, key: str, threshold: int) -> None:
+        """Open a circuit only after the catalogued failure threshold is reached."""
         with self._lock:
             state = self._states[key]
             state.consecutive_failures += 1

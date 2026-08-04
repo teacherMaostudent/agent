@@ -1,3 +1,5 @@
+"""HTTP dependency boundaries for management and Runtime callers."""
+
 from __future__ import annotations
 
 import secrets
@@ -29,6 +31,7 @@ def management_identity(
     x_roles: str = Header(default="", alias="X-Roles"),
     x_admin_key: str | None = Header(default=None, alias="X-Control-Plane-Admin-Key"),
 ) -> Identity:
+    """Require a management role before allowing mutable release operations."""
     identity = Identity(tenant_id=x_tenant_id, user_id=x_user_id, roles=x_roles)
     container = get_container(request)
     expected_key = container.settings.admin_api_key
@@ -51,6 +54,7 @@ def runtime_identity(
     x_user_id: str = Header(default="agent-runtime", alias="X-User-Id"),
     x_runtime_key: str | None = Header(default=None, alias="X-Runtime-Key"),
 ) -> Identity:
+    """Authenticate Runtime resolution without granting authoring permissions."""
     container = get_container(request)
     expected_key = container.settings.runtime_api_key
     if expected_key and x_runtime_key != expected_key:

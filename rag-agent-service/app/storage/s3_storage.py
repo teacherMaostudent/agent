@@ -1,3 +1,5 @@
+"""S3-backed document storage with temporary local materialization for parsers."""
+
 from __future__ import annotations
 
 import io
@@ -12,6 +14,7 @@ from platform_infra.object_storage import S3ObjectStorage
 
 
 class S3FileStorage:
+    """Keep raw file bytes outside the RAG index and retrieve them on ingestion."""
     """S3 source-of-truth with a disposable local parser cache."""
 
     def __init__(self, settings: Settings) -> None:

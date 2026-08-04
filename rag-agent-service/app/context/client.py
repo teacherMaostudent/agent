@@ -1,3 +1,5 @@
+"""Context Service transport boundary used by the Runtime graph."""
+
 from typing import Protocol
 
 import httpx
@@ -12,6 +14,7 @@ from app.contracts.context import (
 
 
 class ContextClient(Protocol):
+    """Assemble tenant-scoped prompt context from memory and optional evidence."""
     def assemble(
         self,
         request: ContextAssembleRequest,
@@ -29,6 +32,7 @@ class ContextClient(Protocol):
 
 
 class LocalContextClient:
+    """In-process adapter retained for local deployment and deterministic tests."""
     def __init__(self, service) -> None:
         self.service = service
 
@@ -52,6 +56,7 @@ class LocalContextClient:
 
 
 class HttpContextClient:
+    """Authenticated remote Context Service adapter for distributed Runtime workers."""
     def __init__(
         self,
         base_url: str,

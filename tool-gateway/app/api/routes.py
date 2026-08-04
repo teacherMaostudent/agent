@@ -1,3 +1,5 @@
+"""Tool Gateway HTTP endpoints; invocation semantics remain in the application service."""
+
 from __future__ import annotations
 
 from datetime import datetime

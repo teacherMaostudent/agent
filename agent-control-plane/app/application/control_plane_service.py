@@ -70,6 +70,7 @@ class ControlPlaneService:
         request: AgentCreate,
         trace_id: str,
     ) -> AgentDefinition:
+        """Create an initial draft and its outbox fact in the same transaction."""
         now = utc_now()
         agent = AgentDefinition(
             tenant_id=identity.tenant_id,
@@ -111,6 +112,7 @@ class ControlPlaneService:
         request: AgentDraftUpdate,
         trace_id: str,
     ) -> AgentDefinition:
+        """Reject stale revisions so concurrent editors cannot overwrite each other."""
         current = await self.get_agent(identity, agent_id)
         if current.revision != request.expected_revision:
             raise ConflictError(
@@ -160,6 +162,7 @@ class ControlPlaneService:
         request: AgentVersionPublish,
         trace_id: str,
     ) -> AgentVersion:
+        """Freeze a validated draft only after its bound tool versions are verified."""
         agent = await self.get_agent(identity, agent_id)
         policy = await self.get_tenant_policy(identity)
         report = validate_agent_spec(agent.draft, policy)

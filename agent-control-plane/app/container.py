@@ -1,3 +1,5 @@
+"""Control Plane dependency composition and lifecycle ownership."""
+
 from __future__ import annotations
 
 import asyncio
@@ -16,6 +18,7 @@ from app.infrastructure.tool_catalog import ToolCatalogValidator
 
 
 class AppContainer:
+    """Build adapters once and close them in reverse dependency order."""
     def __init__(self, settings: Settings, *, build_orchestrator: bool = True) -> None:
         self.settings = settings
         self.repository = (
@@ -55,11 +58,13 @@ class AppContainer:
         )
 
     async def start(self) -> None:
+        """Initialize persistence before serving release-management requests."""
         await self.repository.initialize()
         if not self.settings.temporal_enabled:
             self._monitor_task = asyncio.create_task(self._monitor_model_releases())
 
     async def stop(self) -> None:
+        """Release workflow and repository resources during process shutdown."""
         if self._monitor_task:
             self._monitor_task.cancel()
             with suppress(asyncio.CancelledError):

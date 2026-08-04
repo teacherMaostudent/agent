@@ -34,6 +34,7 @@ class ToolRegistry:
         self._versions: dict[str, list[str]] = defaultdict(list)
 
     def register(self, spec: ToolSpec, adapter: ToolAdapter) -> None:
+        """Register one immutable catalog version; duplicates are configuration errors."""
         if spec.key in self._specs:
             raise ValueError(f"tool already registered: {spec.name}:{spec.version}")
         Draft202012Validator.check_schema(spec.input_schema)
@@ -44,6 +45,7 @@ class ToolRegistry:
         self._versions[spec.name].append(spec.version)
 
     def resolve(self, name: str, version: str | None = None) -> tuple[ToolSpec, ToolAdapter]:
+        """Resolve an explicit or latest published version without bypassing the catalog."""
         if version is None:
             versions = self._versions.get(name, [])
             if not versions:
@@ -79,6 +81,7 @@ class ToolRegistry:
         return manifests
 
     def assert_visible(self, spec: ToolSpec, tenant_id: str) -> None:
+        """Enforce tenant allow-lists before an adapter observes invocation input."""
         if not spec.is_enabled_for(tenant_id):
             raise ToolDisabledError(f"unknown tool: {spec.name}")
 

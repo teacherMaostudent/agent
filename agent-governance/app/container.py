@@ -1,3 +1,5 @@
+"""Governance dependency composition and repository lifecycle wiring."""
+
 from __future__ import annotations
 
 from platform_infra.schema_registry import SchemaRegistry
@@ -12,6 +14,7 @@ from app.infrastructure.sqlite_repository import SqliteRepository
 
 
 class AppContainer:
+    """Construct Governance services with one shared persistence boundary."""
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.schema_registry = SchemaRegistry(settings.contracts_schema_dir)

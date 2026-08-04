@@ -1,3 +1,5 @@
+"""Deterministic request analysis and route selection before model execution."""
+
 from __future__ import annotations
 
 import json
@@ -30,6 +32,7 @@ _AMOUNT = re.compile(r"(?:¥|￥|\$)\s?\d+(?:\.\d{1,2})?")
 
 
 class SemanticAnalysis(Protocol):
+    """Expose optional semantic enrichment without changing planner contracts."""
     uses_llm: bool
 
     def analyze(
@@ -38,6 +41,7 @@ class SemanticAnalysis(Protocol):
 
 
 class HeuristicSemanticAnalyzer:
+    """Local deterministic analyzer used when no semantic model is available."""
     uses_llm = False
 
     def analyze(
@@ -115,6 +119,7 @@ class HeuristicSemanticAnalyzer:
 
 
 class GatewaySemanticAnalyzer:
+    """Use a governed LLM Gateway analysis endpoint as an optional enrichment."""
     uses_llm = True
     _SYSTEM = """Analyze an enterprise agent request. Return one JSON object with:
 intent{name,confidence,reason}, entities[{name,value,confidence}], and
@@ -166,6 +171,7 @@ Only select knowledge bases present in the published snapshot. Never invent perm
 
 
 class RuntimePlanner:
+    """Translate request signals into bounded planning metadata, not final actions."""
     def __init__(self, analyzer: SemanticAnalysis) -> None:
         self.analyzer = analyzer
 

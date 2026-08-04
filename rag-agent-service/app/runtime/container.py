@@ -1,3 +1,5 @@
+"""Runtime composition root for graph, harness, persistence and worker adapters."""
+
 import sqlite3
 
 from langgraph.checkpoint.postgres import PostgresSaver
@@ -29,6 +31,7 @@ from app.tools.client import ToolGatewayClient
 
 
 class AgentRuntimeContainer:
+    """Assemble the execution plane without embedding business-agent policy."""
     """Composition root for Runtime; no document repository or retriever is loaded here."""
 
     def __init__(self, *, build_async_queue: bool = True) -> None:

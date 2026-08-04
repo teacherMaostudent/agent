@@ -72,6 +72,7 @@ class ToolExecutionService:
         payload: InvocationRequest,
         context: InvocationContext,
     ) -> InvocationResponse:
+        """Execute only after policy, schema, approval and idempotency gates pass."""
         spec, adapter = self.registry.resolve(name, payload.version)
         preflight_started = monotonic()
         claimed = False
@@ -240,6 +241,7 @@ class ToolExecutionService:
         context: InvocationContext,
         request_hash: str,
     ) -> InvocationResponse | None:
+        """Create or atomically consume an approval bound to this exact request hash."""
         if not payload.approval_id:
             approval = self.repository.get_or_create_approval(
                 ApprovalRecord(
@@ -284,6 +286,7 @@ class ToolExecutionService:
         arguments: dict[str, Any],
         context: InvocationContext,
     ) -> tuple[Any, int]:
+        """Retry only declared-idempotent tools within the caller's remaining deadline."""
         attempts = spec.retry_attempts if spec.idempotent else 1
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
