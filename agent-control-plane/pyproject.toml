@@ -13,8 +13,12 @@ dependencies = [
   "httpx>=0.28,<1",
   "pydantic>=2.11,<3",
   "pydantic-settings>=2.10,<3",
+  "temporalio>=1.18,<2",
   "uvicorn[standard]>=0.35,<1",
 ]
+
+[project.scripts]
+control-plane-temporal-worker = "app.infrastructure.temporal_release:main"
 
 [project.optional-dependencies]
 dev = [

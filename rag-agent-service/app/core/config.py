@@ -9,12 +9,50 @@ class Settings(BaseSettings):
     """Runtime settings loaded from environment variables or .env."""
 
     app_name: str = "rag-agent-service"
+    deployment_environment: str = "local"
     api_prefix: str = "/api/v1"
     data_dir: Path = Path("data")
     # 持久化后端：memory(内存,重启丢,测试默认) | sqlite(落盘,重启不丢)。
     persistence: str = "memory"
+    database_url: str = Field(default="", repr=False)
+    database_schema: str = "rag_platform"
+    temporal_enabled: bool = False
+    temporal_target: str = "localhost:7233"
+    temporal_region_targets: str = ""
+    temporal_namespace: str = "default"
+    temporal_runtime_task_queue: str = "agent-runtime"
+    temporal_worker_region: str = ""
+    temporal_ingestion_task_queue: str = "rag-ingestion"
+    temporal_execution_timeout_seconds: int = Field(default=3600, ge=60)
+    object_storage_backend: str = "local"
+    s3_bucket: str = ""
+    s3_prefix: str = "agent-platform"
+    s3_endpoint_url: str = ""
+    s3_region: str = ""
+    s3_kms_key_id: str = Field(default="", repr=False)
+    search_backend: str = "local"
+    opensearch_url: str = ""
+    opensearch_username: str = ""
+    opensearch_password: str = Field(default="", repr=False)
+    opensearch_index_alias: str = "agent-knowledge-current"
+    opensearch_index_version: str = "v1"
+    oidc_enabled: bool = False
+    oidc_issuer: str = ""
+    oidc_audience: str = "agent-platform"
+    oidc_jwks_url: str = ""
+    oidc_permissions_claim: str = "permissions"
+    workload_token_url: str = ""
+    workload_client_id: str = "rag-platform"
+    workload_client_secret: str = Field(default="", repr=False)
+    workload_audience: str = "agent-platform"
+    workload_scope: str = ""
+    opa_enabled: bool = False
+    opa_base_url: str = "http://localhost:8181"
+    opa_decision_path: str = "agent_platform/allow"
+    redis_url: str = Field(default="", repr=False)
     require_service_auth: bool = False
     service_api_key: str = ""
+    allow_legacy_public_documents: bool = False
     # 所有聊天模型统一经过 llm-gateway。Python 服务只使用网关逻辑模型名，
     # 厂家地址、厂家密钥、路由和 fallback 均由 Java 网关管理。
     llm_gateway_base_url: str = "http://localhost:8080"
@@ -31,11 +69,16 @@ class Settings(BaseSettings):
     rerank_api_key: str = ""
     rerank_timeout: float = 15.0
     rerank_batch_size: int = Field(default=16, ge=1, le=128)
+    scan_roots: dict[str, str] = Field(default_factory=dict)
+    scan_max_file_bytes: int = Field(default=2_000_000, ge=1_024, le=50_000_000)
+    scan_max_files: int = Field(default=200, ge=1, le=10_000)
+    scan_max_results: int = Field(default=200, ge=1, le=10_000)
 
     agent_enabled: bool = True
     agent_model: str = "deepseek-v4-flash"
     agent_max_steps: int = Field(default=8, ge=2, le=30)
     agent_tool_timeout: float = Field(default=20.0, gt=0, le=120)
+    agent_tool_result_max_chars: int = Field(default=12_000, ge=512, le=200_000)
     agent_deadline_seconds: int = Field(default=60, ge=1, le=600)
     agent_attempt_budget: int = Field(default=6, ge=0, le=100)
     agent_max_cost_usd: float = Field(default=1.0, gt=0, le=10_000)
@@ -56,9 +99,16 @@ class Settings(BaseSettings):
     tool_gateway_api_key: str = ""
     tool_gateway_startup_check: bool = False
     internal_service_api_key: str = ""
+    mtls_enabled: bool = False
+    mtls_ca_file: str = ""
+    mtls_cert_file: str = ""
+    mtls_key_file: str = Field(default="", repr=False)
     service_http_timeout: float = Field(default=30.0, gt=0, le=120)
     context_max_messages: int = Field(default=12, ge=1, le=100)
+    context_max_stored_messages: int = Field(default=500, ge=10, le=100_000)
+    context_retention_days: int = Field(default=30, ge=1, le=3_650)
     context_token_budget: int = Field(default=12000, ge=512, le=200000)
+    context_message_budget_ratio: float = Field(default=0.4, ge=0.1, le=0.9)
     ingestion_poll_interval: float = Field(default=1.0, ge=0.1, le=60)
 
     otel_enabled: bool = False
@@ -97,6 +147,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_llm_gateway(self) -> "Settings":
+        if self.temporal_enabled and self.persistence != "postgres":
+            raise ValueError(
+                "RAG_TEMPORAL_ENABLED requires RAG_PERSISTENCE=postgres so workflow "
+                "activities and API replicas share the same durable job/run state"
+            )
         if self.llm_enabled and not self.llm_model.strip():
             raise ValueError("RAG_LLM_MODEL 不能为空")
         if (
@@ -119,6 +174,42 @@ class Settings(BaseSettings):
             raise ValueError(
                 "RAG_SERVICE_API_KEY is required when service auth is enabled"
             )
+        if self.deployment_environment.lower() in {"production", "prod"}:
+            unsafe: list[str] = []
+            if not self.require_service_auth:
+                unsafe.append("RAG_REQUIRE_SERVICE_AUTH must be true")
+            if "*" in self.cors_origins:
+                unsafe.append("RAG_CORS_ORIGINS must not contain '*'")
+            if self.persistence != "postgres" or not self.database_url:
+                unsafe.append("RAG_PERSISTENCE must be postgres and DATABASE_URL is required")
+            if not self.runtime_snapshot_required:
+                unsafe.append("RAG_RUNTIME_SNAPSHOT_REQUIRED must be true")
+            if self.allow_legacy_public_documents:
+                unsafe.append("RAG_ALLOW_LEGACY_PUBLIC_DOCUMENTS must be false")
+            if not self.temporal_enabled:
+                unsafe.append("RAG_TEMPORAL_ENABLED must be true")
+            if self.object_storage_backend != "s3" or not self.s3_bucket:
+                unsafe.append("RAG_OBJECT_STORAGE_BACKEND must be s3 and S3_BUCKET is required")
+            if self.search_backend != "opensearch" or not self.opensearch_url:
+                unsafe.append("RAG_SEARCH_BACKEND must be opensearch")
+            if not self.oidc_enabled or not self.oidc_issuer or not self.oidc_jwks_url:
+                unsafe.append(
+                    "RAG_OIDC_ENABLED, OIDC_ISSUER and OIDC_JWKS_URL are required"
+                )
+            if not self.oidc_permissions_claim.strip():
+                unsafe.append("RAG_OIDC_PERMISSIONS_CLAIM is required")
+            if not self.workload_token_url or not self.workload_client_secret:
+                unsafe.append(
+                    "RAG_WORKLOAD_TOKEN_URL and WORKLOAD_CLIENT_SECRET are required"
+                )
+            if not self.opa_enabled:
+                unsafe.append("RAG_OPA_ENABLED must be true")
+            if not self.redis_url:
+                unsafe.append("RAG_REDIS_URL is required")
+            if self.mtls_enabled and not all((self.mtls_ca_file, self.mtls_cert_file, self.mtls_key_file)):
+                unsafe.append("RAG mTLS certificate paths are required")
+            if unsafe:
+                raise ValueError("Unsafe production configuration: " + "; ".join(unsafe))
         for name, value in {
             "RAG_CONTEXT_SERVICE_BASE_URL": self.context_service_base_url,
             "RAG_RAG_QUERY_BASE_URL": self.rag_query_base_url,
@@ -170,6 +261,10 @@ class Settings(BaseSettings):
     @property
     def runtime_checkpoint_path(self) -> Path:
         return self.data_dir / "runtime_checkpoints.db"
+
+    @property
+    def runtime_jobs_path(self) -> Path:
+        return self.data_dir / "runtime_jobs.db"
 
 
 @lru_cache

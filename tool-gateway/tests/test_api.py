@@ -209,7 +209,9 @@ def test_execution_context_is_preserved_and_emits_durable_event(
     assert received["context"].snapshot_id == "snapshot-1"
     events = client.app.state.container.repository.pending_events()
     assert len(events) == 1
-    assert events[0]["event_type"] == "tool.invocation.completed"
+    assert events[0]["event_type"] == "tool.execution.completed"
+    assert events[0]["payload"]["risk"] == "read_only"
+    assert events[0]["payload"]["approval_granted"] is False
     assert events[0]["payload"]["run_id"] == "run-1"
 
 

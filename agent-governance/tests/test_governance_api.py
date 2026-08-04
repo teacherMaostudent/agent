@@ -15,6 +15,8 @@ def test_ingestion_is_idempotent_and_audits_unapproved_high_risk_tool(
             "subject_type": "agent_run",
             "subject_id": "run-001",
             "tool_name": "payments.refund",
+            "tool_version": "1.0.0",
+            "status": "SUCCEEDED",
             "risk": "write_high_risk",
             "approval_granted": False,
         },
@@ -60,7 +62,15 @@ def test_policy_evaluates_model_region_evidence_cost_and_latency(
         json=event(
             "evt-llm-001",
             "llm.request.completed",
-            {"model": "unapproved-model", "data_region": "us", "run_id": "run-002"},
+            {
+                "request_id": "req-llm-001",
+                "model": "unapproved-model",
+                "data_region": "us",
+                "run_id": "run-002",
+                "cost": 0.1,
+                "cost_currency": "USD",
+                "success": True,
+            },
         ),
     )
     assert llm.status_code == 202
@@ -71,7 +81,14 @@ def test_policy_evaluates_model_region_evidence_cost_and_latency(
         json=event(
             "evt-run-001",
             "agent.run.completed",
-            {"run_id": "run-002", "evidence_count": 0, "cost_usd": 1.2, "latency_ms": 1_100},
+            {
+                "run_id": "run-002",
+                "agent_id": "review-agent",
+                "status": "COMPLETED",
+                "evidence_count": 0,
+                "cost_usd": 1.2,
+                "latency_ms": 1_100,
+            },
         ),
     )
     assert run.status_code == 202
@@ -93,7 +110,13 @@ def test_findings_can_be_resolved_and_tenants_cannot_read_each_other(
         json=event(
             "evt-tool-002",
             "tool.execution.completed",
-            {"tool_name": "payments.refund", "risk": "write_high_risk", "approval_granted": False},
+            {
+                "tool_name": "payments.refund",
+                "tool_version": "1.0.0",
+                "status": "SUCCEEDED",
+                "risk": "write_high_risk",
+                "approval_granted": False,
+            },
         ),
     )
     finding_id = response.json()["finding_ids"][0]

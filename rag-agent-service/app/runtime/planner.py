@@ -18,6 +18,7 @@ from app.runtime.models import (
     SlaAssessment,
     SourcePlan,
 )
+from app.runtime.retrieval_policy import infer_profile, resolve_profile
 
 _EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
@@ -131,9 +132,25 @@ Only select knowledge bases present in the published snapshot. Never invent perm
             "task": state["task"],
             "metadata": state.get("metadata", {}),
             "published_spec": state.get("agent_snapshot", {}).get("spec", {}),
+            "conversation_history": state.get("conversation_history", [])[-12:],
+            "user_context": state.get("user_context", {}),
+            "context_status": state.get("context_status", {}),
+            "published_execution_contract": {
+                "graph_execution_order": state.get("compiled_plan", {}).get(
+                    "graph_execution_order", []
+                ),
+                "graph_node_kinds": state.get("compiled_plan", {}).get(
+                    "graph_node_kinds", {}
+                ),
+                "data_region": state.get("compiled_plan", {}).get("data_region"),
+            },
         }
         result = self.gateway.complete_json(
-            select_logical_model(state.get("agent_snapshot", {}), self.model),
+            select_logical_model(
+                state.get("agent_snapshot", {}),
+                self.model,
+                state.get("compiled_plan", {}),
+            ),
             self._SYSTEM,
             json.dumps(payload, ensure_ascii=False),
             execution_headers=_execution_headers(state),
@@ -158,6 +175,9 @@ class RuntimePlanner:
             "intent": intent.model_dump(mode="json"),
             "entities": [item.model_dump(mode="json") for item in entities],
             "source_plan": source_plan.model_dump(mode="json"),
+            "profile_decision": infer_profile(
+                state["task"], intent.name, state.get("metadata", {})
+            ).model_dump(mode="json"),
         }
 
     def build_plan(self, state: dict[str, Any]) -> ExecutionPlan:
@@ -176,6 +196,15 @@ class RuntimePlanner:
             remaining_cost_usd=budget.remaining_cost_usd,
             feasible=estimated_cost <= budget.remaining_cost_usd,
         )
+        profile_decision = infer_profile(
+            state["task"], intent.name, state.get("metadata", {})
+        )
+        effective_policy = resolve_profile(
+            profile_decision,
+            snapshot=state.get("agent_snapshot", {}),
+            budget=state.get("budget", {}),
+            metadata=state.get("metadata", {}),
+        )
         route = _route(intent, sources, complexity, sla, cost)
         snapshot = state.get("agent_snapshot", {})
         return ExecutionPlan(
@@ -192,6 +221,7 @@ class RuntimePlanner:
             model_policy_version=snapshot.get(
                 "model_policy_version", "local-unversioned"
             ),
+            retrieval_policy=effective_policy.model_dump(mode="json"),
         )
 
 
@@ -324,6 +354,7 @@ def _route(
 
 
 def _execution_headers(state: dict[str, Any]) -> dict[str, str]:
+    budget = state.get("budget", {})
     return {
         "X-Tenant-Id": state["tenant_id"],
         "X-User-Id": state["user_id"],
@@ -338,10 +369,27 @@ def _execution_headers(state: dict[str, Any]) -> dict[str, str]:
             state.get("budget", {}).get("max_attempts", 0)
             - state.get("budget", {}).get("attempts_used", 0)
         ),
+        "X-Cost-Budget": str(
+            max(
+                0.0,
+                float(budget.get("max_cost_usd", 0))
+                - float(budget.get("spent_cost_usd", 0)),
+            )
+        ),
+        "X-Data-Region": str(
+            state.get("compiled_plan", {}).get("data_region") or "unspecified"
+        ),
     }
 
 
-def select_logical_model(snapshot: dict[str, Any], fallback: str) -> str:
+def select_logical_model(
+    snapshot: dict[str, Any],
+    fallback: str,
+    compiled_plan: dict[str, Any] | None = None,
+) -> str:
+    compiled = compiled_plan or {}
+    if compiled.get("logical_model"):
+        return str(compiled["logical_model"])
     spec = snapshot.get("spec", {}) if isinstance(snapshot, dict) else {}
     policy = spec.get("model_policy", {}) if isinstance(spec, dict) else {}
     default_route = policy.get("default_route")

@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
     occurred_at TEXT NOT NULL,
     received_at TEXT NOT NULL,
     payload_json TEXT NOT NULL
+    ,previous_hash TEXT NOT NULL DEFAULT ''
+    ,event_hash TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_sequence

@@ -26,11 +26,16 @@ class IngestionJobProcessor:
 
     def _parse(self, job: IngestionJob) -> dict:
         document = self._document(job)
-        text, metadata = self.container.parser.parse(document.file_path)
+        path = self.container.storage.materialize(document.file_path, document.metadata)
+        text, metadata = self.container.parser.parse(path)
         document.text = text
         document.metadata.update(metadata)
         document.status = "PARSED"
         self.container.repository.save_document(document)
+        self.container.search_projection.index_document(
+            document,
+            self.container.repository.document_chunks(document.document_id),
+        )
         return {"document_id": document.document_id, "text_length": len(text)}
 
     def _ocr(self, job: IngestionJob) -> dict:
@@ -42,11 +47,16 @@ class IngestionJobProcessor:
             document.metadata.update({"ocr_done": done, "ocr_total": total})
             self.container.repository.save_document(document)
 
-        text = self.container.parser._ocr_pdf(document.file_path, progress=progress)
+        path = self.container.storage.materialize(document.file_path, document.metadata)
+        text = self.container.parser._ocr_pdf(path, progress=progress)
         document.text = text
         document.status = "PARSED"
         document.metadata.update({"parser": "rapidocr", "source": "ocr"})
         self.container.repository.save_document(document)
+        self.container.search_projection.index_document(
+            document,
+            self.container.repository.document_chunks(document.document_id),
+        )
         return {"document_id": document.document_id, "text_length": len(text)}
 
     def _reindex(self, job: IngestionJob) -> dict:

@@ -75,6 +75,8 @@ class KnowledgeBinding(StrictModel):
     version: str = Field(min_length=1, max_length=100)
     filters: dict[str, Any] = Field(default_factory=dict)
     top_k: int = Field(default=8, ge=1, le=100)
+    required: bool = True
+    failure_mode: Literal["fail", "memory_only"] = "fail"
 
 
 class ModelRoute(StrictModel):
@@ -110,6 +112,7 @@ class AgentDraftSpec(StrictModel):
     model_policy: ModelPolicy
     runtime_limits: RuntimeLimits = Field(default_factory=RuntimeLimits)
     labels: dict[str, str] = Field(default_factory=dict)
+    retrieval_policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentCreate(StrictModel):
@@ -200,6 +203,7 @@ class ReleaseCreate(StrictModel):
     rollout_percentage: int = Field(default=100, ge=0, le=100)
     tenant_allowlist: list[str] = Field(default_factory=list)
     reason: str = Field(default="", max_length=2_000)
+    quality_gate_run_id: str | None = Field(default=None, max_length=160)
 
 
 class ReleasePromote(StrictModel):
@@ -217,6 +221,8 @@ class ReleaseManifest(StrictModel):
     status: ReleaseStatus
     previous_release_id: str | None = None
     reason: str
+    quality_gate_id: str | None = None
+    quality_gate_metrics: dict[str, Any] = Field(default_factory=dict)
     created_by: str
     created_at: datetime
     updated_at: datetime

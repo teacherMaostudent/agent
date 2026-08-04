@@ -24,10 +24,15 @@ class JobCreateRequest(BaseModel):
 class IngestionJob(BaseModel):
     job_id: str = Field(default_factory=lambda: f"job_{uuid4().hex[:16]}")
     job_type: str
+    tenant_id: str = "default"
+    requested_by: str = "anonymous"
     document_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     status: JobStatus = JobStatus.QUEUED
     attempts: int = 0
+    max_attempts: int = Field(default=3, ge=1, le=20)
+    lease_expires_at: datetime | None = None
+    next_attempt_at: datetime | None = None
     result: dict[str, Any] = Field(default_factory=dict)
     error: str = ""
     created_at: datetime = Field(default_factory=utc_now)

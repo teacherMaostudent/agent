@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -43,6 +43,7 @@ class Identity(StrictModel):
 
 
 class GovernanceEvent(StrictModel):
+    schema_version: Literal["1.0"] = "1.0"
     event_id: str = Field(min_length=1, max_length=160)
     source_service: str = Field(min_length=1, max_length=100)
     event_type: str = Field(min_length=1, max_length=150)
@@ -51,10 +52,41 @@ class GovernanceEvent(StrictModel):
     occurred_at: datetime
     payload: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_canonical_payload(self) -> GovernanceEvent:
+        required = {
+            "agent.run.completed": {"run_id", "agent_id", "status"},
+            "agent.run.interrupted": {"run_id", "agent_id", "status"},
+            "tool.execution.completed": {
+                "tool_name",
+                "tool_version",
+                "status",
+                "risk",
+                "approval_granted",
+            },
+            "llm.request.completed": {
+                "request_id",
+                "model",
+                "data_region",
+                "cost",
+                "cost_currency",
+                "success",
+            },
+        }.get(self.event_type)
+        if required:
+            missing = sorted(required - self.payload.keys())
+            if missing:
+                raise ValueError(
+                    f"{self.event_type} payload is missing canonical fields: {missing}"
+                )
+        return self
+
 
 class AuditEvent(GovernanceEvent):
     sequence: int
     received_at: datetime
+    previous_hash: str = ""
+    event_hash: str = ""
 
 
 class TenantPolicy(StrictModel):

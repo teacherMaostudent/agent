@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import httpx
 from opentelemetry import trace
+from platform_infra.identity import WorkloadTokenProvider
 
 
 class LlmGatewayClient:
@@ -20,11 +21,13 @@ class LlmGatewayClient:
         api_key: str = "",
         user_id: str = "rag-agent-service",
         timeout: float = 60.0,
+        workload_identity: WorkloadTokenProvider | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key.strip()
         self.user_id = user_id.strip() or "rag-agent-service"
         self.timeout = timeout
+        self.workload_identity = workload_identity
         self._last_usage: ContextVar[dict | None] = ContextVar(
             f"llm_gateway_usage_{id(self)}",
             default=None,
@@ -40,6 +43,8 @@ class LlmGatewayClient:
         }
         if self.api_key:
             headers["X-Api-Key"] = self.api_key
+        if self.workload_identity is not None:
+            headers.update(self.workload_identity.authorization_header())
         if execution_headers:
             headers.update(
                 {key: value for key, value in execution_headers.items() if value}
@@ -57,13 +62,17 @@ class LlmGatewayClient:
                 response.raise_for_status()
                 data = response.json()
                 usage = data.get("usage", {}) if isinstance(data, dict) else {}
-                if isinstance(usage, dict):
-                    self._last_usage.set(usage)
+                gateway = data.get("gateway", {}) if isinstance(data, dict) else {}
+                if isinstance(usage, dict) and isinstance(gateway, dict):
+                    self._last_usage.set({**usage, "gateway": gateway})
                 return data
 
     def last_cost_usd(self) -> float | None:
         usage = self._last_usage.get() or {}
-        value = usage.get("cost_usd", usage.get("cost"))
+        gateway = usage.get("gateway", {})
+        if gateway and gateway.get("costCurrency") != "USD":
+            raise ValueError("llm-gateway cost currency must be USD")
+        value = gateway.get("costEstimated", usage.get("cost_usd"))
         return float(value) if isinstance(value, (int, float)) else None
 
     def complete(

@@ -1,6 +1,48 @@
 {
   "tools": [
     {
+      "name": "controlled_scan",
+      "version": "1.0.0",
+      "description": "Scan allow-listed logs, source and text files with bounded literal or safe-regex matching.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "scope": {"type": "string", "minLength": 1, "maxLength": 80},
+          "pattern": {"type": "string", "minLength": 1, "maxLength": 500},
+          "regex": {"type": "boolean"},
+          "glob": {"type": "string", "maxLength": 160}
+        },
+        "required": ["scope", "pattern"],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["scope", "matches"]
+      },
+      "required_permissions": ["file:scan"],
+      "risk": "read_only",
+      "approval_required": false,
+      "enabled_tenants": ["*"],
+      "idempotent": true,
+      "timeout_seconds": 30,
+      "retry_attempts": 1,
+      "rate_limit_per_minute": 60,
+      "breaker_failure_threshold": 5,
+      "breaker_reset_seconds": 30,
+      "transport": {
+        "kind": "http",
+        "url": "http://rag-query-api:8003/api/v1/query/scan",
+        "method": "POST",
+        "argument_location": "json",
+        "static_headers": {},
+        "auth_header": "X-Rag-Agent-Key",
+        "auth_env": "RAG_INTERNAL_SERVICE_API_KEY",
+        "allowed_hosts": ["rag-query-api"],
+        "allow_private_networks": true
+      }
+    },
+    {
       "name": "get_document",
       "version": "1.0.0",
       "description": "Read one parsed enterprise document by document id.",
@@ -36,7 +78,10 @@
         "method": "GET",
         "argument_location": "query",
         "static_headers": {},
-        "allowed_hosts": ["ingestion-api"]
+        "auth_header": "X-Rag-Agent-Key",
+        "auth_env": "RAG_INTERNAL_SERVICE_API_KEY",
+        "allowed_hosts": ["ingestion-api"],
+        "allow_private_networks": true
       }
     },
     {
@@ -83,7 +128,10 @@
         "method": "POST",
         "argument_location": "json",
         "static_headers": {},
-        "allowed_hosts": ["ingestion-api"]
+        "auth_header": "X-Rag-Agent-Key",
+        "auth_env": "RAG_INTERNAL_SERVICE_API_KEY",
+        "allowed_hosts": ["ingestion-api"],
+        "allow_private_networks": true
       }
     }
   ]

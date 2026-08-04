@@ -153,6 +153,10 @@ Content-Type: application/json
 
 Runtime 只持有 Tool Gateway 的服务凭证，不持有审批管理员凭证或下游业务密钥。写工具的幂等键由 `request_id + tool_name + arguments` 稳定派生；高风险工具返回 `PENDING_APPROVAL`，后续由独立审批工作流处理。
 
+每次运行会先从 Context Service 装载会话历史和用户上下文，再执行语义分析，因此历史消息会同时进入规划 Prompt 和每轮 Decision Prompt。需要知识检索时，Runtime 根据发布快照中的 `knowledge_bindings.required` / `failure_mode` 决定 RAG 是否为强依赖；仅当绑定明确配置为可选且 `failure_mode=memory_only` 时，RAG 故障才会降级到纯记忆上下文，强依赖仍会快速失败。
+
+Context Service 使用角色、时间、查询相关性和来源可信度联合排序。`RAG_CONTEXT_MESSAGE_BUDGET_RATIO` 控制消息与证据的初始 Token 配额，未使用配额会按候选分数重新分配。返回的 `budget_report`、每项 `metadata.context_ranking`、`rag_status` 和 `degrade_reason` 可用于调试、观测和审计；入选历史消息最终仍按时间顺序交给模型，避免破坏对话语义。
+
 生产环境设置 `RAG_REQUIRE_SERVICE_AUTH=true` 与 `RAG_SERVICE_API_KEY`，并保证它和 Gateway 的 `RAG_AGENT_API_KEY` 一致。RAG 会使用常量时间比较校验 `X-Rag-Agent-Key`，避免外部请求伪造租户或工具权限头。
 
 Rerank 支持三种模式：

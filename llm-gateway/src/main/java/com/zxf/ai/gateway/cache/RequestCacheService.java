@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.zxf.ai.gateway.config.GatewayProperties;
 import com.zxf.ai.gateway.persistence.RuntimeStateRepository;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -17,7 +19,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 @Component
@@ -25,20 +27,31 @@ public class RequestCacheService {
     private final GatewayProperties properties;
     private final RuntimeStateRepository stateRepository;
     private final Map<String, CacheEntry> entries = new LinkedHashMap<>(128, 0.75f, true);
-    private final Map<String, ReentrantLock> localMutexes = new ConcurrentHashMap<>();
+    private final Map<String, Mono<JsonNode>> inFlight = new ConcurrentHashMap<>();
     private long hits;
     private long misses;
-    private long mutexWaits;
+    private final AtomicLong mutexWaits = new AtomicLong();
 
+    @Autowired
     public RequestCacheService(GatewayProperties properties, ObjectProvider<RuntimeStateRepository> stateRepository) {
+        this(properties, stateRepository.getIfAvailable());
+    }
+
+    RequestCacheService(GatewayProperties properties, RuntimeStateRepository stateRepository) {
         this.properties = properties;
-        this.stateRepository = stateRepository.getIfAvailable();
+        this.stateRepository = stateRepository;
     }
 
     public Mono<JsonNode> cachedOrCompute(String tenantId, JsonNode request, Supplier<Mono<JsonNode>> loader) {
         if (!cacheable(request)) {
             return loader.get();
         }
+        return Mono.defer(() -> cachedOrComputeCacheable(tenantId, request, loader))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private Mono<JsonNode> cachedOrComputeCacheable(
+            String tenantId, JsonNode request, Supplier<Mono<JsonNode>> loader) {
         Optional<JsonNode> cached = get(tenantId, request);
         if (cached.isPresent()) {
             return Mono.just(cached.get());
@@ -47,19 +60,25 @@ public class RequestCacheService {
             return loader.get().doOnNext(response -> put(tenantId, request, response));
         }
         String key = key(tenantId, request);
-        ReentrantLock lock = localMutexes.computeIfAbsent(key, ignored -> new ReentrantLock());
-        mutexWaits++;
-        lock.lock();
-        try {
-            Optional<JsonNode> cachedAfterLock = get(tenantId, request);
-            if (cachedAfterLock.isPresent()) {
-                return Mono.just(cachedAfterLock.get());
-            }
-            return loader.get().doOnNext(response -> put(tenantId, request, response));
-        } finally {
-            lock.unlock();
-            localMutexes.remove(key, lock);
+        Mono<JsonNode> existing = inFlight.get(key);
+        if (existing != null) {
+            mutexWaits.incrementAndGet();
+            return existing;
         }
+        Mono<JsonNode> created = Mono.defer(() -> {
+                    Optional<JsonNode> cachedAfterJoin = get(tenantId, request);
+                    if (cachedAfterJoin.isPresent()) {
+                        return Mono.just(cachedAfterJoin.get());
+                    }
+                    return loader.get().doOnNext(response -> put(tenantId, request, response));
+                })
+                .cache();
+        Mono<JsonNode> winner = inFlight.putIfAbsent(key, created);
+        Mono<JsonNode> selected = winner == null ? created : winner;
+        if (winner != null) {
+            mutexWaits.incrementAndGet();
+        }
+        return selected.doFinally(ignored -> inFlight.remove(key, selected));
     }
 
     public Optional<JsonNode> get(String tenantId, JsonNode request) {
@@ -119,7 +138,7 @@ public class RequestCacheService {
         snapshot.put("ttl", properties.getCache().getTtl().toString());
         snapshot.put("randomTtlJitter", properties.getCache().getRandomTtlJitter().toString());
         snapshot.put("mutexProtectionEnabled", properties.getCache().isMutexProtectionEnabled());
-        snapshot.put("mutexWaits", mutexWaits);
+        snapshot.put("mutexWaits", mutexWaits.get());
         snapshot.put("interviewNotes", Map.of(
                 "cachePenetration", "Cache only accepts valid gateway requests; invalid model routes are rejected before upstream calls.",
                 "cacheBreakdown", "A local mutex prevents many identical misses from calling the upstream model at the same time.",
@@ -139,7 +158,14 @@ public class RequestCacheService {
     }
 
     private boolean cacheable(JsonNode request) {
-        return properties.getCache().isEnabled() && !request.path("stream").asBoolean(false);
+        if (!properties.getCache().isEnabled() || request.path("stream").asBoolean(false)) {
+            return false;
+        }
+        if (properties.getCache().isRequireExplicitOptIn()
+                && !request.path("gateway").path("cacheable").asBoolean(false)) {
+            return false;
+        }
+        return !request.has("tools") && request.path("temperature").asDouble(0.0d) == 0.0d;
     }
 
     private Duration ttlWithJitter() {
@@ -153,7 +179,8 @@ public class RequestCacheService {
     }
 
     private String key(String tenantId, JsonNode request) {
-        String raw = tenantId + ":" + request.toString();
+        String policyVersion = properties.getRoutes().toString() + ":" + properties.getPromptTemplates().toString();
+        String raw = tenantId + ":" + policyVersion + ":" + request.toString();
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             return HexFormat.of().formatHex(digest.digest(raw.getBytes(StandardCharsets.UTF_8)));

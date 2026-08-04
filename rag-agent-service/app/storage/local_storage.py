@@ -31,3 +31,12 @@ class LocalFileStorage:
         path.write_text(markdown, encoding="utf-8")
         return path
 
+    @staticmethod
+    def object_key_for(path: Path) -> None:
+        del path
+        return None
+
+    @staticmethod
+    def materialize(path: Path, metadata: dict) -> Path:
+        del metadata
+        return path

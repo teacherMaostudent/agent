@@ -15,6 +15,7 @@ from app.agent.decision_engine import DecisionEngine
 from app.agent.models import AgentAction, AgentDecision, AgentRunResult, AgentState
 from app.contracts.context import ContextAssembleRequest
 from app.ingestion.chunker import TextChunker
+from app.retrieval.controlled_scan import bound_untrusted
 from app.runtime.budget import BudgetGuard
 from app.runtime.models import (
     ApprovalResume,
@@ -24,6 +25,7 @@ from app.runtime.models import (
     RuntimeLimitExceeded,
 )
 from app.runtime.planner import HeuristicSemanticAnalyzer, RuntimePlanner
+from app.runtime.snapshot_compiler import validate_final_output
 from app.tools.registry import ToolContext, ToolRegistry
 
 
@@ -44,6 +46,16 @@ class _LegacyRetrievalContext:
         del execution_headers
         from app.contracts.context import ContextPackage
 
+        if not request.include_rag:
+            return ContextPackage(
+                session_id=request.session_id,
+                user_context={
+                    "tenant_id": request.tenant_id,
+                    "user_id": request.user_id,
+                },
+                token_budget=12000,
+                estimated_tokens=0,
+            )
         chunks = list(self.repository.regulation_chunks())
         if request.document_id and self.repository.get_document(request.document_id):
             chunks.extend(self.repository.document_chunks(request.document_id))
@@ -67,7 +79,12 @@ class _LegacyRetrievalContext:
 
 
 class AgentGraph:
-    """Bounded decide -> retrieve/tool -> observe loop with a deterministic safety exit."""
+    """Bounded decide -> retrieve/tool -> observe loop with a deterministic safety exit.
+
+    LangGraph provides the durable graph mechanics; this class owns platform
+    semantics: published-plan enforcement, Context assembly, budget checks,
+    approval interrupts and sanitised observations passed back to the model.
+    """
 
     def __init__(
         self,
@@ -98,7 +115,10 @@ class AgentGraph:
         self.graph = self._build().compile(checkpointer=checkpointer or InMemorySaver())
 
     def _build(self):
+        # The plan phase runs before free-form decisioning.  It constrains
+        # reachable knowledge sources and tools to the published snapshot.
         graph = StateGraph(AgentState)
+        graph.add_node("load_memory", self._load_memory)
         graph.add_node("analyze", self._analyze)
         graph.add_node("build_plan", self._build_plan)
         graph.add_node("planned_retrieval_guard", self._retrieval_guard)
@@ -111,7 +131,8 @@ class AgentGraph:
         graph.add_node("clarify", self._clarify)
         graph.add_node("finalize", self._finalize)
         graph.add_node("safety", self._safety)
-        graph.add_edge(START, "analyze")
+        graph.add_edge(START, "load_memory")
+        graph.add_edge("load_memory", "analyze")
         graph.add_edge("analyze", "build_plan")
         graph.add_conditional_edges(
             "build_plan",
@@ -150,9 +171,7 @@ class AgentGraph:
     def run(self, initial: AgentState, thread_id: str) -> AgentRunResult:
         config = self._config(thread_id, initial["max_steps"])
         try:
-            with trace.get_tracer(__name__).start_as_current_span(
-                "agent.graph.run"
-            ) as span:
+            with trace.get_tracer(__name__).start_as_current_span("agent.graph.run") as span:
                 span.set_attribute("agent.thread_id", thread_id)
                 span.set_attribute("tenant.id", initial["tenant_id"])
                 result = self.graph.invoke(initial, config)
@@ -208,6 +227,42 @@ class AgentGraph:
             "execution_trace": self._trace(
                 state, "analyze", {"intent": analysis["intent"]["name"]}
             ),
+        }
+
+    def _load_memory(self, state: AgentState) -> dict:
+        self._ensure_active(state)
+        request = ContextAssembleRequest(
+            session_id=state.get("session_id", state["request_id"]),
+            query=state["task"],
+            tenant_id=state["tenant_id"],
+            user_id=state["user_id"],
+            metadata=state.get("metadata", {}),
+            include_rag=False,
+            rag_required=False,
+        )
+        if self._context_accepts_execution_headers:
+            package = self.context_client.assemble(
+                request, execution_headers=self._execution_headers(state)
+            )
+        else:
+            package = self.context_client.assemble(request)
+        history = [
+            item.model_dump(mode="json")
+            for item in package.recent_messages
+            if not (item.role == "user" and item.content == state["task"])
+        ]
+        return {
+            "conversation_history": history,
+            "user_context": package.user_context,
+            "context_status": {
+                "rag_status": package.rag_status,
+                "degraded": package.degraded,
+                "degrade_reason": package.degrade_reason,
+                "budget_report": (
+                    package.budget_report.model_dump(mode="json") if package.budget_report else None
+                ),
+            },
+            "execution_trace": self._trace(state, "load_memory", {"message_count": len(history)}),
         }
 
     def _build_plan(self, state: AgentState) -> dict:
@@ -277,12 +332,27 @@ class AgentGraph:
 
     def _retrieval_guard(self, state: AgentState) -> dict:
         self._ensure_active(state)
-        budget = self.budget_guard.reserve_retrieval(self._budget(state))
+        current = self._budget(state)
+        policy = state.get("execution_plan", {}).get("retrieval_policy", {})
+        if current.retrieval_rounds >= int(policy.get("max_rounds", current.max_retrieval_rounds)):
+            raise RuntimeLimitExceeded(
+                "RETRIEVAL_PROFILE_LIMIT",
+                "The effective retrieval profile has exhausted its round budget.",
+            )
+        budget = self.budget_guard.reserve_retrieval(current)
         return {"budget": budget.model_dump(mode="json")}
 
     def _do_retrieve(self, state: AgentState, query: str, node_name: str) -> dict:
         self._ensure_active(state)
+        compiled = state.get("compiled_plan", {})
+        knowledge = compiled.get("knowledge", [])
+        policy = state.get("execution_plan", {}).get("retrieval_policy", {})
+        retrieval_top_k = int(
+            policy.get("evidence_top_k")
+            or max((int(item.get("top_k", 8)) for item in knowledge), default=8)
+        )
         with trace.get_tracer(__name__).start_as_current_span("rag.retrieve") as span:
+            no_rag = policy.get("profile") == "NO_RAG"
             context_request = ContextAssembleRequest(
                 session_id=state.get("session_id", state["request_id"]),
                 query=query,
@@ -293,8 +363,12 @@ class AgentGraph:
                 metadata={
                     **state.get("metadata", {}),
                     "runtime_source_plan": state.get("source_plan", {}),
+                    "published_knowledge": knowledge,
+                    "effective_retrieval_policy": policy,
                 },
-                top_k=8,
+                top_k=retrieval_top_k,
+                include_rag=not no_rag,
+                rag_required=False if no_rag else self._rag_required(state),
             )
             if self._context_accepts_execution_headers:
                 package = self.context_client.assemble(
@@ -303,19 +377,35 @@ class AgentGraph:
                 )
             else:
                 package = self.context_client.assemble(context_request)
-            span.set_attribute(
-                "rag.retrieved_documents", len(package.knowledge_evidence)
-            )
+            span.set_attribute("rag.retrieved_documents", len(package.knowledge_evidence))
             span.set_attribute("context.estimated_tokens", package.estimated_tokens)
         evidence = [item.model_dump(mode="json") for item in package.knowledge_evidence]
+        history = [
+            item.model_dump(mode="json")
+            for item in package.recent_messages
+            if not (item.role == "user" and item.content == state["task"])
+        ]
         observation = {
             "type": "retrieval",
             "query": query,
             "result_count": len(evidence),
             "context_truncated": package.truncated,
+            "context_degraded": package.degraded,
+            "rag_status": package.rag_status,
+            "retrieval_profile": policy.get("profile", "STANDARD"),
         }
         return {
             "evidence": [*state.get("evidence", []), *evidence],
+            "conversation_history": history,
+            "user_context": package.user_context,
+            "context_status": {
+                "rag_status": package.rag_status,
+                "degraded": package.degraded,
+                "degrade_reason": package.degrade_reason,
+                "budget_report": (
+                    package.budget_report.model_dump(mode="json") if package.budget_report else None
+                ),
+            },
             "observations": [*state.get("observations", []), observation],
             "execution_trace": self._trace(
                 state,
@@ -323,6 +413,24 @@ class AgentGraph:
                 {"result_count": len(evidence)},
             ),
         }
+
+    @staticmethod
+    def _rag_required(state: AgentState) -> bool:
+        effective = state.get("execution_plan", {}).get("retrieval_policy", {})
+        if "retrieval_required" in effective:
+            return bool(effective["retrieval_required"])
+        metadata = state.get("metadata", {})
+        if "rag_required" in metadata:
+            return bool(metadata["rag_required"])
+        bindings = state.get("compiled_plan", {}).get("knowledge") or (
+            state.get("agent_snapshot", {}).get("spec", {}).get("knowledge", [])
+        )
+        if not bindings:
+            return True
+        return any(
+            bool(item.get("required", True)) and item.get("failure_mode", "fail") != "memory_only"
+            for item in bindings
+        )
 
     def _tool_guard(self, state: AgentState) -> dict:
         self._ensure_active(state)
@@ -335,9 +443,7 @@ class AgentGraph:
         published_version = self._published_tool_version(state, decision.tool_name)
         approval_ids = state.get("metadata", {}).get("tool_approval_ids", {})
         approval_id = (
-            str(approval_ids.get(decision.tool_name, ""))
-            if isinstance(approval_ids, dict)
-            else ""
+            str(approval_ids.get(decision.tool_name, "")) if isinstance(approval_ids, dict) else ""
         )
         context = self._tool_context(state, approval_id, published_version)
         try:
@@ -384,11 +490,14 @@ class AgentGraph:
                 "type": "tool",
                 "tool": decision.tool_name,
                 "success": True,
-                "result": result,
+                "result": bound_untrusted(
+                    result,
+                    int(state.get("metadata", {}).get("tool_result_max_chars", 12_000)),
+                ),
             }
         except GraphInterrupt:
             raise
-        except Exception as exc:  # noqa: BLE001 - tool adapters may raise domain-specific errors
+        except Exception as exc:
             observation = {
                 "type": "tool",
                 "tool": decision.tool_name,
@@ -407,11 +516,7 @@ class AgentGraph:
 
     @staticmethod
     def _after_tool(state: AgentState) -> str:
-        return (
-            "finish"
-            if state.get("termination_reason") == "TOOL_REJECTED"
-            else "continue"
-        )
+        return "finish" if state.get("termination_reason") == "TOOL_REJECTED" else "continue"
 
     @staticmethod
     def _tool_context(
@@ -451,16 +556,16 @@ class AgentGraph:
 
     def _clarify(self, state: AgentState) -> dict:
         return {
-            "final_answer": "Please clarify the request so that its intent can be determined safely.",
+            "final_answer": (
+                "Please clarify the request so that its intent can be determined safely."
+            ),
             "termination_reason": "NEEDS_CLARIFICATION",
             "execution_trace": self._trace(state, "clarify", {}),
         }
 
     def _finalize(self, state: AgentState) -> dict:
         self._ensure_active(state)
-        with trace.get_tracer(__name__).start_as_current_span(
-            "agent.generate_final_answer"
-        ):
+        with trace.get_tracer(__name__).start_as_current_span("agent.generate_final_answer"):
             decision = AgentDecision.model_validate(state["decision"])
             if (
                 state.get("step_count", 0) >= state["max_steps"]
@@ -470,6 +575,7 @@ class AgentGraph:
                     "final_answer": "Unable to complete within the configured agent step budget.",
                     "termination_reason": "MAX_STEPS",
                 }
+            validate_final_output(state.get("compiled_plan", {}), decision.final_answer)
             return {
                 "final_answer": decision.final_answer,
                 "termination_reason": "ANSWERED",
@@ -489,7 +595,12 @@ class AgentGraph:
                 item.get("type") == "tool" and item.get("success")
                 for item in state.get("observations", [])
             )
-            if not state.get("evidence") and not successful_tool:
+            policy = state.get("execution_plan", {}).get("retrieval_policy", {})
+            minimum = int(policy.get("minimum_evidence_count", 0))
+            evidence_count = len(state.get("evidence", []))
+            if evidence_count < minimum and not successful_tool:
+                if policy.get("allow_answer_without_evidence", True):
+                    return {"final_answer": answer, "safety_status": "PASSED_NO_EVIDENCE_ALLOWED"}
                 return {
                     "final_answer": "Insufficient evidence to provide a reliable answer.",
                     "safety_status": "BLOCKED_NO_EVIDENCE",
@@ -526,9 +637,7 @@ class AgentGraph:
         )
 
     @staticmethod
-    def _limited_result(
-        state: dict[str, Any], error: RuntimeLimitExceeded
-    ) -> AgentRunResult:
+    def _limited_result(state: dict[str, Any], error: RuntimeLimitExceeded) -> AgentRunResult:
         return AgentRunResult(
             status="LIMIT_EXCEEDED",
             answer="Unable to complete within the configured runtime limits.",

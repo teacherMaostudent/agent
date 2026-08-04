@@ -263,3 +263,39 @@ def test_tenant_policy_blocks_unapproved_model(
     assert validation.status_code == 200
     assert validation.json()["valid"] is False
     assert "policy.model_not_allowed" in {issue["code"] for issue in validation.json()["issues"]}
+
+
+def test_agent_release_records_governance_quality_gate(
+    client: TestClient,
+    headers: dict[str, str],
+    valid_spec: dict[str, object],
+) -> None:
+    _create_agent(client, headers, valid_spec)
+    version = _publish(client, headers, "3.0.0")
+
+    async def passed_gate(tenant_id: str, run_id: str) -> dict:
+        assert tenant_id == "tenant-a"
+        assert run_id == "judge-run-3"
+        return {
+            "id": "gate-3",
+            "passed": True,
+            "metrics": {"averageScore": 94, "passRate": 1.0},
+            "reasons": [],
+        }
+
+    client.app.state.container.governance_quality.quality_gate = passed_gate
+    response = client.post(
+        "/v1/agents/customer-service/releases",
+        headers=headers,
+        json={
+            "version_id": version["version_id"],
+            "environment": "production",
+            "rollout_percentage": 100,
+            "reason": "quality gated",
+            "quality_gate_run_id": "judge-run-3",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["quality_gate_id"] == "gate-3"
+    assert response.json()["quality_gate_metrics"]["averageScore"] == 94

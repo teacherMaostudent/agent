@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,19 @@ class ContextAssembleRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     top_k: int = Field(default=8, ge=1, le=100)
     token_budget: int | None = Field(default=None, ge=512, le=200000)
+    include_rag: bool = True
+    rag_required: bool = True
+
+
+class ContextBudgetReport(BaseModel):
+    requested_tokens: int
+    message_budget: int
+    evidence_budget: int
+    used_message_tokens: int
+    used_evidence_tokens: int
+    dropped_messages: int = 0
+    dropped_evidence: int = 0
+    strategy: str = "role_recency_relevance_and_source_trust"
 
 
 class ContextPackage(BaseModel):
@@ -33,3 +46,7 @@ class ContextPackage(BaseModel):
     token_budget: int
     estimated_tokens: int
     truncated: bool = False
+    rag_status: Literal["not_requested", "available", "degraded"] = "not_requested"
+    degraded: bool = False
+    degrade_reason: str | None = None
+    budget_report: ContextBudgetReport | None = None

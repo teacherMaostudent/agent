@@ -9,11 +9,12 @@ WORKDIR /service
 RUN groupadd --system governance \
     && useradd --system --gid governance --home-dir /service governance
 
-COPY pyproject.toml README.md ./
-COPY app ./app
-COPY db ./db
+COPY platform-infra /platform-infra
+COPY agent-governance/pyproject.toml agent-governance/README.md ./
+COPY agent-governance/app ./app
+COPY agent-governance/db ./db
 
-RUN pip install . \
+RUN pip install /platform-infra . \
     && mkdir -p /data \
     && chown -R governance:governance /service /data
 

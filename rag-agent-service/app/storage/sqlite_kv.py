@@ -20,16 +20,21 @@ class SqliteKv:
         self._lock = threading.Lock()
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS kv ("
-            "kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, "
+            "kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, "
             "PRIMARY KEY (kind, id))"
         )
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(kv)")}
+        if "version" not in columns:
+            self._conn.execute(
+                "ALTER TABLE kv ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
+            )
         self._conn.commit()
 
     def put(self, kind: str, id: str, payload: dict) -> None:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO kv (kind, id, payload) VALUES (?, ?, ?) "
-                "ON CONFLICT(kind, id) DO UPDATE SET payload = excluded.payload",
+                "ON CONFLICT(kind, id) DO UPDATE SET payload = excluded.payload, version = kv.version + 1",
                 (kind, id, json.dumps(payload, ensure_ascii=False)),
             )
             self._conn.commit()
@@ -41,12 +46,67 @@ class SqliteKv:
             ).fetchone()
         return json.loads(row[0]) if row else None
 
+    def get_with_version(self, kind: str, id: str) -> tuple[dict | None, int]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT payload, version FROM kv WHERE kind = ? AND id = ?",
+                (kind, id),
+            ).fetchone()
+        return (json.loads(row[0]), int(row[1])) if row else (None, 0)
+
+    def put_if_version(
+        self, kind: str, id: str, payload: dict, expected_version: int
+    ) -> bool:
+        encoded = json.dumps(payload, ensure_ascii=False)
+        with self._lock:
+            if expected_version == 0:
+                cursor = self._conn.execute(
+                    "INSERT OR IGNORE INTO kv(kind, id, payload, version) VALUES (?, ?, ?, 1)",
+                    (kind, id, encoded),
+                )
+            else:
+                cursor = self._conn.execute(
+                    "UPDATE kv SET payload = ?, version = version + 1 "
+                    "WHERE kind = ? AND id = ? AND version = ?",
+                    (encoded, kind, id, expected_version),
+                )
+            self._conn.commit()
+            return cursor.rowcount == 1
+
+    def put_many(self, kind: str, items: list[tuple[str, dict]]) -> None:
+        """Persist a batch in one transaction.
+
+        The lightweight compliance pilot uses this for thousands of documents;
+        committing once per document would dominate the actual rule evaluation.
+        """
+        if not items:
+            return
+        rows = [
+            (kind, item_id, json.dumps(payload, ensure_ascii=False))
+            for item_id, payload in items
+        ]
+        with self._lock:
+            self._conn.executemany(
+                "INSERT INTO kv (kind, id, payload) VALUES (?, ?, ?) "
+                "ON CONFLICT(kind, id) DO UPDATE SET payload = excluded.payload, version = kv.version + 1",
+                rows,
+            )
+            self._conn.commit()
+
     def all(self, kind: str) -> list[dict]:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT payload FROM kv WHERE kind = ?", (kind,)
             ).fetchall()
         return [json.loads(r[0]) for r in rows]
+
+    def delete(self, kind: str, id: str) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM kv WHERE kind = ? AND id = ?", (kind, id)
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
 
     def close(self) -> None:
         with self._lock:

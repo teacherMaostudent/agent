@@ -1,0 +1,26 @@
+{
+  "name": "agent-platform-outbox",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "${POSTGRES_USER}",
+    "database.password": "${POSTGRES_PASSWORD}",
+    "database.dbname": "agent_platform",
+    "topic.prefix": "agent-platform",
+    "plugin.name": "pgoutput",
+    "slot.name": "agent_platform_outbox",
+    "publication.autocreate.mode": "filtered",
+    "table.include.list": "control_plane.outbox_events,rag_platform.runtime_outbox,tool_gateway.event_outbox",
+    "column.include.list": "control_plane.outbox_events.*,rag_platform.runtime_outbox.*,tool_gateway.event_outbox.*",
+    "tombstones.on.delete": "false",
+    "transforms": "route",
+    "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
+    "transforms.route.regex": ".*",
+    "transforms.route.replacement": "agent.governance.events.v1",
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+    "heartbeat.interval.ms": "10000"
+  }
+}

@@ -1,3 +1,10 @@
+"""Control Plane write model and release boundary.
+
+This service owns mutable drafts and turns approved versions into immutable
+runtime snapshots.  Runtime never derives execution policy from a draft, so a
+deployment cannot change behaviour halfway through an agent run.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -38,8 +45,24 @@ from app.infrastructure.sqlite_repository import SqliteRepository
 
 
 class ControlPlaneService:
-    def __init__(self, repository: SqliteRepository) -> None:
+    """Coordinates agent definition, publication and promotion transactions.
+
+    External quality gates and the Tool Catalog are checked before a snapshot
+    is made visible.  Repository writes and outbox events stay in the same
+    transaction, which makes downstream governance delivery retryable.
+    """
+    def __init__(
+        self,
+        repository: SqliteRepository,
+        *,
+        governance=None,
+        require_quality_gate: bool = False,
+        tool_catalog_validator=None,
+    ) -> None:
         self._repository = repository
+        self._governance = governance
+        self._require_quality_gate = require_quality_gate
+        self._tool_catalog_validator = tool_catalog_validator
 
     async def create_agent(
         self,
@@ -142,6 +165,25 @@ class ControlPlaneService:
         report = validate_agent_spec(agent.draft, policy)
         if not report.valid:
             raise DraftValidationError(report)
+        if self._tool_catalog_validator is not None:
+            try:
+                self._tool_catalog_validator.validate_bindings(
+                    [item.model_dump(mode="json") for item in agent.draft.tools]
+                )
+            except ValueError as exc:
+                raise DraftValidationError(
+                    ValidationReport(
+                        valid=False,
+                        issues=[
+                            {
+                                "severity": "error",
+                                "code": "tools.catalog_missing",
+                                "path": "tools",
+                                "message": str(exc),
+                            }
+                        ],
+                    )
+                ) from exc
 
         now = utc_now()
         version_id = f"av_{uuid4().hex}"
@@ -217,6 +259,23 @@ class ControlPlaneService:
         trace_id: str,
     ) -> ReleaseManifest:
         version = await self.get_version(identity, agent_id, request.version_id)
+        gate: dict[str, Any] = {}
+        if self._require_quality_gate and not request.quality_gate_run_id:
+            raise PolicyViolationError(
+                "A Governance quality-gate run is required for Agent release."
+            )
+        if request.quality_gate_run_id:
+            if self._governance is None:
+                raise InvalidStateError("Governance quality-gate client is unavailable.")
+            gate = await self._governance.quality_gate(
+                identity.tenant_id, request.quality_gate_run_id
+            )
+            if not gate.get("passed"):
+                raise PolicyViolationError(
+                    "Governance quality gate rejected the Agent release.",
+                    quality_gate_id=gate.get("id"),
+                    reasons=gate.get("reasons") or [],
+                )
         releases = await self._repository.list_releases(
             identity.tenant_id,
             agent_id,
@@ -251,6 +310,8 @@ class ControlPlaneService:
             status=ReleaseStatus.ACTIVE,
             previous_release_id=baseline.release_id if baseline else None,
             reason=request.reason,
+            quality_gate_id=gate.get("id"),
+            quality_gate_metrics=gate.get("metrics") or {},
             created_by=identity.user_id,
             created_at=now,
             updated_at=now,
@@ -273,6 +334,7 @@ class ControlPlaneService:
                 "environment": release.environment,
                 "rollout_percentage": release.rollout_percentage,
                 "previous_release_id": release.previous_release_id,
+                "quality_gate_id": release.quality_gate_id,
             },
         )
         await self._repository.create_release(
@@ -351,14 +413,17 @@ class ControlPlaneService:
                 "rollout_percentage": request.rollout_percentage,
             },
         )
-        await self._repository.update_release(
+        updated_ok = await self._repository.update_release(
             updated,
             event,
             related_release_id=release.previous_release_id
             if request.rollout_percentage == 100
             else None,
             related_status=ReleaseStatus.RETIRED if request.rollout_percentage == 100 else None,
+            expected_updated_at=release.updated_at.isoformat(),
         )
+        if not updated_ok:
+            raise ConflictError("Release changed concurrently; reload and retry.")
         return updated
 
     async def pause_release(
@@ -385,7 +450,13 @@ class ControlPlaneService:
             release_id,
             {"agent_id": release.agent_id, "release_id": release_id},
         )
-        await self._repository.update_release(updated, event)
+        updated_ok = await self._repository.update_release(
+            updated,
+            event,
+            expected_updated_at=release.updated_at.isoformat(),
+        )
+        if not updated_ok:
+            raise ConflictError("Release changed concurrently; reload and retry.")
         return updated
 
     async def rollback_release(
@@ -418,12 +489,15 @@ class ControlPlaneService:
                 "restored_release_id": previous.release_id,
             },
         )
-        await self._repository.update_release(
+        updated_ok = await self._repository.update_release(
             updated,
             event,
             related_release_id=previous.release_id,
             related_status=ReleaseStatus.ACTIVE,
+            expected_updated_at=release.updated_at.isoformat(),
         )
+        if not updated_ok:
+            raise ConflictError("Release changed concurrently; reload and retry.")
         return updated
 
     async def resolve_runtime(

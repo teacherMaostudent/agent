@@ -2,12 +2,13 @@ from datetime import UTC, datetime
 from time import monotonic
 from uuid import uuid4
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request, status
 
 from app.contracts.context import ConversationMessage
 from app.contracts.execution import ExecutionContext
 from app.domain.schemas import AgentResumeRequest, AgentRunRequest
 from app.runtime.models import ApprovalResume, RuntimeBudget
+from app.runtime.snapshot_compiler import SnapshotCompileError, compile_snapshot
 
 router = APIRouter(prefix="/agent", tags=["agent-runtime"])
 
@@ -21,6 +22,7 @@ def run_agent(
     x_permissions: str = Header(default="rag:read", alias="X-Permissions"),
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
     x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
+    x_run_id: str | None = Header(default=None, alias="X-Run-Id"),
 ) -> dict:
     started = monotonic()
     container = request.app.state.container
@@ -34,6 +36,8 @@ def run_agent(
     trace_id = x_trace_id or request_id
     resolution = None
     if container.control_plane is not None:
+        # Resolution returns an immutable published snapshot.  The graph never
+        # executes a mutable draft or looks up policy again mid-run.
         resolution = container.control_plane.resolve(
             tenant_id=x_tenant_id,
             user_id=x_user_id,
@@ -49,6 +53,18 @@ def run_agent(
     snapshot = (resolution or {}).get("snapshot", {})
     snapshot_id = (resolution or {}).get("version_id", "local-unversioned")
     agent_version = snapshot.get("agent_version", "local-unversioned")
+    try:
+        compiled_plan = compile_snapshot(
+            snapshot,
+            tenant_id=x_tenant_id,
+            agent_id=payload.agent_id,
+            fallback_model=container.settings.agent_model,
+        )
+    except SnapshotCompileError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "snapshot_not_executable", "message": str(exc)},
+        ) from exc
     runtime_limits = snapshot.get("spec", {}).get("runtime_limits", {})
     configured_steps = payload.max_steps or container.settings.agent_max_steps
     max_steps = min(
@@ -78,6 +94,7 @@ def run_agent(
             if payload.attempt_budget is not None
             else container.settings.agent_attempt_budget
         ),
+        run_id=x_run_id,
     )
     created = container.run_store.create(execution)
     if created.run_id != execution.run_id:
@@ -132,12 +149,22 @@ def run_agent(
             max_cost_usd=max_cost,
             max_attempts=execution.attempt_budget_remaining,
         )
-        result = container.agent_graph.run(
+        # A caller may narrow, but never expand, the deployment's untrusted
+        # tool-output limit before results are included in a decision prompt.
+        configured_tool_limit = container.settings.agent_tool_result_max_chars
+        request_tool_limit = payload.metadata.get("tool_result_max_chars")
+        if isinstance(request_tool_limit, int):
+            configured_tool_limit = min(configured_tool_limit, max(1, request_tool_limit))
+        runtime_metadata = {
+            **payload.metadata,
+            "tool_result_max_chars": configured_tool_limit,
+        }
+        result = container.agent_harness.run(
             {
                 "task": payload.task,
                 "document_id": payload.document_id,
                 "content": payload.content,
-                "metadata": payload.metadata,
+                "metadata": runtime_metadata,
                 "tenant_id": x_tenant_id,
                 "user_id": x_user_id,
                 "permissions": sorted(permissions),
@@ -149,6 +176,7 @@ def run_agent(
                 "agent_version": execution.agent_version,
                 "snapshot_id": execution.snapshot_id,
                 "agent_snapshot": snapshot,
+                "compiled_plan": compiled_plan.model_dump(mode="json"),
                 "graph_version": execution.graph_version,
                 "flow_version": container.settings.runtime_flow_version,
                 "deadline_at": execution.deadline_at.isoformat(),
@@ -204,6 +232,29 @@ def run_agent(
     return body
 
 
+@router.post("/runs", status_code=status.HTTP_202_ACCEPTED)
+def submit_agent_run(
+    payload: AgentRunRequest,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="rag:read", alias="X-Permissions"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
+) -> dict:
+    request_id = x_request_id or f"agent-{uuid4().hex}"
+    return request.app.state.container.async_runs.submit(
+        {
+            "payload": payload.model_dump(mode="json"),
+            "tenant_id": x_tenant_id,
+            "user_id": x_user_id,
+            "permissions": x_permissions,
+            "request_id": request_id,
+            "trace_id": x_trace_id or request_id,
+        }
+    )
+
+
 @router.post("/runs/{run_id}/resume")
 def resume_run(
     run_id: str,
@@ -222,7 +273,7 @@ def resume_run(
         raise HTTPException(status_code=409, detail="run was cancelled")
     budget = run.result.get("budget", {})
     max_steps = int(budget.get("max_steps", container.settings.agent_max_steps))
-    result = container.agent_graph.resume(
+    result = container.agent_harness.resume(
         run_id,
         ApprovalResume(
             approved=payload.approved,
@@ -231,6 +282,7 @@ def resume_run(
             reason=payload.reason,
         ),
         max_steps=max_steps,
+        agent_id=run.context.agent_id,
     )
     body = {
         **result.model_dump(mode="json"),
@@ -266,7 +318,10 @@ def get_run(
 ) -> dict:
     run = request.app.state.container.run_store.get(x_tenant_id, run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail="run not found")
+        queued = request.app.state.container.async_runs.get(x_tenant_id, run_id)
+        if queued is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return queued
     return run.model_dump(mode="json")
 
 
@@ -278,5 +333,8 @@ def cancel_run(
 ) -> dict:
     run = request.app.state.container.run_store.cancel(x_tenant_id, run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail="run not found")
+        queued = request.app.state.container.async_runs.cancel(x_tenant_id, run_id)
+        if queued is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return queued
     return run.model_dump(mode="json")

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 from uuid import uuid4
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, Header, Query, Request, status
 
@@ -37,18 +37,32 @@ def _context(
     x_agent_id: str = Header(default="", alias="X-Agent-Id"),
     x_agent_version: str = Header(default="", alias="X-Agent-Version"),
     x_snapshot_id: str = Header(default="", alias="X-Snapshot-Id"),
-    x_deadline_at: datetime | None = Header(default=None, alias="X-Deadline-At"),
-    x_attempt_budget_remaining: int | None = Header(default=None, ge=0, alias="X-Attempt-Budget-Remaining"),
+    # FastAPI resolves this declarative dependency at request time; it is not
+    # an eager application-side function call.
+    x_deadline_at: datetime | None = Header(  # noqa: B008
+        default=None, alias="X-Deadline-At"
+    ),
+    x_attempt_budget_remaining: int | None = Header(
+        default=None, ge=0, alias="X-Attempt-Budget-Remaining"
+    ),
 ) -> InvocationContext:
+    # When OIDC is enabled, middleware has already verified the JWT and
+    # reconstructed these identity headers.  The route intentionally remains
+    # header-shaped so local/test callers and existing adapters stay compatible.
     return InvocationContext(
         tenant_id=x_tenant_id,
         user_id=x_user_id,
         permissions=frozenset(item.strip() for item in x_permissions.split(",") if item.strip()),
         request_id=x_request_id or f"tool-request-{uuid4().hex}",
         idempotency_key=x_idempotency_key,
-        trace_id=x_trace_id, run_id=x_run_id, session_id=x_session_id,
-        agent_id=x_agent_id, agent_version=x_agent_version, snapshot_id=x_snapshot_id,
-        deadline_at=x_deadline_at, attempt_budget_remaining=x_attempt_budget_remaining,
+        trace_id=x_trace_id,
+        run_id=x_run_id,
+        session_id=x_session_id,
+        agent_id=x_agent_id,
+        agent_version=x_agent_version,
+        snapshot_id=x_snapshot_id,
+        deadline_at=x_deadline_at,
+        attempt_budget_remaining=x_attempt_budget_remaining,
     )
 
 

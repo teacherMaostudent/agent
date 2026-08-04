@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
 from app.application.exceptions import NotFoundError
 from app.core.config import Settings
+from app.domain.data_protection import classify_payload, protect_payload, sampled
 from app.infrastructure.llm_gateway_client import LlmGatewayClient
 from app.infrastructure.sqlite_repository import SqliteRepository
 
@@ -54,9 +55,7 @@ class EvaluationService:
             ),
             "goldenDataset": await self._repository.list_documents(tenant_id, GOLDEN_CASE),
             "regressionRuns": await self._repository.list_documents(tenant_id, REGRESSION_RUN),
-            "phoenixTraces": (
-                await self._repository.list_documents(tenant_id, PHOENIX_TRACE, 100)
-            ),
+            "phoenixTraces": (await self._repository.list_documents(tenant_id, PHOENIX_TRACE, 100)),
             "judgeRubrics": await self._repository.list_documents(tenant_id, JUDGE_RUBRIC),
             "judgeRuns": await self._repository.list_documents(tenant_id, JUDGE_RUN),
             "qualityGates": await self._repository.list_documents(tenant_id, QUALITY_GATE),
@@ -73,9 +72,7 @@ class EvaluationService:
             saved.setdefault("dimensions", [])
         return await self._repository.upsert_document(tenant_id, kind, saved["id"], saved)
 
-    async def record_trace(
-        self, tenant_id: str, request: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def record_trace(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
         saved = dict(request)
         saved["traceId"] = _id(saved.get("traceId"))
         saved["timestamp"] = _now()
@@ -83,26 +80,49 @@ class EvaluationService:
             tenant_id, PHOENIX_TRACE, saved["traceId"], saved
         )
 
-    async def record_gateway_trace(
-        self, tenant_id: str, request: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def record_gateway_trace(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        request_id = _id(request.get("requestId"))
+        success = bool(request.get("success"))
+        if success and not sampled(request_id, self._settings.online_trace_sample_rate):
+            return {"id": request_id, "status": "NOT_SAMPLED"}
+        cutoff = (
+            datetime.now(UTC)
+            - timedelta(days=self._settings.online_trace_retention_days)
+        ).isoformat()
+        await self._repository.purge_documents_before(
+            tenant_id, [PHOENIX_TRACE, ONLINE_SAMPLE], cutoff
+        )
+        protected_request = protect_payload(
+            request.get("request") or {},
+            capture_content=self._settings.capture_prompt_response_content,
+        )
+        protected_response = protect_payload(
+            request.get("response") or {},
+            capture_content=self._settings.capture_prompt_response_content,
+        )
+        classification = classify_payload(
+            capture_content=self._settings.capture_prompt_response_content,
+            protected={"request": protected_request, "response": protected_response},
+        )
         await self.record_trace(
             tenant_id,
             {
                 "traceId": request.get("traceId"),
                 "requestId": request.get("requestId"),
                 "spanName": "llm-gateway.chat",
-                "input": json.dumps(request.get("request") or {}, ensure_ascii=False),
-                "output": json.dumps(request.get("response") or {}, ensure_ascii=False),
+                "input": json.dumps(protected_request, ensure_ascii=False),
+                "output": json.dumps(protected_response, ensure_ascii=False),
                 "metadata": {
                     "success": request.get("success"),
                     "latencyMs": request.get("latencyMs"),
                     "cost": request.get("cost"),
                     "currency": request.get("currency"),
+                    "dataClassification": classification,
+                    "retentionDays": self._settings.online_trace_retention_days,
                 },
             },
         )
-        sample_id = _id(request.get("requestId"))
+        sample_id = request_id
         existing = await self._repository.get_document(tenant_id, ONLINE_SAMPLE, sample_id)
         sample = {
             **(existing or {}),
@@ -112,20 +132,20 @@ class EvaluationService:
             "tenantId": tenant_id,
             "userId": request.get("userId"),
             "model": request.get("requestedModel"),
-            "request": request.get("request") or {},
-            "response": request.get("response") or {},
+            "request": protected_request,
+            "response": protected_response,
             "success": bool(request.get("success")),
             "latencyMs": request.get("latencyMs", 0),
             "cost": request.get("cost", 0),
             "currency": request.get("currency", ""),
             "status": "CAPTURED",
+            "dataClassification": classification,
+            "retentionDays": self._settings.online_trace_retention_days,
             "disposition": "SAMPLE_POOL" if request.get("success") else "HUMAN_REVIEW",
             "updatedAt": _now(),
             "createdAt": (existing or {}).get("createdAt", _now()),
         }
-        return await self._repository.upsert_document(
-            tenant_id, ONLINE_SAMPLE, sample_id, sample
-        )
+        return await self._repository.upsert_document(tenant_id, ONLINE_SAMPLE, sample_id, sample)
 
     async def record_feedback(
         self, tenant_id: str, user_id: str, request: dict[str, Any]
@@ -152,9 +172,7 @@ class EvaluationService:
                 "updatedAt": _now(),
             }
         )
-        return await self._repository.upsert_document(
-            tenant_id, ONLINE_SAMPLE, sample_id, sample
-        )
+        return await self._repository.upsert_document(tenant_id, ONLINE_SAMPLE, sample_id, sample)
 
     async def online_snapshot(self, tenant_id: str) -> dict[str, Any]:
         samples = await self._repository.list_documents(tenant_id, ONLINE_SAMPLE)
@@ -165,15 +183,11 @@ class EvaluationService:
             "humanReviewQueue": [
                 item for item in samples if item.get("disposition") == "HUMAN_REVIEW"
             ],
-            "samplePool": [
-                item for item in samples if item.get("disposition") == "SAMPLE_POOL"
-            ],
+            "samplePool": [item for item in samples if item.get("disposition") == "SAMPLE_POOL"],
             "goldenCandidates": candidates,
         }
 
-    async def judge_online(
-        self, tenant_id: str, user_id: str, sample_id: str
-    ) -> dict[str, Any]:
+    async def judge_online(self, tenant_id: str, user_id: str, sample_id: str) -> dict[str, Any]:
         sample = await self._repository.get_document(tenant_id, ONLINE_SAMPLE, sample_id)
         if not sample:
             raise NotFoundError(f"Unknown online sample: {sample_id}")
@@ -218,9 +232,7 @@ class EvaluationService:
                 "updatedAt": _now(),
             }
         )
-        return await self._repository.upsert_document(
-            tenant_id, ONLINE_SAMPLE, sample_id, sample
-        )
+        return await self._repository.upsert_document(tenant_id, ONLINE_SAMPLE, sample_id, sample)
 
     async def review_online_sample(
         self,
@@ -257,9 +269,7 @@ class EvaluationService:
             await self._repository.upsert_document(
                 tenant_id, GOLDEN_CANDIDATE, candidate["id"], candidate
             )
-        return await self._repository.upsert_document(
-            tenant_id, ONLINE_SAMPLE, sample_id, sample
-        )
+        return await self._repository.upsert_document(tenant_id, ONLINE_SAMPLE, sample_id, sample)
 
     async def review_golden_candidate(
         self,
@@ -268,9 +278,7 @@ class EvaluationService:
         candidate_id: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
-        candidate = await self._repository.get_document(
-            tenant_id, GOLDEN_CANDIDATE, candidate_id
-        )
+        candidate = await self._repository.get_document(tenant_id, GOLDEN_CANDIDATE, candidate_id)
         if not candidate:
             raise NotFoundError(f"Unknown Golden candidate: {candidate_id}")
         approved = bool(request.get("approved"))
@@ -290,8 +298,7 @@ class EvaluationService:
                 {
                     "id": request.get("goldenCaseId") or candidate["id"],
                     "question": candidate["question"],
-                    "groundTruth": request.get("groundTruth")
-                    or candidate.get("groundTruth", ""),
+                    "groundTruth": request.get("groundTruth") or candidate.get("groundTruth", ""),
                     "contexts": candidate.get("contexts") or [],
                     "tags": candidate.get("tags") or ["online"],
                 },
@@ -300,9 +307,7 @@ class EvaluationService:
             tenant_id, GOLDEN_CANDIDATE, candidate_id, candidate
         )
 
-    async def run_regression(
-        self, tenant_id: str, request: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def run_regression(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
         answers = request.get("answerByQuestion") or {}
         cases = await self._repository.list_documents(tenant_id, GOLDEN_CASE)
         scores = []
@@ -330,9 +335,7 @@ class EvaluationService:
                 for key in ("answerSimilarity", "contextRecall", "faithfulness")
             },
         }
-        return await self._repository.upsert_document(
-            tenant_id, REGRESSION_RUN, run["id"], run
-        )
+        return await self._repository.upsert_document(tenant_id, REGRESSION_RUN, run["id"], run)
 
     async def judge(
         self,
@@ -429,9 +432,7 @@ class EvaluationService:
         overrides = request or {}
         limits = {
             "minimumAverageScore": float(
-                overrides.get(
-                    "minAverageScore", self._settings.quality_gate_min_average_score
-                )
+                overrides.get("minAverageScore", self._settings.quality_gate_min_average_score)
             ),
             "minimumPassRate": float(
                 overrides.get("minPassRate", self._settings.quality_gate_min_pass_rate)
@@ -443,9 +444,7 @@ class EvaluationService:
                 )
             ),
             "maximumFailedCases": int(
-                overrides.get(
-                    "maxFailedCases", self._settings.quality_gate_max_failed_cases
-                )
+                overrides.get("maxFailedCases", self._settings.quality_gate_max_failed_cases)
             ),
         }
         metrics = run["metrics"]
@@ -467,9 +466,7 @@ class EvaluationService:
             "metrics": {**metrics, **limits},
             "reasons": reasons,
         }
-        return await self._repository.upsert_document(
-            tenant_id, QUALITY_GATE, result["id"], result
-        )
+        return await self._repository.upsert_document(tenant_id, QUALITY_GATE, result["id"], result)
 
     async def _rubric(self, tenant_id: str, rubric_id: object) -> dict[str, Any]:
         resolved = str(rubric_id or "default")
@@ -641,8 +638,10 @@ def _consensus(
 ) -> dict[str, Any]:
     scores = {
         item["name"]: round(
-            (left["dimensionScores"].get(item["name"], 0)
-             + right["dimensionScores"].get(item["name"], 0))
+            (
+                left["dimensionScores"].get(item["name"], 0)
+                + right["dimensionScores"].get(item["name"], 0)
+            )
             / 2
         )
         for item in rubric.get("dimensions", [])

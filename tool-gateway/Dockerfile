@@ -4,10 +4,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /service
-COPY pyproject.toml README.md ./
-COPY app ./app
-COPY config ./config
-RUN python -m pip install --no-cache-dir .
+COPY platform-infra /platform-infra
+COPY tool-gateway/pyproject.toml tool-gateway/README.md ./
+COPY tool-gateway/app ./app
+COPY tool-gateway/config ./config
+RUN python -m pip install --no-cache-dir /platform-infra .
 
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /service/data \

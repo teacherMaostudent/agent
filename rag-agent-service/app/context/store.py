@@ -1,38 +1,67 @@
 from threading import RLock
+from datetime import UTC, datetime, timedelta
 
 from app.contracts.context import ConversationMessage
-from app.storage.sqlite_kv import SqliteKv
-
 _KIND_SESSION = "agent_context_session"
 
 
 class ConversationStore:
     """Small persistence adapter; replace with PostgreSQL for multi-node production."""
 
-    def __init__(self, sqlite_path=None) -> None:
-        self._db = SqliteKv(sqlite_path) if sqlite_path is not None else None
+    def __init__(
+        self, backend=None, *, retention_days: int = 30, max_messages: int = 500
+    ) -> None:
+        self._db = backend
         self._memory: dict[str, list[ConversationMessage]] = {}
         self._lock = RLock()
+        self._retention = timedelta(days=retention_days)
+        self._max_messages = max_messages
 
     def list_messages(self, session_id: str) -> list[ConversationMessage]:
         with self._lock:
             if self._db is not None:
                 payload = self._db.get(_KIND_SESSION, session_id) or {"messages": []}
-                return [ConversationMessage.model_validate(item) for item in payload["messages"]]
-            return list(self._memory.get(session_id, []))
+                messages = [ConversationMessage.model_validate(item) for item in payload["messages"]]
+            else:
+                messages = list(self._memory.get(session_id, []))
+            cutoff = datetime.now(UTC) - self._retention
+            return [item for item in messages if item.created_at >= cutoff]
 
     def append(self, session_id: str, message: ConversationMessage) -> None:
         with self._lock:
-            messages = self.list_messages(session_id)
-            messages.append(message)
             if self._db is not None:
-                self._db.put(
-                    _KIND_SESSION,
-                    session_id,
-                    {"messages": [item.model_dump(mode="json") for item in messages]},
-                )
+                for _ in range(8):
+                    payload, version = self._db.get_with_version(
+                        _KIND_SESSION, session_id
+                    )
+                    messages = [
+                        ConversationMessage.model_validate(item)
+                        for item in (payload or {"messages": []})["messages"]
+                    ]
+                    messages.append(message)
+                    messages = messages[-self._max_messages :]
+                    if self._db.put_if_version(
+                        _KIND_SESSION,
+                        session_id,
+                        {
+                            "messages": [
+                                item.model_dump(mode="json") for item in messages
+                            ]
+                        },
+                        version,
+                    ):
+                        return
+                raise RuntimeError("concurrent context update retry limit exceeded")
             else:
-                self._memory[session_id] = messages
+                messages = self.list_messages(session_id)
+                messages.append(message)
+                self._memory[session_id] = messages[-self._max_messages :]
+
+    def delete(self, session_id: str) -> bool:
+        with self._lock:
+            if self._db is not None:
+                return self._db.delete(_KIND_SESSION, session_id)
+            return self._memory.pop(session_id, None) is not None
 
     def close(self) -> None:
         if self._db is not None:

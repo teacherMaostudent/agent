@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from threading import Lock
-from time import monotonic
+from time import monotonic, time
+
+import redis
 
 from app.domain.errors import CircuitOpenError, RateLimitError
 
@@ -23,6 +25,33 @@ class FixedWindowRateLimiter:
             if len(events) >= limit_per_minute:
                 raise RateLimitError("tool rate limit exceeded")
             events.append(now)
+
+
+class RedisFixedWindowRateLimiter:
+    _SCRIPT = """
+    local current = redis.call('INCR', KEYS[1])
+    if current == 1 then redis.call('EXPIRE', KEYS[1], ARGV[2]) end
+    if current > tonumber(ARGV[1]) then return 0 end
+    return 1
+    """
+
+    def __init__(self, redis_url: str) -> None:
+        self._client = redis.Redis.from_url(redis_url, decode_responses=True)
+
+    def acquire(self, key: str, limit_per_minute: int) -> None:
+        window = int(time() // 60)
+        allowed = self._client.eval(
+            self._SCRIPT,
+            1,
+            f"tool-rate:{key}:{window}",
+            limit_per_minute,
+            65,
+        )
+        if int(allowed) != 1:
+            raise RateLimitError("tool rate limit exceeded")
+
+    def ping(self) -> bool:
+        return bool(self._client.ping())
 
 
 @dataclass

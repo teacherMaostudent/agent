@@ -39,11 +39,12 @@ class ExecutionContext(BaseModel):
         attempt_budget: int,
         graph_version: str = "runtime-planner-v1",
         model_policy_version: str = "local-unversioned",
+        run_id: str | None = None,
     ) -> ExecutionContext:
         return cls(
             request_id=request_id,
             trace_id=trace_id,
-            run_id=f"run_{uuid4().hex}",
+            run_id=run_id or f"run_{uuid4().hex}",
             session_id=session_id,
             tenant_id=tenant_id,
             user_id=user_id,

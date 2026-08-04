@@ -20,3 +20,22 @@ class RagSearchResponse(BaseModel):
     evidence: list[Evidence] = Field(default_factory=list)
     candidate_count: int = 0
     index_version: str = "local"
+
+
+class ControlledScanRequest(BaseModel):
+    scope: str = Field(min_length=1, max_length=80)
+    pattern: str = Field(min_length=1, max_length=500)
+    regex: bool = False
+    glob: str = Field(default="**/*", max_length=160)
+
+
+class ControlledScanMatch(BaseModel):
+    scope: str
+    path: str
+    line_number: int
+    line: str
+
+
+class ControlledScanResponse(BaseModel):
+    scope: str
+    matches: list[ControlledScanMatch] = Field(default_factory=list)

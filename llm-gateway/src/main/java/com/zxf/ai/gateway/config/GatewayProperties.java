@@ -28,6 +28,7 @@ public class GatewayProperties {
      * quotaStore=memory 适合本地演示，quotaStore=redis 适合多实例部署。
      */
     private String quotaStore = "memory";
+    private boolean allowAnonymous = true;
     @NotBlank
     private String defaultModel = "gpt-4o-mini";
     /**
@@ -44,6 +45,8 @@ public class GatewayProperties {
     private Resilience resilience = new Resilience();
     private Persistence persistence = new Persistence();
     private Admin admin = new Admin();
+    private Oidc oidc = new Oidc();
+    private Opa opa = new Opa();
     /** Migration switches for capabilities that no longer belong to the Gateway. */
     private Compatibility compatibility = new Compatibility();
     /**
@@ -53,6 +56,22 @@ public class GatewayProperties {
     /** 原生价格统一换算到报表基准币种。汇率必须带版本并由运维定期更新。 */
     private Billing billing = new Billing();
     private Map<String, PromptTemplate> promptTemplates = new LinkedHashMap<>();
+
+    public Oidc getOidc() {
+        return oidc;
+    }
+
+    public void setOidc(Oidc oidc) {
+        this.oidc = oidc;
+    }
+
+    public Opa getOpa() {
+        return opa;
+    }
+
+    public void setOpa(Opa opa) {
+        this.opa = opa;
+    }
 
     public Duration getRequestTimeout() {
         return requestTimeout;
@@ -76,6 +95,14 @@ public class GatewayProperties {
 
     public void setQuotaStore(String quotaStore) {
         this.quotaStore = quotaStore;
+    }
+
+    public boolean isAllowAnonymous() {
+        return allowAnonymous;
+    }
+
+    public void setAllowAnonymous(boolean allowAnonymous) {
+        this.allowAnonymous = allowAnonymous;
     }
 
     public Compatibility getCompatibility() {
@@ -604,6 +631,7 @@ public class GatewayProperties {
         private int maxEntries = 1000;
         private Duration ttl = Duration.ofMinutes(10);
         private Duration randomTtlJitter = Duration.ofSeconds(30);
+        private boolean requireExplicitOptIn = true;
         private boolean mutexProtectionEnabled = true;
 
         public boolean isEnabled() {
@@ -644,6 +672,14 @@ public class GatewayProperties {
 
         public void setMutexProtectionEnabled(boolean mutexProtectionEnabled) {
             this.mutexProtectionEnabled = mutexProtectionEnabled;
+        }
+
+        public boolean isRequireExplicitOptIn() {
+            return requireExplicitOptIn;
+        }
+
+        public void setRequireExplicitOptIn(boolean requireExplicitOptIn) {
+            this.requireExplicitOptIn = requireExplicitOptIn;
         }
     }
 
@@ -773,6 +809,66 @@ public class GatewayProperties {
 
         public void setPassword(String password) {
             this.password = password;
+        }
+    }
+
+    public static class Oidc {
+        private boolean enabled;
+        private String tenantClaim = "tenant_id";
+        private String rolesClaim = "roles";
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getTenantClaim() {
+            return tenantClaim;
+        }
+
+        public void setTenantClaim(String tenantClaim) {
+            this.tenantClaim = tenantClaim;
+        }
+
+        public String getRolesClaim() {
+            return rolesClaim;
+        }
+
+        public void setRolesClaim(String rolesClaim) {
+            this.rolesClaim = rolesClaim;
+        }
+    }
+
+    public static class Opa {
+        private boolean enabled;
+        private String baseUrl = "http://localhost:8181";
+        private String decisionPath = "agent_platform/llm/allow";
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getBaseUrl() {
+            return baseUrl;
+        }
+
+        public void setBaseUrl(String baseUrl) {
+            this.baseUrl = baseUrl;
+        }
+
+        public String getDecisionPath() {
+            return decisionPath;
+        }
+
+        public void setDecisionPath(String decisionPath) {
+            this.decisionPath = decisionPath;
         }
     }
 

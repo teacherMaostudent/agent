@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
 from collections.abc import Callable
@@ -25,6 +26,47 @@ class SqliteRepository:
         def operation() -> None:
             with self._connect() as connection:
                 connection.executescript(schema)
+                columns = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(audit_events)").fetchall()
+                }
+                needs_hash_backfill = "event_hash" not in columns
+                if "previous_hash" not in columns:
+                    connection.execute(
+                        "ALTER TABLE audit_events ADD COLUMN previous_hash TEXT NOT NULL DEFAULT ''"
+                    )
+                if "event_hash" not in columns:
+                    connection.execute(
+                        "ALTER TABLE audit_events ADD COLUMN event_hash TEXT NOT NULL DEFAULT ''"
+                    )
+                if needs_hash_backfill:
+                    previous_by_tenant: dict[str, str] = {}
+                    rows = connection.execute(
+                        "SELECT * FROM audit_events ORDER BY tenant_id, sequence"
+                    ).fetchall()
+                    for row in rows:
+                        previous_hash = previous_by_tenant.get(row["tenant_id"], "")
+                        canonical = _json(
+                            {
+                                "event_id": row["event_id"],
+                                "tenant_id": row["tenant_id"],
+                                "source_service": row["source_service"],
+                                "event_type": row["event_type"],
+                                "trace_id": row["trace_id"],
+                                "occurred_at": row["occurred_at"],
+                                "received_at": row["received_at"],
+                                "payload": json.loads(row["payload_json"]),
+                            }
+                        )
+                        event_hash = hashlib.sha256(
+                            f"{previous_hash}:{canonical}".encode()
+                        ).hexdigest()
+                        connection.execute(
+                            "UPDATE audit_events SET previous_hash = ?, event_hash = ? "
+                            "WHERE sequence = ?",
+                            (previous_hash, event_hash, row["sequence"]),
+                        )
+                        previous_by_tenant[row["tenant_id"]] = event_hash
 
         await asyncio.to_thread(operation)
 
@@ -35,13 +77,32 @@ class SqliteRepository:
 
     async def ingest(self, event: GovernanceEvent, findings: list[Finding]) -> bool:
         def operation(connection: sqlite3.Connection) -> bool:
+            previous = connection.execute(
+                "SELECT event_hash FROM audit_events WHERE tenant_id = ? "
+                "ORDER BY sequence DESC LIMIT 1",
+                (event.tenant_id,),
+            ).fetchone()
+            previous_hash = str(previous["event_hash"]) if previous else ""
+            canonical = _json(
+                {
+                    "event_id": event.event_id,
+                    "tenant_id": event.tenant_id,
+                    "source_service": event.source_service,
+                    "event_type": event.event_type,
+                    "trace_id": event.trace_id,
+                    "occurred_at": event.occurred_at.isoformat(),
+                    "received_at": event.received_at.isoformat(),
+                    "payload": event.payload,
+                }
+            )
+            event_hash = hashlib.sha256(f"{previous_hash}:{canonical}".encode()).hexdigest()
             try:
                 connection.execute(
                     """
                     INSERT INTO audit_events (
                         event_id, tenant_id, source_service, event_type, trace_id, occurred_at,
-                        received_at, payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        received_at, payload_json, previous_hash, event_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event.event_id,
@@ -52,6 +113,8 @@ class SqliteRepository:
                         event.occurred_at.isoformat(),
                         event.received_at.isoformat(),
                         _json(event.payload),
+                        previous_hash,
+                        event_hash,
                     ),
                 )
             except sqlite3.IntegrityError:
@@ -85,6 +148,34 @@ class SqliteRepository:
             return True
 
         return await self._write(operation)
+
+    async def verify_audit_chain(self, tenant_id: str) -> dict[str, Any]:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            rows = connection.execute(
+                "SELECT * FROM audit_events WHERE tenant_id = ? ORDER BY sequence ASC",
+                (tenant_id,),
+            ).fetchall()
+            previous_hash = ""
+            for row in rows:
+                canonical = _json(
+                    {
+                        "event_id": row["event_id"],
+                        "tenant_id": row["tenant_id"],
+                        "source_service": row["source_service"],
+                        "event_type": row["event_type"],
+                        "trace_id": row["trace_id"],
+                        "occurred_at": row["occurred_at"],
+                        "received_at": row["received_at"],
+                        "payload": json.loads(row["payload_json"]),
+                    }
+                )
+                expected = hashlib.sha256(f"{previous_hash}:{canonical}".encode()).hexdigest()
+                if row["previous_hash"] != previous_hash or row["event_hash"] != expected:
+                    return {"valid": False, "events": len(rows), "brokenAt": row["event_id"]}
+                previous_hash = expected
+            return {"valid": True, "events": len(rows), "headHash": previous_hash}
+
+        return await self._read(operation)
 
     async def list_audit_events(
         self, tenant_id: str, after_sequence: int, limit: int
@@ -270,6 +361,23 @@ class SqliteRepository:
 
         return await self._read(operation)
 
+    async def purge_documents_before(
+        self, tenant_id: str, kinds: list[str], cutoff: str
+    ) -> int:
+        if not kinds:
+            return 0
+
+        def operation(connection: sqlite3.Connection) -> int:
+            placeholders = ",".join("?" for _ in kinds)
+            cursor = connection.execute(
+                f"DELETE FROM governance_documents WHERE tenant_id = ? "
+                f"AND kind IN ({placeholders}) AND updated_at < ?",
+                [tenant_id, *kinds, cutoff],
+            )
+            return cursor.rowcount
+
+        return await self._write(operation)
+
     async def _read(self, operation: Callable[[sqlite3.Connection], T]) -> T:
         def run() -> T:
             with self._connect() as connection:
@@ -316,6 +424,8 @@ def _audit_from_row(row: sqlite3.Row) -> AuditEvent:
             "occurred_at": row["occurred_at"],
             "received_at": row["received_at"],
             "payload": json.loads(row["payload_json"]),
+            "previous_hash": row["previous_hash"],
+            "event_hash": row["event_hash"],
         }
     )
 

@@ -6,6 +6,8 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from platform_infra.identity import OidcIdentityMiddleware
+from platform_infra.telemetry import configure_telemetry
 
 from app.api.routes import router
 from app.application.exceptions import (
@@ -50,6 +52,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+    application.add_middleware(
+        OidcIdentityMiddleware,
+        enabled=resolved_settings.oidc_enabled,
+        issuer=resolved_settings.oidc_issuer,
+        audience=resolved_settings.oidc_audience,
+        jwks_url=resolved_settings.oidc_jwks_url,
+        public_paths=("/health/live", "/health/ready"),
+        trusted_workload_prefixes=(),
+    )
 
     @application.middleware("http")
     async def trace_context(request: Request, call_next):
@@ -83,6 +94,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     application.include_router(router)
+    configure_telemetry(
+        application,
+        enabled=resolved_settings.otel_enabled,
+        service_name=resolved_settings.service_name,
+        environment=resolved_settings.environment,
+        endpoint=resolved_settings.otel_endpoint,
+    )
     return application
 
 

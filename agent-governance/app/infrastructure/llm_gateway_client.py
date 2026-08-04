@@ -4,6 +4,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+from platform_infra.identity import build_workload_token_provider
 
 from app.core.config import Settings
 
@@ -13,6 +14,7 @@ class LlmGatewayClient:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._workload_identity = build_workload_token_provider(settings)
 
     async def complete(
         self,
@@ -34,6 +36,7 @@ class LlmGatewayClient:
             "X-Agent-Version": "1.0",
             "X-Purpose": purpose,
         }
+        headers.update(self._workload_identity.authorization_header())
         payload = {
             "model": model,
             "messages": [

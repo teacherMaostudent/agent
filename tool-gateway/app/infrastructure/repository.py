@@ -6,8 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Literal
-from typing import Any
+from typing import Any, Literal
 
 from app.domain.errors import ApprovalError, IdempotencyConflictError
 from app.domain.models import (
@@ -38,6 +37,23 @@ class SqliteRepository:
             self.connection.execute("PRAGMA journal_mode=WAL")
             self.connection.execute("PRAGMA foreign_keys=ON")
             self.connection.executescript(_SCHEMA)
+            outbox_columns = {
+                row["name"]
+                for row in self.connection.execute("PRAGMA table_info(event_outbox)").fetchall()
+            }
+            for statement, column in [
+                (
+                    "ALTER TABLE event_outbox ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+                    "attempts",
+                ),
+                ("ALTER TABLE event_outbox ADD COLUMN next_attempt_at TEXT", "next_attempt_at"),
+                (
+                    "ALTER TABLE event_outbox ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
+                    "last_error",
+                ),
+            ]:
+                if column not in outbox_columns:
+                    self.connection.execute(statement)
 
     def ping(self) -> None:
         with self._lock:
@@ -265,13 +281,15 @@ class SqliteRepository:
 
     def consume_approval(self, approval_id: str) -> None:
         with self._lock:
-            self.connection.execute(
+            cursor = self.connection.execute(
                 """
                 UPDATE approvals SET status = 'CONSUMED'
                 WHERE approval_id = ? AND status = 'APPROVED'
                 """,
                 (approval_id,),
             )
+            if cursor.rowcount != 1:
+                raise ApprovalError("approval was already consumed")
 
     def append_audit(self, record: AuditRecord) -> None:
         with self._lock:
@@ -304,21 +322,41 @@ class SqliteRepository:
     def enqueue_event(self, event: dict[str, Any]) -> None:
         with self._lock:
             self.connection.execute(
-                "INSERT OR IGNORE INTO event_outbox(event_id, payload_json, created_at) VALUES (?, ?, ?)",
+                "INSERT INTO event_outbox"
+                "(event_id, payload_json, created_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(event_id) DO NOTHING",
                 (event["event_id"], json.dumps(event, ensure_ascii=False), _now().isoformat()),
             )
 
     def pending_events(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
             rows = self.connection.execute(
-                "SELECT payload_json FROM event_outbox WHERE delivered_at IS NULL ORDER BY created_at LIMIT ?", (limit,)
+                "SELECT payload_json FROM event_outbox WHERE delivered_at IS NULL "
+                "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY created_at LIMIT ?",
+                (_now().isoformat(), limit),
             ).fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
 
     def mark_event_delivered(self, event_id: str) -> None:
         with self._lock:
             self.connection.execute(
-                "UPDATE event_outbox SET delivered_at = ? WHERE event_id = ?", (_now().isoformat(), event_id)
+                "UPDATE event_outbox SET delivered_at = ? WHERE event_id = ?",
+                (_now().isoformat(), event_id),
+            )
+
+    def mark_event_failed(self, event_id: str, error: str) -> None:
+        from datetime import timedelta
+
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT attempts FROM event_outbox WHERE event_id = ?", (event_id,)
+            ).fetchone()
+            attempts = int(row["attempts"]) + 1 if row else 1
+            next_attempt = _now() + timedelta(seconds=min(900, 2 ** min(attempts, 9)))
+            self.connection.execute(
+                "UPDATE event_outbox SET attempts = ?, next_attempt_at = ?, "
+                "last_error = ? WHERE event_id = ?",
+                (attempts, next_attempt.isoformat(), error[:1000], event_id),
             )
 
     def list_audit(
@@ -442,6 +480,9 @@ CREATE TABLE IF NOT EXISTS event_outbox (
     event_id TEXT PRIMARY KEY,
     payload_json TEXT NOT NULL,
     delivered_at TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    last_error TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 """

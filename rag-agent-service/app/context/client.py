@@ -2,6 +2,7 @@ from typing import Protocol
 
 import httpx
 from opentelemetry import trace
+from platform_infra.identity import WorkloadTokenProvider
 
 from app.contracts.context import (
     ContextAssembleRequest,
@@ -52,11 +53,26 @@ class LocalContextClient:
 
 class HttpContextClient:
     def __init__(
-        self, base_url: str, service_api_key: str = "", timeout: float = 30.0
+        self,
+        base_url: str,
+        service_api_key: str = "",
+        timeout: float = 30.0,
+        workload_identity: WorkloadTokenProvider | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.headers = {"X-Rag-Agent-Key": service_api_key} if service_api_key else {}
+        self.workload_identity = workload_identity
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            **self.headers,
+            **(
+                self.workload_identity.authorization_header()
+                if self.workload_identity is not None
+                else {}
+            ),
+        }
 
     def assemble(
         self,
@@ -70,7 +86,7 @@ class HttpContextClient:
             response = httpx.post(
                 f"{self.base_url}/api/v1/context/assemble",
                 json=request.model_dump(mode="json"),
-                headers={**self.headers, **(execution_headers or {})},
+                headers={**self._headers(), **(execution_headers or {})},
                 timeout=self.timeout,
             )
             response.raise_for_status()
@@ -87,7 +103,7 @@ class HttpContextClient:
             f"{self.base_url}/api/v1/context/sessions/{session_id}/messages",
             json=message.model_dump(mode="json"),
             headers={
-                **self.headers,
+                **self._headers(),
                 "X-Tenant-Id": tenant_id,
                 "X-User-Id": user_id,
             },

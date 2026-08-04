@@ -17,6 +17,7 @@ public record GatewayTraceEvent(
         String runId,
         String purpose,
         BigDecimal costBudget,
+        String dataRegion,
         String requestedModel,
         boolean stream,
         Instant startedAt,
@@ -52,7 +53,7 @@ public record GatewayTraceEvent(
             String currency
     ) {
         this(requestId, requestId, tenantId, userId, "direct-client", "unversioned",
-                "stateless", requestId, "general-model-access", null, requestedModel,
+                "stateless", requestId, "general-model-access", null, "unspecified", requestedModel,
                 stream, startedAt, completedAt, latencyMs, request, response, success,
                 errorType, errorMessage, cost, currency);
     }

@@ -4,6 +4,10 @@
 x-rag-env: &rag-env
   RAG_DATA_DIR: /service/data
   RAG_PERSISTENCE: sqlite
+  RAG_REQUIRE_SERVICE_AUTH: "true"
+  RAG_SERVICE_API_KEY: local-rag-service-key
+  RAG_INTERNAL_SERVICE_API_KEY: local-rag-service-key
+  RAG_CORS_ORIGINS: '[]'
   RAG_LLM_ENABLED: "false"
   RAG_CONTEXT_SERVICE_BASE_URL: http://agent-context-service:8002
   RAG_RAG_QUERY_BASE_URL: http://rag-query-api:8003
@@ -16,7 +20,9 @@ x-rag-env: &rag-env
   RAG_GOVERNANCE_EVENT_KEY: local-governance-key
 
 x-rag-service: &rag-service
-  build: ./rag-agent-service
+  build:
+    context: .
+    dockerfile: rag-agent-service/Dockerfile
   restart: unless-stopped
   environment: *rag-env
   volumes:
@@ -24,21 +30,28 @@ x-rag-service: &rag-service
 
 services:
   agent-control-plane:
-    build: ./agent-control-plane
+    build:
+      context: .
+      dockerfile: agent-control-plane/Dockerfile
     environment:
       CONTROL_PLANE_DATABASE_PATH: /data/control-plane.db
-      CONTROL_PLANE_ENFORCE_ADMIN_ROLE: "false"
+      CONTROL_PLANE_ENFORCE_ADMIN_ROLE: "true"
+      CONTROL_PLANE_ADMIN_API_KEY: local-control-plane-admin-key
       CONTROL_PLANE_RUNTIME_API_KEY: local-control-plane-key
+      CONTROL_PLANE_GOVERNANCE_AUDITOR_API_KEY: local-governance-auditor-key
       CONTROL_PLANE_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
       CONTROL_PLANE_GOVERNANCE_BASE_URL: http://agent-governance:8081
     ports: ["8082:8080"]
     volumes: ["control-plane-data:/data"]
 
   agent-governance:
-    build: ./agent-governance
+    build:
+      context: .
+      dockerfile: agent-governance/Dockerfile
     environment:
       GOVERNANCE_DATABASE_PATH: /data/governance.db
-      GOVERNANCE_ENFORCE_AUDITOR_ROLE: "false"
+      GOVERNANCE_ENFORCE_AUDITOR_ROLE: "true"
+      GOVERNANCE_AUDITOR_API_KEY: local-governance-auditor-key
       GOVERNANCE_EVENT_INGESTION_KEY: local-governance-key
       GOVERNANCE_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
       GOVERNANCE_LLM_GATEWAY_API_KEY: governance-service-key
@@ -48,15 +61,23 @@ services:
   llm-gateway:
     build: ./llm-gateway
     environment:
-      MYSQL_URL: jdbc:mysql://mysql:3306/llm_gateway?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&createDatabaseIfNotExist=true
-      MYSQL_USERNAME: root
-      MYSQL_PASSWORD: local-mysql-password
+      DATABASE_URL: jdbc:postgresql://postgres:5432/agent_platform
+      DATABASE_USERNAME: platform
+      DATABASE_PASSWORD: local-postgres-password
       REDIS_HOST: redis
-      ADMIN_SECURITY_ENABLED: "false"
+      GATEWAY_QUOTA_STORE: redis
+      GATEWAY_ALLOW_ANONYMOUS: "false"
+      ADMIN_SECURITY_ENABLED: "true"
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin123
+      RAG_AGENT_API_KEY: local-rag-service-key
       GOVERNANCE_BASE_URL: http://agent-governance:8081
       CONTROL_PLANE_BASE_URL: http://agent-control-plane:8080
+      CONTROL_PLANE_ADMIN_API_KEY: local-control-plane-admin-key
+      GOVERNANCE_AUDITOR_API_KEY: local-governance-auditor-key
+      GOVERNANCE_EVENT_INGESTION_KEY: local-governance-key
     ports: ["8080:8080"]
-    depends_on: [mysql, redis]
+    depends_on: [postgres, redis]
 
   agent-runtime:
     <<: *rag-service
@@ -86,7 +107,9 @@ services:
     depends_on: [ingestion-api]
 
   tool-gateway:
-    build: ./tool-gateway
+    build:
+      context: .
+      dockerfile: tool-gateway/Dockerfile
     environment:
       TOOL_GATEWAY_DATABASE_PATH: /service/data/tool-gateway.db
       TOOL_GATEWAY_TOOLS_CONFIG_PATH: /service/config/tools.json
@@ -94,18 +117,20 @@ services:
       TOOL_GATEWAY_SERVICE_API_KEY: local-tool-gateway-key
       TOOL_GATEWAY_ADMIN_API_KEY: local-tool-gateway-admin-key
       TOOL_GATEWAY_ALLOW_PRIVATE_NETWORKS: "true"
+      RAG_INTERNAL_SERVICE_API_KEY: local-rag-service-key
       TOOL_GATEWAY_GOVERNANCE_BASE_URL: http://agent-governance:8081
       TOOL_GATEWAY_GOVERNANCE_EVENT_KEY: local-governance-key
     ports: ["8090:8090"]
     volumes: ["tool-gateway-data:/service/data"]
     depends_on: [agent-governance, ingestion-api]
 
-  mysql:
-    image: mysql:8.4
+  postgres:
+    image: postgres:17-alpine
     environment:
-      MYSQL_ROOT_PASSWORD: local-mysql-password
-      MYSQL_DATABASE: llm_gateway
-    volumes: ["mysql-data:/var/lib/mysql"]
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: local-postgres-password
+      POSTGRES_DB: agent_platform
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
 
   redis:
     image: redis:7-alpine
@@ -115,4 +140,4 @@ volumes:
   governance-data:
   rag-data:
   tool-gateway-data:
-  mysql-data:
+  postgres-data:

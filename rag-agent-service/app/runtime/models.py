@@ -73,6 +73,7 @@ class ExecutionPlan(BaseModel):
     agent_version: str
     graph_version: str
     model_policy_version: str
+    retrieval_policy: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

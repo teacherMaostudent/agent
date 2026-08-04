@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from platform_infra.identity import OidcIdentityMiddleware
+from platform_infra.telemetry import configure_telemetry
 
 from app.api.routes import router
 from app.container import Container
@@ -26,6 +28,18 @@ def create_app(container: Container | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.container = service_container
+    app.add_middleware(
+        OidcIdentityMiddleware,
+        enabled=settings.oidc_enabled,
+        issuer=settings.oidc_issuer,
+        audience=settings.oidc_audience,
+        jwks_url=settings.oidc_jwks_url,
+        public_paths=(
+            f"{settings.api_prefix}/health",
+            f"{settings.api_prefix}/health/ready",
+        ),
+        trusted_workload_prefixes=(),
+    )
 
     def require_admin(request: Request) -> None:
         supplied = request.headers.get("X-Tool-Gateway-Admin-Key", "")
@@ -94,6 +108,13 @@ def create_app(container: Container | None = None) -> FastAPI:
         return {"status": "UP", "service": settings.app_name, **service_container.ready()}
 
     app.include_router(router, prefix=settings.api_prefix)
+    configure_telemetry(
+        app,
+        enabled=settings.otel_enabled,
+        service_name=settings.app_name,
+        environment=settings.environment,
+        endpoint=settings.otel_endpoint,
+    )
     return app
 
 

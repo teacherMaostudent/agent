@@ -42,18 +42,14 @@ class ModelReleaseService:
         if percent < 1 or percent > 50:
             raise PolicyViolationError("canaryPercent must be between 1 and 50.")
         previous = await self._gateway.route(route_name)
-        gate = await self._governance.quality_gate(
-            tenant_id, _required(request, "judgeRunId")
-        )
+        gate = await self._governance.quality_gate(tenant_id, _required(request, "judgeRunId"))
         now = _now()
         release = {
             "id": uuid4().hex,
             "routeName": route_name,
             "canaryTarget": target,
             "canaryPercent": percent,
-            "status": "QUALITY_GATE_REJECTED"
-            if not gate.get("passed")
-            else "CANARY_ACTIVE",
+            "status": "QUALITY_GATE_REJECTED" if not gate.get("passed") else "CANARY_ACTIVE",
             "qualityGateId": gate.get("id"),
             "startedAt": now,
             "updatedAt": now,
@@ -88,10 +84,7 @@ class ModelReleaseService:
             reasons.append("errorRate exceeded configured maximum")
         if metrics["timeoutRate"] > self._settings.model_release_max_timeout_rate:
             reasons.append("timeoutRate exceeded configured maximum")
-        if (
-            metrics["avgLatencyMs"]
-            > self._settings.model_release_max_average_latency_ms
-        ):
+        if metrics["avgLatencyMs"] > self._settings.model_release_max_average_latency_ms:
             reasons.append("avgLatencyMs exceeded configured maximum")
         if reasons:
             return await self._rollback(tenant_id, release, metrics, reasons)
@@ -113,13 +106,9 @@ class ModelReleaseService:
             )
         return await self._promote(tenant_id, release, metrics)
 
-    async def rollback(
-        self, tenant_id: str, release_id: str, reason: str
-    ) -> dict[str, Any]:
+    async def rollback(self, tenant_id: str, release_id: str, reason: str) -> dict[str, Any]:
         release = await self.get(tenant_id, release_id)
-        return await self._rollback(
-            tenant_id, release, {}, [reason or "manual rollback"]
-        )
+        return await self._rollback(tenant_id, release, {}, [reason or "manual rollback"])
 
     async def get(self, tenant_id: str, release_id: str) -> dict[str, Any]:
         release = await self._repository.get_model_release(tenant_id, release_id)
@@ -165,9 +154,7 @@ class ModelReleaseService:
         if release["status"] == "PROMOTED":
             raise InvalidStateError("A promoted route requires a new release to roll back.")
         await self._gateway.upsert_route(release["routeName"], release["previousRoute"])
-        return await self._save(
-            tenant_id, release, "ROLLED_BACK", metrics, reasons
-        )
+        return await self._save(tenant_id, release, "ROLLED_BACK", metrics, reasons)
 
     async def _save(
         self,
@@ -184,9 +171,7 @@ class ModelReleaseService:
             "reasons": reasons,
             "updatedAt": _now(),
         }
-        return await self._repository.save_model_release(
-            tenant_id, release["id"], updated
-        )
+        return await self._repository.save_model_release(tenant_id, release["id"], updated)
 
 
 def _required(request: dict[str, Any], name: str) -> str:

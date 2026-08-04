@@ -35,6 +35,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 @Service
@@ -214,8 +215,10 @@ public class ChatGatewayService {
         AtomicLong completionTokens = new AtomicLong();
         AtomicReference<Long> ttftMs = new AtomicReference<>();
         AtomicReference<JsonNode> reportedUsage = new AtomicReference<>();
+        AtomicBoolean responseStarted = new AtomicBoolean();
         return clientRegistry.resolve(endpoint).streamChatCompletion(endpoint, request)
                 .doOnNext(chunk -> {
+                    responseStarted.set(true);
                     StreamChunk parsed = parseStreamChunk(chunk);
                     if (parsed.usage() != null) {
                         reportedUsage.set(parsed.usage());
@@ -260,6 +263,13 @@ public class ChatGatewayService {
                     performanceService.recordFailure(context, endpoint, error, Duration.between(started, Instant.now()).toMillis());
                     log.warn("llm_gateway_stream_fallback requestId={} user={} failedRoute={} reason={}",
                             context.requestId(), context.userId(), endpoint.key(), error.getMessage());
+                    if (responseStarted.get()) {
+                        quotaService.release(context.userId(), plan.reservation());
+                        return Flux.error(new GatewayException(
+                                HttpStatus.BAD_GATEWAY,
+                                "Upstream stream failed after response started; fallback was suppressed"
+                        ));
+                    }
                     return tryStream(context, request, endpoints, index + 1, plan);
                 })
                 .doOnError(error -> {
@@ -407,7 +417,7 @@ public class ChatGatewayService {
         eventPublisher.publishEvent(new GatewayTraceEvent(
                 context.requestId(), context.traceId(), context.tenantId(), context.userId(),
                 context.agentId(), context.agentVersion(), context.sessionId(), context.runId(),
-                context.purpose(), context.costBudget(), context.requestedModel(), context.stream(),
+                context.purpose(), context.costBudget(), context.dataRegion(), context.requestedModel(), context.stream(),
                 context.startedAt(), Instant.now(), Duration.between(context.startedAt(), Instant.now()).toMillis(),
                 safeRequest, safeResponse, success,
                 error == null ? "" : error.getClass().getSimpleName(),

@@ -45,6 +45,7 @@ class AgentState(TypedDict, total=False):
     agent_version: str
     snapshot_id: str
     agent_snapshot: dict[str, Any]
+    compiled_plan: dict[str, Any]
     graph_version: str
     flow_version: int
     deadline_at: str
@@ -60,6 +61,9 @@ class AgentState(TypedDict, total=False):
     max_steps: int
     observations: list[dict[str, Any]]
     evidence: list[dict[str, Any]]
+    conversation_history: list[dict[str, Any]]
+    user_context: dict[str, Any]
+    context_status: dict[str, Any]
     decision: dict[str, Any]
     final_answer: str
     termination_reason: str

@@ -1,3 +1,5 @@
+"""Governance event ingestion and tenant-scoped audit operations."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -25,6 +27,11 @@ from app.infrastructure.sqlite_repository import SqliteRepository
 
 
 class GovernanceService:
+    """Persists immutable audit events before exposing derived findings.
+
+    Evaluation is deterministic at ingestion time.  A duplicate event does
+    not create findings again, preserving idempotency across outbox retries.
+    """
     def __init__(self, repository: SqliteRepository) -> None:
         self._repository = repository
 

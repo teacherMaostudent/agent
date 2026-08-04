@@ -30,11 +30,12 @@ class HttpToolAdapter:
         allow_private_networks: bool,
         max_response_bytes: int,
         client: httpx.AsyncClient | None = None,
+        client_options: dict[str, Any] | None = None,
     ) -> None:
         self.config = config
         self.allow_private_networks = allow_private_networks
         self.max_response_bytes = max_response_bytes
-        self.client = client or httpx.AsyncClient(follow_redirects=False)
+        self.client = client or httpx.AsyncClient(follow_redirects=False, **(client_options or {}))
         self._owns_client = client is None
         validate_outbound_url(
             config.url,
@@ -186,11 +187,13 @@ def build_http_adapter(
     *,
     allow_private_networks: bool,
     max_response_bytes: int,
+    client_options: dict[str, Any] | None = None,
 ) -> HttpToolAdapter:
     return HttpToolAdapter(
         config,
         allow_private_networks=allow_private_networks,
         max_response_bytes=max_response_bytes,
+        client_options=client_options,
     )
 
 

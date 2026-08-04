@@ -2,22 +2,33 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any
 from uuid import uuid4
 
 import httpx
+from platform_infra.identity import WorkloadTokenProvider
+from platform_infra.mtls import mtls_httpx_options
 
 from app.contracts.execution import ExecutionContext, RuntimeRun
 
 
 class ControlPlaneClient:
-    def __init__(self, base_url: str, runtime_key: str, timeout: float) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        runtime_key: str,
+        timeout: float,
+        workload_identity: WorkloadTokenProvider | None = None,
+        mtls: dict[str, Any] | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.runtime_key = runtime_key
         self.timeout = timeout
+        self.workload_identity = workload_identity
+        self.mtls = mtls or {}
 
     def resolve(
         self,
@@ -36,11 +47,14 @@ class ControlPlaneClient:
         }
         if self.runtime_key:
             headers["X-Runtime-Key"] = self.runtime_key
+        if self.workload_identity is not None:
+            headers.update(self.workload_identity.authorization_header())
         response = httpx.get(
             f"{self.base_url}/v1/runtime/agents/{agent_id}/resolve",
             params={"environment": environment, "session_id": session_id},
             headers=headers,
             timeout=self.timeout,
+            **self.mtls,
         )
         response.raise_for_status()
         return response.json()
@@ -65,7 +79,9 @@ class RuntimeStore:
                     cancel_requested INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS runtime_outbox (
-                    event_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, delivered_at TEXT, created_at TEXT NOT NULL
+                    event_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, delivered_at TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT,
+                    last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
                 );
                 """
             )
@@ -85,6 +101,19 @@ class RuntimeStore:
                 ON runtime_runs(tenant_id, request_id) WHERE request_id <> ''
                 """
             )
+            outbox_columns = {
+                row["name"]
+                for row in self._connection.execute(
+                    "PRAGMA table_info(runtime_outbox)"
+                ).fetchall()
+            }
+            for statement, column in [
+                ("ALTER TABLE runtime_outbox ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0", "attempts"),
+                ("ALTER TABLE runtime_outbox ADD COLUMN next_attempt_at TEXT", "next_attempt_at"),
+                ("ALTER TABLE runtime_outbox ADD COLUMN last_error TEXT NOT NULL DEFAULT ''", "last_error"),
+            ]:
+                if column not in outbox_columns:
+                    self._connection.execute(statement)
             self._connection.commit()
 
     def create(self, context: ExecutionContext) -> RuntimeRun:
@@ -199,8 +228,8 @@ class RuntimeStore:
                 )
                 self._connection.execute(
                     """
-                    INSERT OR IGNORE INTO runtime_outbox(event_id, payload_json, created_at)
-                    VALUES (?, ?, ?)
+                    INSERT INTO runtime_outbox(event_id, payload_json, created_at)
+                    VALUES (?, ?, ?) ON CONFLICT(event_id) DO NOTHING
                     """,
                     (event["event_id"], json.dumps(event, ensure_ascii=False), now),
                 )
@@ -212,7 +241,8 @@ class RuntimeStore:
     def enqueue_governance(self, event: dict[str, Any]) -> None:
         with self._lock:
             self._connection.execute(
-                "INSERT OR IGNORE INTO runtime_outbox(event_id, payload_json, created_at) VALUES (?, ?, ?)",
+                "INSERT INTO runtime_outbox(event_id, payload_json, created_at) "
+                "VALUES (?, ?, ?) ON CONFLICT(event_id) DO NOTHING",
                 (
                     event["event_id"],
                     json.dumps(event, ensure_ascii=False),
@@ -222,10 +252,13 @@ class RuntimeStore:
             self._connection.commit()
 
     def pending_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        now = datetime.now(UTC).isoformat()
         with self._lock:
             rows = self._connection.execute(
-                "SELECT payload_json FROM runtime_outbox WHERE delivered_at IS NULL ORDER BY created_at LIMIT ?",
-                (limit,),
+                "SELECT payload_json FROM runtime_outbox WHERE delivered_at IS NULL "
+                "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
+                "ORDER BY created_at LIMIT ?",
+                (now, limit),
             ).fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
 
@@ -234,6 +267,24 @@ class RuntimeStore:
             self._connection.execute(
                 "UPDATE runtime_outbox SET delivered_at = ? WHERE event_id = ?",
                 (datetime.now(UTC).isoformat(), event_id),
+            )
+            self._connection.commit()
+
+    def mark_delivery_failed(self, event_id: str, error: str) -> None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT attempts FROM runtime_outbox WHERE event_id = ?", (event_id,)
+            ).fetchone()
+            attempts = int(row["attempts"]) + 1 if row else 1
+            delay_seconds = min(900, 2 ** min(attempts, 9))
+            self._connection.execute(
+                "UPDATE runtime_outbox SET attempts = ?, next_attempt_at = ?, last_error = ? WHERE event_id = ?",
+                (
+                    attempts,
+                    (datetime.now(UTC) + timedelta(seconds=delay_seconds)).isoformat(),
+                    error[:1000],
+                    event_id,
+                ),
             )
             self._connection.commit()
 
@@ -261,7 +312,12 @@ class RuntimeStore:
 
 class GovernanceOutboxPublisher:
     def __init__(
-        self, store: RuntimeStore, base_url: str, event_key: str, timeout: float
+        self,
+        store: RuntimeStore,
+        base_url: str,
+        event_key: str,
+        timeout: float,
+        workload_identity: WorkloadTokenProvider | None = None,
     ) -> None:
         self.store, self.base_url, self.event_key, self.timeout = (
             store,
@@ -269,6 +325,7 @@ class GovernanceOutboxPublisher:
             event_key,
             timeout,
         )
+        self.workload_identity = workload_identity
 
     def publish_run(
         self,
@@ -328,6 +385,8 @@ class GovernanceOutboxPublisher:
         if not self.base_url:
             return
         headers = {"X-Governance-Event-Key": self.event_key} if self.event_key else {}
+        if self.workload_identity is not None:
+            headers.update(self.workload_identity.authorization_header())
         for event in self.store.pending_events():
             try:
                 response = httpx.post(
@@ -338,5 +397,5 @@ class GovernanceOutboxPublisher:
                 )
                 response.raise_for_status()
                 self.store.mark_delivered(event["event_id"])
-            except httpx.HTTPError:
-                return
+            except httpx.HTTPError as exc:
+                self.store.mark_delivery_failed(event["event_id"], str(exc))

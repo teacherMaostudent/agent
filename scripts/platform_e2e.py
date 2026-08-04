@@ -64,7 +64,12 @@ def main() -> int:
                        f"{BASE['runtime']}/api/v1/health/ready", f"{BASE['tool']}/api/v1/health/ready"):
             wait_for(client, target)
 
-        manage = {"X-Tenant-Id": TENANT, "X-User-Id": "e2e-admin", "X-Roles": "agent-admin"}
+        manage = {
+            "X-Tenant-Id": TENANT,
+            "X-User-Id": "e2e-admin",
+            "X-Roles": "agent-admin",
+            "X-Control-Plane-Admin-Key": "local-control-plane-admin-key",
+        }
         agent = f"gmp-e2e-{int(time.time())}"
         created = request(client, "POST", f"{BASE['control']}/v1/agents", headers=manage,
                           json={"agent_id": agent, "spec": spec()})
@@ -79,9 +84,11 @@ def main() -> int:
         trace_id = "trace-platform-e2e"
         run = request(client, "POST", f"{BASE['runtime']}/api/v1/agent/run", headers={
             "X-Tenant-Id": TENANT, "X-User-Id": "e2e-user", "X-Permissions": "rag:read",
-            "X-Trace-Id": trace_id,
+            "X-Trace-Id": trace_id, "X-Rag-Agent-Key": "local-rag-service-key",
         }, json={"agent_id": agent, "environment": "local", "task": "Find evidence for the E2E check."})
-        persisted = request(client, "GET", f"{BASE['runtime']}/api/v1/agent/runs/{run['run_id']}", headers={"X-Tenant-Id": TENANT})
+        persisted = request(client, "GET", f"{BASE['runtime']}/api/v1/agent/runs/{run['run_id']}", headers={
+            "X-Tenant-Id": TENANT, "X-Rag-Agent-Key": "local-rag-service-key",
+        })
         assert persisted["status"] == "COMPLETED"
         assert persisted["context"]["snapshot_id"] == version["version_id"]
 
@@ -95,9 +102,10 @@ def main() -> int:
 
         audit = request(client, "GET", f"{BASE['governance']}/v1/governance/audit-events", headers={
             "X-Tenant-Id": TENANT, "X-User-Id": "e2e-auditor", "X-Roles": "governance-auditor",
+            "X-Governance-Auditor-Key": "local-governance-auditor-key",
         })
         types = {item["event_type"] for item in audit["items"]}
-        assert {"agent.run.completed", "tool.invocation.completed"}.issubset(types), types
+        assert {"agent.run.completed", "tool.execution.completed"}.issubset(types), types
     print("platform E2E passed: release resolution, persisted run, tool propagation, governance events")
     return 0
 

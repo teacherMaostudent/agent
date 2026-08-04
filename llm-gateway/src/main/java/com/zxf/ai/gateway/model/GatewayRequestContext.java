@@ -23,6 +23,7 @@ public record GatewayRequestContext(
         String runId,
         String purpose,
         BigDecimal costBudget,
+        String dataRegion,
         String requestedModel,
         boolean stream,
         Instant startedAt
@@ -33,7 +34,7 @@ public record GatewayRequestContext(
 
     public static GatewayRequestContext create(String requestId, String tenantId, String userId, String requestedModel, boolean stream) {
         return create(requestId, requestId, tenantId, userId, null, null, null,
-                requestId, null, null, requestedModel, stream);
+                requestId, null, null, "unspecified", requestedModel, stream);
     }
 
     /**
@@ -54,6 +55,25 @@ public record GatewayRequestContext(
             String requestedModel,
             boolean stream
     ) {
+        return create(requestId, traceId, tenantId, userId, agentId, agentVersion,
+                sessionId, runId, purpose, costBudget, "unspecified", requestedModel, stream);
+    }
+
+    public static GatewayRequestContext create(
+            String requestId,
+            String traceId,
+            String tenantId,
+            String userId,
+            String agentId,
+            String agentVersion,
+            String sessionId,
+            String runId,
+            String purpose,
+            BigDecimal costBudget,
+            String dataRegion,
+            String requestedModel,
+            boolean stream
+    ) {
         String resolvedRequestId = requestId == null || requestId.isBlank()
                 ? UUID.randomUUID().toString()
                 : requestId;
@@ -71,6 +91,7 @@ public record GatewayRequestContext(
                 valueOrDefault(runId, resolvedRequestId),
                 valueOrDefault(purpose, "general-model-access"),
                 costBudget,
+                valueOrDefault(dataRegion, "unspecified"),
                 requestedModel,
                 stream,
                 Instant.now()

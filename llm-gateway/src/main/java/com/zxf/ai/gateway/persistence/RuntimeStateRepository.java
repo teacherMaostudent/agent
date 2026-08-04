@@ -28,8 +28,9 @@ public class RuntimeStateRepository {
         String json = toJson(payload);
         jdbcTemplate.update("""
                         INSERT INTO llm_runtime_documents(kind, doc_id, payload)
-                        VALUES (?, ?, CAST(? AS JSON))
-                        ON DUPLICATE KEY UPDATE payload = VALUES(payload)
+                        VALUES (?, ?, CAST(? AS JSONB))
+                        ON CONFLICT(kind, doc_id) DO UPDATE
+                        SET payload = excluded.payload, updated_at = CURRENT_TIMESTAMP
                         """,
                 kind, docId, json);
     }
@@ -72,21 +73,22 @@ public class RuntimeStateRepository {
                             tenant_id, user_id, status, risk_level, summary, need_human_review,
                             cost, latency_ms, payload
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON))
-                        ON DUPLICATE KEY UPDATE
-                            rag_review_id = VALUES(rag_review_id),
-                            document_id = VALUES(document_id),
-                            business_id = VALUES(business_id),
-                            document_type = VALUES(document_type),
-                            tenant_id = VALUES(tenant_id),
-                            user_id = VALUES(user_id),
-                            status = VALUES(status),
-                            risk_level = VALUES(risk_level),
-                            summary = VALUES(summary),
-                            need_human_review = VALUES(need_human_review),
-                            cost = VALUES(cost),
-                            latency_ms = VALUES(latency_ms),
-                            payload = VALUES(payload)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSONB))
+                        ON CONFLICT(task_id) DO UPDATE SET
+                            rag_review_id = excluded.rag_review_id,
+                            document_id = excluded.document_id,
+                            business_id = excluded.business_id,
+                            document_type = excluded.document_type,
+                            tenant_id = excluded.tenant_id,
+                            user_id = excluded.user_id,
+                            status = excluded.status,
+                            risk_level = excluded.risk_level,
+                            summary = excluded.summary,
+                            need_human_review = excluded.need_human_review,
+                            cost = excluded.cost,
+                            latency_ms = excluded.latency_ms,
+                            payload = excluded.payload,
+                            updated_at = CURRENT_TIMESTAMP
                         """,
                 task.taskId(),
                 task.ragReviewId(),
@@ -108,12 +110,12 @@ public class RuntimeStateRepository {
         List<JsonNode> result = jdbcTemplate.query("""
                         SELECT response_payload
                         FROM llm_request_cache
-                        WHERE cache_key = ? AND expires_at > CURRENT_TIMESTAMP(3)
+                        WHERE cache_key = ? AND expires_at > CURRENT_TIMESTAMP
                         """,
                 (rs, rowNum) -> fromJson(rs.getString("response_payload"), JsonNode.class),
                 cacheKey);
         if (result.isEmpty()) {
-            jdbcTemplate.update("DELETE FROM llm_request_cache WHERE cache_key = ? OR expires_at <= CURRENT_TIMESTAMP(3)", cacheKey);
+            jdbcTemplate.update("DELETE FROM llm_request_cache WHERE cache_key = ? OR expires_at <= CURRENT_TIMESTAMP", cacheKey);
             return Optional.empty();
         }
         return Optional.of(result.getFirst().deepCopy());
@@ -122,11 +124,12 @@ public class RuntimeStateRepository {
     public void putCache(String cacheKey, String tenantId, JsonNode response, Instant expiresAt) {
         jdbcTemplate.update("""
                         INSERT INTO llm_request_cache(cache_key, tenant_id, response_payload, expires_at)
-                        VALUES (?, ?, CAST(? AS JSON), ?)
-                        ON DUPLICATE KEY UPDATE
-                            tenant_id = VALUES(tenant_id),
-                            response_payload = VALUES(response_payload),
-                            expires_at = VALUES(expires_at)
+                        VALUES (?, ?, CAST(? AS JSONB), ?)
+                        ON CONFLICT(cache_key) DO UPDATE SET
+                            tenant_id = excluded.tenant_id,
+                            response_payload = excluded.response_payload,
+                            expires_at = excluded.expires_at,
+                            updated_at = CURRENT_TIMESTAMP
                         """,
                 cacheKey,
                 tenantId,
@@ -135,7 +138,7 @@ public class RuntimeStateRepository {
     }
 
     public Map<String, Object> cacheSnapshot() {
-        Long entries = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM llm_request_cache WHERE expires_at > CURRENT_TIMESTAMP(3)", Long.class);
+        Long entries = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM llm_request_cache WHERE expires_at > CURRENT_TIMESTAMP", Long.class);
         Long hits = stat("cache_hits");
         Long misses = stat("cache_misses");
         return Map.of(
@@ -153,7 +156,9 @@ public class RuntimeStateRepository {
         jdbcTemplate.update("""
                         INSERT INTO llm_cache_stats(stat_key, stat_value)
                         VALUES (?, 1)
-                        ON DUPLICATE KEY UPDATE stat_value = stat_value + 1
+                        ON CONFLICT(stat_key) DO UPDATE
+                        SET stat_value = llm_cache_stats.stat_value + 1,
+                            updated_at = CURRENT_TIMESTAMP
                         """,
                 statKey);
     }

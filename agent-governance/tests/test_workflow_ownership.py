@@ -125,9 +125,7 @@ def test_compliance_review_and_human_confirmation_live_in_governance(
     assert confirmed.json()["status"] == "CONFIRMED"
     assert confirmed.json()["confirmedBy"] == "qa@example.com"
 
-    audit = client.get(
-        "/v1/governance/compliance/audit-logs", headers=auditor_headers
-    )
+    audit = client.get("/v1/governance/compliance/audit-logs", headers=auditor_headers)
     assert {item["action"] for item in audit.json()} == {
         "AI_REVIEW_CREATED",
         "HUMAN_CONFIRMED",

@@ -298,7 +298,17 @@ async def start_model_route_release(
     identity: ManagementIdentity,
     container: Container,
 ) -> dict[str, Any]:
-    return await container.model_releases.start(identity.tenant_id, request)
+    release = await container.model_releases.start(identity.tenant_id, request)
+    if (
+        container.release_orchestrator is not None
+        and release.get("status") in {"CANARY_ACTIVE", "MONITORING"}
+    ):
+        container.release_orchestrator.start(
+            identity.tenant_id,
+            str(release["id"]),
+            container.settings.model_release_monitor_interval_seconds,
+        )
+    return release
 
 
 @router.get("/v1/model-route-releases", tags=["model-route-releases"])
@@ -315,18 +325,14 @@ async def get_model_route_release(
     return await container.model_releases.get(identity.tenant_id, release_id)
 
 
-@router.post(
-    "/v1/model-route-releases/{release_id}/monitor", tags=["model-route-releases"]
-)
+@router.post("/v1/model-route-releases/{release_id}/monitor", tags=["model-route-releases"])
 async def monitor_model_route_release(
     release_id: str, identity: ManagementIdentity, container: Container
 ) -> dict[str, Any]:
     return await container.model_releases.monitor(identity.tenant_id, release_id)
 
 
-@router.post(
-    "/v1/model-route-releases/{release_id}/rollback", tags=["model-route-releases"]
-)
+@router.post("/v1/model-route-releases/{release_id}/rollback", tags=["model-route-releases"])
 async def rollback_model_route_release(
     release_id: str,
     identity: ManagementIdentity,

@@ -23,6 +23,9 @@ public class ApiKeyService {
                                    String requestedUserId, String requestedModel) {
         String rawKey = extractKey(authorization, xApiKey);
         if (rawKey == null || rawKey.isBlank()) {
+            if (!properties.isAllowAnonymous()) {
+                throw new GatewayException(HttpStatus.UNAUTHORIZED, "API key is required");
+            }
             // 保留 public/anonymous 模式，方便本地演示和内部低风险接口接入。
             // 对外生产环境通常会关闭匿名访问，或在网关前再加统一鉴权。
             return new AuthResult("public", requestedUserId == null || requestedUserId.isBlank() ? "anonymous" : requestedUserId, false);

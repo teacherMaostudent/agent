@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
+from platform_infra.schema_registry import SchemaRegistry
 from pydantic import ValidationError
 
 from app.domain.errors import ToolDisabledError, ToolNotFoundError
@@ -14,7 +15,12 @@ from app.infrastructure.adapters import McpToolAdapter, ToolAdapter, build_http_
 
 
 class ToolRegistry:
-    """Immutable startup registry keyed by logical tool name and version."""
+    """Immutable startup registry keyed by logical tool name and version.
+
+    Tool definitions are loaded once from the signed/deployed catalog rather
+    than accepted from an LLM request.  Selecting the latest version is only a
+    convenience for callers; release snapshots should always pin a version.
+    """
 
     def __init__(self) -> None:
         self._specs: dict[tuple[str, str], ToolSpec] = {}
@@ -83,9 +89,13 @@ def load_registry(
     *,
     allow_private_networks: bool,
     max_response_bytes: int,
+    client_options: dict[str, Any] | None = None,
+    schema_dir: Path | None = None,
 ) -> ToolRegistry:
     try:
         raw: Any = json.loads(path.read_text(encoding="utf-8"))
+        if schema_dir is not None:
+            SchemaRegistry(schema_dir).validate("tool-catalog.v1.json", raw)
         catalog = ToolCatalog.model_validate(raw)
     except FileNotFoundError as exc:
         raise RuntimeError(f"tool catalog does not exist: {path}") from exc
@@ -98,13 +108,18 @@ def load_registry(
         if transport.kind == "http":
             adapter = build_http_adapter(
                 transport,
-                allow_private_networks=allow_private_networks,
+                allow_private_networks=(
+                    allow_private_networks and transport.allow_private_networks
+                ),
                 max_response_bytes=max_response_bytes,
+                client_options=client_options,
             )
         else:
             adapter = McpToolAdapter(
                 transport,
-                allow_private_networks=allow_private_networks,
+                allow_private_networks=(
+                    allow_private_networks and transport.allow_private_networks
+                ),
             )
         registry.register(spec, adapter)
     return registry

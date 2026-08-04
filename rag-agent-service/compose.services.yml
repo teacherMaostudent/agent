@@ -10,7 +10,9 @@ x-service-env: &service-env
   RAG_TOOL_GATEWAY_API_KEY: local-tool-gateway-key
 
 x-python-service: &python-service
-  build: .
+  build:
+    context: ..
+    dockerfile: rag-agent-service/Dockerfile
   restart: unless-stopped
   environment: *service-env
   volumes:
@@ -53,7 +55,9 @@ services:
       - ingestion-api
 
   tool-gateway:
-    build: ../tool-gateway
+    build:
+      context: ..
+      dockerfile: tool-gateway/Dockerfile
     restart: unless-stopped
     environment:
       TOOL_GATEWAY_DATABASE_PATH: /service/data/tool-gateway.db

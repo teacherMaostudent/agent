@@ -16,7 +16,7 @@ def run_agent(
     x_permissions: str = Header(default="rag:read", alias="X-Permissions"),
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
 ) -> dict:
-    """Run the bounded Agent Graph; identity and permissions only come from trusted headers."""
+    """Run an Agent through the Runtime Harness."""
     if not container.settings.agent_enabled:
         raise HTTPException(status_code=503, detail="agent graph is disabled")
     permissions = {item.strip() for item in x_permissions.split(",") if item.strip()}
@@ -24,7 +24,7 @@ def run_agent(
         raise HTTPException(status_code=403, detail="rag:read permission is required")
     request_id = x_request_id or f"rag-{uuid4().hex}"
     thread_id = f"{x_tenant_id}:{x_user_id}:{request.session_id or request_id}"
-    result = container.agent_graph.run(
+    result = container.agent_harness.run(
         {
             "task": request.task,
             "document_id": request.document_id,

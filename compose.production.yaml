@@ -1,0 +1,354 @@
+x-python-build: &python-build
+  context: .
+
+x-rag-env: &rag-env
+  RAG_DEPLOYMENT_ENVIRONMENT: production
+  RAG_PERSISTENCE: postgres
+  RAG_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/agent_platform
+  RAG_DATABASE_SCHEMA: rag_platform
+  RAG_TEMPORAL_ENABLED: "true"
+  RAG_TEMPORAL_TARGET: temporal:7233
+  RAG_TEMPORAL_REGION_TARGETS: ${RAG_TEMPORAL_REGION_TARGETS:-}
+  RAG_TEMPORAL_WORKER_REGION: ${RAG_TEMPORAL_WORKER_REGION:-}
+  RAG_OBJECT_STORAGE_BACKEND: s3
+  RAG_S3_BUCKET: ${DOCUMENT_BUCKET}
+  RAG_S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+  RAG_S3_REGION: ${S3_REGION}
+  RAG_S3_KMS_KEY_ID: ${S3_KMS_KEY_ID}
+  RAG_SEARCH_BACKEND: opensearch
+  RAG_OPENSEARCH_URL: http://opensearch:9200
+  RAG_OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME}
+  RAG_OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD}
+  RAG_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+  RAG_OIDC_ENABLED: "true"
+  RAG_OIDC_ISSUER: ${OIDC_ISSUER}
+  RAG_OIDC_AUDIENCE: ${OIDC_AUDIENCE}
+  RAG_OIDC_JWKS_URL: ${OIDC_JWKS_URL}
+  RAG_WORKLOAD_TOKEN_URL: ${OIDC_TOKEN_URL}
+  RAG_WORKLOAD_CLIENT_ID: rag-platform
+  RAG_WORKLOAD_CLIENT_SECRET: ${RAG_WORKLOAD_CLIENT_SECRET}
+  RAG_WORKLOAD_AUDIENCE: ${OIDC_AUDIENCE}
+  RAG_OPA_ENABLED: "true"
+  RAG_OPA_BASE_URL: http://opa:8181
+  RAG_RUNTIME_SNAPSHOT_REQUIRED: "true"
+  RAG_REQUIRE_SERVICE_AUTH: "true"
+  RAG_SERVICE_API_KEY: ${RAG_SERVICE_API_KEY}
+  RAG_INTERNAL_SERVICE_API_KEY: ${RAG_INTERNAL_SERVICE_API_KEY}
+  RAG_MTLS_ENABLED: ${RAG_MTLS_ENABLED:-true}
+  RAG_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+  RAG_MTLS_CERT_FILE: /run/secrets/rag_runtime_cert
+  RAG_MTLS_KEY_FILE: /run/secrets/rag_runtime_key
+  RAG_CONTROL_PLANE_BASE_URL: http://agent-control-plane:8080
+  RAG_CONTROL_PLANE_RUNTIME_KEY: ${CONTROL_PLANE_RUNTIME_API_KEY}
+  RAG_GOVERNANCE_BASE_URL: http://agent-governance:8081
+  RAG_GOVERNANCE_EVENT_KEY: ${GOVERNANCE_EVENT_INGESTION_KEY}
+  RAG_CONTEXT_SERVICE_BASE_URL: http://agent-context-service:8002
+  RAG_RAG_QUERY_BASE_URL: http://rag-query-api:8003
+  RAG_TOOL_GATEWAY_BASE_URL: http://tool-gateway:8090
+  RAG_TOOL_GATEWAY_API_KEY: ${TOOL_GATEWAY_SERVICE_API_KEY}
+  RAG_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
+  RAG_LLM_GATEWAY_API_KEY: ${RAG_LLM_GATEWAY_API_KEY}
+  RAG_ALLOW_LEGACY_PUBLIC_DOCUMENTS: "false"
+  RAG_CORS_ORIGINS: ${RAG_CORS_ORIGINS}
+  RAG_OTEL_ENABLED: "true"
+  RAG_OTEL_EXPORTER_ENDPOINT: http://otel-collector:4318/v1/traces
+
+x-rag-service: &rag-service
+  build:
+    <<: *python-build
+    dockerfile: rag-agent-service/Dockerfile
+  restart: unless-stopped
+  environment: *rag-env
+  secrets:
+    - agent_ca_pem
+    - rag_runtime_cert
+    - rag_runtime_key
+
+secrets:
+  agent_ca_pem:
+    file: ${AGENT_MTLS_CA_FILE:-deploy/tls/agent-ca.pem}
+  rag_runtime_cert:
+    file: ${RAG_MTLS_CERT_FILE:-deploy/tls/rag-runtime.crt}
+  rag_runtime_key:
+    file: ${RAG_MTLS_KEY_FILE:-deploy/tls/rag-runtime.key}
+  control_plane_cert:
+    file: ${CONTROL_PLANE_MTLS_CERT_FILE:-deploy/tls/control-plane.crt}
+  control_plane_key:
+    file: ${CONTROL_PLANE_MTLS_KEY_FILE:-deploy/tls/control-plane.key}
+  tool_gateway_cert:
+    file: ${TOOL_GATEWAY_MTLS_CERT_FILE:-deploy/tls/tool-gateway.crt}
+  tool_gateway_key:
+    file: ${TOOL_GATEWAY_MTLS_KEY_FILE:-deploy/tls/tool-gateway.key}
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: agent_platform
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d agent_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: ${REDIS_IMAGE}
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    volumes: [redis-data:/data]
+
+  kafka:
+    image: ${KAFKA_IMAGE}
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    volumes: [kafka-data:/var/lib/kafka/data]
+
+  kafka-connect:
+    image: ${DEBEZIUM_CONNECT_IMAGE}
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: agent-platform-connect
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-status
+    depends_on: [kafka, postgres]
+    ports: ["8083:8083"]
+
+  temporal:
+    image: ${TEMPORAL_IMAGE}
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD}
+      DBNAME: temporal
+    depends_on: [postgres]
+
+  opensearch:
+    image: ${OPENSEARCH_IMAGE}
+    environment:
+      discovery.type: single-node
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_PASSWORD}
+      plugins.security.ssl.http.enabled: "false"
+      bootstrap.memory_lock: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms2g -Xmx2g
+    volumes: [opensearch-data:/usr/share/opensearch/data]
+
+  opa:
+    image: ${OPA_IMAGE}
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
+    volumes: [./deploy/opa:/policies:ro]
+
+  otel-collector:
+    image: ${OTEL_COLLECTOR_IMAGE}
+    command: ["--config=/etc/otel/config.yaml"]
+    environment:
+      OTEL_BACKEND_ENDPOINT: ${OTEL_BACKEND_ENDPOINT}
+      OTEL_BACKEND_INSECURE: ${OTEL_BACKEND_INSECURE:-false}
+    volumes: [./deploy/otel-collector.yaml:/etc/otel/config.yaml:ro]
+
+  agent-control-plane:
+    build:
+      <<: *python-build
+      dockerfile: agent-control-plane/Dockerfile
+    environment:
+      CONTROL_PLANE_ENVIRONMENT: production
+      CONTROL_PLANE_DATABASE_BACKEND: postgres
+      CONTROL_PLANE_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/agent_platform
+      CONTROL_PLANE_OIDC_ENABLED: "true"
+      CONTROL_PLANE_OIDC_ISSUER: ${OIDC_ISSUER}
+      CONTROL_PLANE_OIDC_AUDIENCE: ${OIDC_AUDIENCE}
+      CONTROL_PLANE_OIDC_JWKS_URL: ${OIDC_JWKS_URL}
+      CONTROL_PLANE_WORKLOAD_TOKEN_URL: ${OIDC_TOKEN_URL}
+      CONTROL_PLANE_WORKLOAD_CLIENT_ID: agent-control-plane
+      CONTROL_PLANE_WORKLOAD_CLIENT_SECRET: ${CONTROL_PLANE_WORKLOAD_CLIENT_SECRET}
+      CONTROL_PLANE_WORKLOAD_AUDIENCE: ${OIDC_AUDIENCE}
+      CONTROL_PLANE_MTLS_ENABLED: ${CONTROL_PLANE_MTLS_ENABLED:-true}
+      CONTROL_PLANE_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      CONTROL_PLANE_MTLS_CERT_FILE: /run/secrets/control_plane_cert
+      CONTROL_PLANE_MTLS_KEY_FILE: /run/secrets/control_plane_key
+      CONTROL_PLANE_TEMPORAL_ENABLED: "true"
+      CONTROL_PLANE_TEMPORAL_TARGET: temporal:7233
+      CONTROL_PLANE_TOOL_CATALOG_REQUIRED: "true"
+      CONTROL_PLANE_TOOL_CATALOG_PATH: /service/tool-catalog/tools.json
+      CONTROL_PLANE_CONTRACTS_SCHEMA_DIR: /service/platform-contracts/schemas
+      CONTROL_PLANE_AGENT_RELEASE_QUALITY_GATE_REQUIRED: "true"
+      CONTROL_PLANE_ENFORCE_ADMIN_ROLE: "true"
+      CONTROL_PLANE_ADMIN_API_KEY: ${CONTROL_PLANE_ADMIN_API_KEY}
+      CONTROL_PLANE_RUNTIME_API_KEY: ${CONTROL_PLANE_RUNTIME_API_KEY}
+      CONTROL_PLANE_GOVERNANCE_AUDITOR_API_KEY: ${GOVERNANCE_AUDITOR_API_KEY}
+      CONTROL_PLANE_LLM_GATEWAY_ADMIN_PASSWORD: ${LLM_ADMIN_PASSWORD}
+      CONTROL_PLANE_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
+      CONTROL_PLANE_GOVERNANCE_BASE_URL: http://agent-governance:8081
+      CONTROL_PLANE_OTEL_ENABLED: "true"
+      CONTROL_PLANE_OTEL_ENDPOINT: http://otel-collector:4318/v1/traces
+    secrets:
+      - agent_ca_pem
+      - control_plane_cert
+      - control_plane_key
+    depends_on: [postgres, temporal, otel-collector]
+    volumes:
+      - ./tool-gateway/config/tools.json:/service/tool-catalog/tools.json:ro
+      - ./platform-contracts/schemas:/service/platform-contracts/schemas:ro
+
+  control-plane-worker:
+    extends:
+      service: agent-control-plane
+    command: control-plane-temporal-worker
+
+  agent-governance:
+    build:
+      <<: *python-build
+      dockerfile: agent-governance/Dockerfile
+    environment:
+      GOVERNANCE_ENVIRONMENT: production
+      GOVERNANCE_DATABASE_BACKEND: postgres
+      GOVERNANCE_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/agent_platform
+      GOVERNANCE_OIDC_ENABLED: "true"
+      GOVERNANCE_OIDC_ISSUER: ${OIDC_ISSUER}
+      GOVERNANCE_OIDC_AUDIENCE: ${OIDC_AUDIENCE}
+      GOVERNANCE_OIDC_JWKS_URL: ${OIDC_JWKS_URL}
+      GOVERNANCE_WORKLOAD_TOKEN_URL: ${OIDC_TOKEN_URL}
+      GOVERNANCE_WORKLOAD_CLIENT_ID: agent-governance
+      GOVERNANCE_WORKLOAD_CLIENT_SECRET: ${GOVERNANCE_WORKLOAD_CLIENT_SECRET}
+      GOVERNANCE_WORKLOAD_AUDIENCE: ${OIDC_AUDIENCE}
+      GOVERNANCE_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      GOVERNANCE_WORM_BUCKET: ${AUDIT_BUCKET}
+      GOVERNANCE_WORM_REGION: ${S3_REGION}
+      GOVERNANCE_WORM_KMS_KEY_ID: ${WORM_KMS_KEY_ID}
+      GOVERNANCE_EVENT_INGESTION_KEY: ${GOVERNANCE_EVENT_INGESTION_KEY}
+      GOVERNANCE_AUDITOR_API_KEY: ${GOVERNANCE_AUDITOR_API_KEY}
+      GOVERNANCE_ENFORCE_AUDITOR_ROLE: "true"
+      GOVERNANCE_ONLINE_TRACE_SAMPLE_RATE: ${GOVERNANCE_TRACE_SAMPLE_RATE:-0.1}
+      GOVERNANCE_KAFKA_MAX_POLL_RECORDS: ${GOVERNANCE_KAFKA_MAX_POLL_RECORDS:-500}
+      GOVERNANCE_KAFKA_RETRY_BACKOFF_MAX_SECONDS: ${GOVERNANCE_KAFKA_RETRY_BACKOFF_MAX_SECONDS:-60}
+      GOVERNANCE_LLM_GATEWAY_API_KEY: ${GOVERNANCE_LLM_GATEWAY_API_KEY}
+      GOVERNANCE_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
+      GOVERNANCE_OTEL_ENABLED: "true"
+      GOVERNANCE_OTEL_ENDPOINT: http://otel-collector:4318/v1/traces
+    depends_on: [postgres, kafka, otel-collector]
+    volumes:
+      - ./platform-contracts/schemas:/service/platform-contracts/schemas:ro
+
+  governance-consumer:
+    extends:
+      service: agent-governance
+    command: governance-kafka-consumer
+
+  agent-runtime:
+    <<: *rag-service
+    command: uvicorn apps.agent_runtime.main:app --host 0.0.0.0 --port 8001
+    depends_on: [postgres, temporal, redis, opa, otel-collector]
+
+  runtime-worker:
+    <<: *rag-service
+    command: runtime-temporal-worker
+    depends_on: [agent-runtime, temporal]
+
+  agent-context-service:
+    <<: *rag-service
+    command: uvicorn apps.agent_context_service.main:app --host 0.0.0.0 --port 8002
+
+  rag-query-api:
+    <<: *rag-service
+    command: uvicorn apps.rag_query_api.main:app --host 0.0.0.0 --port 8003
+    depends_on: [opensearch]
+
+  ingestion-api:
+    <<: *rag-service
+    command: uvicorn apps.ingestion_api.main:app --host 0.0.0.0 --port 8004
+
+  ingestion-worker:
+    <<: *rag-service
+    command: ingestion-temporal-worker
+    depends_on: [temporal, opensearch]
+
+  tool-gateway:
+    build:
+      <<: *python-build
+      dockerfile: tool-gateway/Dockerfile
+    environment:
+      TOOL_GATEWAY_ENVIRONMENT: production
+      TOOL_GATEWAY_DATABASE_BACKEND: postgres
+      TOOL_GATEWAY_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/agent_platform
+      TOOL_GATEWAY_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+      TOOL_GATEWAY_OIDC_ENABLED: "true"
+      TOOL_GATEWAY_OIDC_ISSUER: ${OIDC_ISSUER}
+      TOOL_GATEWAY_OIDC_AUDIENCE: ${OIDC_AUDIENCE}
+      TOOL_GATEWAY_OIDC_JWKS_URL: ${OIDC_JWKS_URL}
+      TOOL_GATEWAY_WORKLOAD_TOKEN_URL: ${OIDC_TOKEN_URL}
+      TOOL_GATEWAY_WORKLOAD_CLIENT_ID: tool-gateway
+      TOOL_GATEWAY_WORKLOAD_CLIENT_SECRET: ${TOOL_GATEWAY_WORKLOAD_CLIENT_SECRET}
+      TOOL_GATEWAY_WORKLOAD_AUDIENCE: ${OIDC_AUDIENCE}
+      TOOL_GATEWAY_MTLS_ENABLED: ${TOOL_GATEWAY_MTLS_ENABLED:-true}
+      TOOL_GATEWAY_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      TOOL_GATEWAY_MTLS_CERT_FILE: /run/secrets/tool_gateway_cert
+      TOOL_GATEWAY_MTLS_KEY_FILE: /run/secrets/tool_gateway_key
+      TOOL_GATEWAY_OPA_ENABLED: "true"
+      TOOL_GATEWAY_OPA_BASE_URL: http://opa:8181
+      TOOL_GATEWAY_SERVICE_API_KEY: ${TOOL_GATEWAY_SERVICE_API_KEY}
+      RAG_INTERNAL_SERVICE_API_KEY: ${RAG_INTERNAL_SERVICE_API_KEY}
+      TOOL_GATEWAY_ADMIN_API_KEY: ${TOOL_GATEWAY_ADMIN_API_KEY}
+      TOOL_GATEWAY_ALLOW_PRIVATE_NETWORKS: "true"
+      TOOL_GATEWAY_CONTRACTS_SCHEMA_DIR: /service/platform-contracts/schemas
+      TOOL_GATEWAY_GOVERNANCE_BASE_URL: http://agent-governance:8081
+      TOOL_GATEWAY_GOVERNANCE_EVENT_KEY: ${GOVERNANCE_EVENT_INGESTION_KEY}
+      TOOL_GATEWAY_OTEL_ENABLED: "true"
+      TOOL_GATEWAY_OTEL_ENDPOINT: http://otel-collector:4318/v1/traces
+    secrets:
+      - agent_ca_pem
+      - tool_gateway_cert
+      - tool_gateway_key
+    depends_on: [postgres, redis, opa, rag-query-api]
+    volumes:
+      - ./tool-gateway/config/tools.json:/service/config/tools.json:ro
+      - ./platform-contracts/schemas:/service/platform-contracts/schemas:ro
+
+  llm-gateway:
+    build: ./llm-gateway
+    environment:
+      DEPLOYMENT_ENVIRONMENT: production
+      DATABASE_URL: jdbc:postgresql://postgres:5432/agent_platform
+      DATABASE_USERNAME: ${POSTGRES_USER}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      GATEWAY_QUOTA_STORE: redis
+      GATEWAY_ALLOW_ANONYMOUS: "false"
+      GATEWAY_OIDC_ENABLED: "true"
+      OIDC_ISSUER_URI: ${OIDC_ISSUER}
+      GATEWAY_OPA_ENABLED: "true"
+      GATEWAY_OPA_BASE_URL: http://opa:8181
+      ADMIN_SECURITY_ENABLED: "true"
+      ADMIN_PASSWORD: ${LLM_ADMIN_PASSWORD}
+      OTEL_SDK_DISABLED: "false"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      GOVERNANCE_BASE_URL: http://agent-governance:8081
+      GOVERNANCE_AUDITOR_API_KEY: ${GOVERNANCE_AUDITOR_API_KEY}
+      GOVERNANCE_EVENT_INGESTION_KEY: ${GOVERNANCE_EVENT_INGESTION_KEY}
+      CONTROL_PLANE_BASE_URL: http://agent-control-plane:8080
+      CONTROL_PLANE_ADMIN_API_KEY: ${CONTROL_PLANE_ADMIN_API_KEY}
+      WORKLOAD_IDENTITY_TOKEN_URL: ${OIDC_TOKEN_URL}
+      WORKLOAD_IDENTITY_CLIENT_ID: llm-gateway
+      WORKLOAD_IDENTITY_CLIENT_SECRET: ${LLM_GATEWAY_WORKLOAD_CLIENT_SECRET}
+      WORKLOAD_IDENTITY_AUDIENCE: ${OIDC_AUDIENCE}
+    depends_on: [postgres, redis, opa, otel-collector]
+
+volumes:
+  postgres-data:
+  redis-data:
+  kafka-data:
+  opensearch-data:

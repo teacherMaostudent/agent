@@ -59,6 +59,11 @@ async def readiness(container: Container) -> HealthStatus:
 async def ingest_event(
     event: GovernanceEvent, _: EventKey, container: Container
 ) -> IngestionResult:
+    # Pydantic validates the service model; the shared JSON Schema additionally
+    # protects cross-language publishers from contract drift at this boundary.
+    container.schema_registry.validate(
+        "governance-event.v1.json", event.model_dump(mode="json")
+    )
     return await service(container).ingest(event)
 
 
@@ -70,6 +75,11 @@ async def list_audit_events(
     limit: int = Query(default=100, ge=1, le=1_000),
 ) -> AuditEventList:
     return await service(container).list_audit_events(identity, after_sequence, limit)
+
+
+@router.get("/v1/governance/audit-events/verify", tags=["audit"])
+async def verify_audit_chain(identity: Auditor, container: Container) -> dict[str, Any]:
+    return await container.repository.verify_audit_chain(identity.tenant_id)
 
 
 @router.get("/v1/governance/findings", response_model=FindingList, tags=["findings"])
@@ -134,9 +144,7 @@ async def upsert_prompt_version(
 async def upsert_retrieval_strategy(
     request: dict[str, Any], identity: Auditor, container: Container
 ) -> dict[str, Any]:
-    return await container.evaluation.upsert_asset(
-        identity.tenant_id, RETRIEVAL_STRATEGY, request
-    )
+    return await container.evaluation.upsert_asset(identity.tenant_id, RETRIEVAL_STRATEGY, request)
 
 
 @router.put("/v1/governance/evaluations/golden-dataset", tags=["evaluation"])
@@ -195,22 +203,16 @@ async def create_compliance_review(
 
 
 @router.get("/v1/governance/compliance", tags=["compliance-workflow"])
-async def compliance_workflow_snapshot(
-    identity: Auditor, container: Container
-) -> dict[str, Any]:
+async def compliance_workflow_snapshot(identity: Auditor, container: Container) -> dict[str, Any]:
     return await container.compliance.snapshot(identity.tenant_id)
 
 
 @router.get("/v1/governance/compliance/reviews", tags=["compliance-workflow"])
-async def list_compliance_reviews(
-    identity: Auditor, container: Container
-) -> list[dict[str, Any]]:
+async def list_compliance_reviews(identity: Auditor, container: Container) -> list[dict[str, Any]]:
     return await container.compliance.list(identity.tenant_id)
 
 
-@router.get(
-    "/v1/governance/compliance/reviews/{review_id}", tags=["compliance-workflow"]
-)
+@router.get("/v1/governance/compliance/reviews/{review_id}", tags=["compliance-workflow"])
 async def get_compliance_review(
     review_id: str, identity: Auditor, container: Container
 ) -> dict[str, Any]:
@@ -231,9 +233,7 @@ async def confirm_compliance_review(
 
 
 @router.get("/v1/governance/compliance/audit-logs", tags=["compliance-workflow"])
-async def compliance_audit_logs(
-    identity: Auditor, container: Container
-) -> list[dict[str, Any]]:
+async def compliance_audit_logs(identity: Auditor, container: Container) -> list[dict[str, Any]]:
     return await container.compliance.audit_logs(identity.tenant_id)
 
 
@@ -248,15 +248,11 @@ async def record_gateway_trace(
 async def record_feedback(
     request: dict[str, Any], identity: Auditor, container: Container
 ) -> dict[str, Any]:
-    return await container.evaluation.record_feedback(
-        identity.tenant_id, identity.user_id, request
-    )
+    return await container.evaluation.record_feedback(identity.tenant_id, identity.user_id, request)
 
 
 @router.get("/v1/governance/evaluations/online", tags=["online-evaluation"])
-async def online_evaluation_snapshot(
-    identity: Auditor, container: Container
-) -> dict[str, Any]:
+async def online_evaluation_snapshot(identity: Auditor, container: Container) -> dict[str, Any]:
     return await container.evaluation.online_snapshot(identity.tenant_id)
 
 
@@ -267,9 +263,7 @@ async def online_evaluation_snapshot(
 async def judge_online_sample(
     sample_id: str, identity: Auditor, container: Container
 ) -> dict[str, Any]:
-    return await container.evaluation.judge_online(
-        identity.tenant_id, identity.user_id, sample_id
-    )
+    return await container.evaluation.judge_online(identity.tenant_id, identity.user_id, sample_id)
 
 
 @router.post(

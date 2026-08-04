@@ -22,17 +22,27 @@ public class SecurityConfig {
     @Bean
     public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
         GatewayProperties.Security security = properties.getAdmin().getSecurity();
+        boolean oidcEnabled = properties.getOidc().isEnabled();
         if (security.isEnabled()) {
-            return http
+            ServerHttpSecurity configured = http
                     .csrf(ServerHttpSecurity.CsrfSpec::disable)
-                    .authorizeExchange(exchanges -> exchanges
-                            .pathMatchers("/admin/**").hasRole("ADMIN")
-                            .pathMatchers(HttpMethod.GET, "/swagger-ui/**", "/v3/api-docs/**").permitAll()
-                            .pathMatchers(HttpMethod.GET, "/actuator/health", "/actuator/info", "/actuator/prometheus").permitAll()
-                            .pathMatchers("/v1/**").permitAll()
-                            .anyExchange().permitAll())
-                    .httpBasic(Customizer.withDefaults())
-                    .build();
+                    .authorizeExchange(exchanges -> {
+                        exchanges.pathMatchers("/admin/**").hasRole("ADMIN")
+                                .pathMatchers(HttpMethod.GET, "/swagger-ui/**", "/v3/api-docs/**").permitAll()
+                                .pathMatchers(HttpMethod.GET, "/actuator/health", "/actuator/info", "/actuator/prometheus").permitAll();
+                        if (oidcEnabled) {
+                            exchanges.pathMatchers("/v1/chat/completions").permitAll()
+                                    .pathMatchers("/v1/**").authenticated();
+                        } else {
+                            exchanges.pathMatchers("/v1/**").permitAll();
+                        }
+                        exchanges.anyExchange().permitAll();
+                    })
+                    .httpBasic(Customizer.withDefaults());
+            if (oidcEnabled) {
+                configured.oauth2ResourceServer(resource -> resource.jwt(Customizer.withDefaults()));
+            }
+            return configured.build();
         }
 
         return http

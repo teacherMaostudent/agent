@@ -2,18 +2,51 @@ from opentelemetry import trace
 
 from app.contracts.rag import RagSearchRequest, RagSearchResponse
 from app.ingestion.chunker import TextChunker
+from app.retrieval.controlled_scan import ControlledFileScanner
 
 
 class RagQueryService:
     """Online retrieval plane. It never parses files or mutates the knowledge base."""
 
-    def __init__(self, repository, retriever) -> None:
+    def __init__(
+        self,
+        repository,
+        retriever,
+        *,
+        allow_legacy_public_documents: bool = False,
+        search_projection=None,
+        scanner: ControlledFileScanner | None = None,
+    ) -> None:
         self.repository = repository
         self.retriever = retriever
         self.chunker = TextChunker()
+        self.allow_legacy_public_documents = allow_legacy_public_documents
+        self.search_projection = search_projection
+        self.scanner = scanner
+
+    def scan(
+        self, scope: str, pattern: str, *, regex: bool = False, glob: str = ""
+    ) -> list[dict]:
+        if self.scanner is None:
+            raise ValueError("controlled file scanning is not configured")
+        return [
+            item.__dict__
+            for item in self.scanner.scan(
+                scope, pattern, regex=regex, glob=glob or "**/*"
+            )
+        ]
 
     def search(self, request: RagSearchRequest) -> RagSearchResponse:
-        with trace.get_tracer(__name__).start_as_current_span("rag.query.search") as span:
+        with trace.get_tracer(__name__).start_as_current_span(
+            "rag.query.search"
+        ) as span:
+            if self.search_projection is not None and hasattr(
+                self.search_projection, "search"
+            ):
+                result = self.search_projection.search(request)
+                span.set_attribute("rag.result_count", len(result.evidence))
+                span.set_attribute("tenant.id", request.tenant_id)
+                return result
             chunks = [
                 chunk
                 for chunk in self.repository.regulation_chunks()
@@ -24,8 +57,12 @@ class RagQueryService:
                 if document is not None and document.text:
                     chunks.extend(
                         chunk
-                        for chunk in self.repository.document_chunks(request.document_id)
-                        if self._authorized(chunk.metadata, request.tenant_id, request.user_id)
+                        for chunk in self.repository.document_chunks(
+                            request.document_id
+                        )
+                        if self._authorized(
+                            chunk.metadata, request.tenant_id, request.user_id
+                        )
                     )
             if request.content:
                 chunks.extend(
@@ -46,13 +83,12 @@ class RagQueryService:
                 candidate_count=len(chunks),
             )
 
-    @staticmethod
-    def _authorized(metadata: dict, tenant_id: str, user_id: str) -> bool:
-        """Apply ACL before retrieval; missing ACL metadata means legacy/public data."""
+    def _authorized(self, metadata: dict, tenant_id: str, user_id: str) -> bool:
+        """Apply ACL before retrieval and deny unowned legacy data by default."""
         owner_tenant = metadata.get("tenant_id")
+        if not owner_tenant:
+            return self.allow_legacy_public_documents
         if owner_tenant and owner_tenant != tenant_id:
             return False
         allowed_users = metadata.get("allowed_users")
-        if allowed_users and user_id not in allowed_users:
-            return False
-        return True
+        return not allowed_users or user_id in allowed_users

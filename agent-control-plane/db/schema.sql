@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS releases (
     status TEXT NOT NULL,
     previous_release_id TEXT,
     reason TEXT NOT NULL,
+    quality_gate_id TEXT,
+    quality_gate_metrics_json TEXT NOT NULL DEFAULT '{}',
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -100,3 +102,10 @@ CREATE TABLE IF NOT EXISTS model_route_releases (
 
 CREATE INDEX IF NOT EXISTS idx_model_route_releases_updated
     ON model_route_releases (tenant_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS controller_leases (
+    lease_name TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);

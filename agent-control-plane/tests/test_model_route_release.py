@@ -26,9 +26,7 @@ class FakeGateway:
         assert route_name == "general"
         return deepcopy(self.current)
 
-    async def upsert_route(
-        self, route_name: str, route: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def upsert_route(self, route_name: str, route: dict[str, Any]) -> dict[str, Any]:
         assert route_name == "general"
         self.current = deepcopy(route)
         return deepcopy(route)

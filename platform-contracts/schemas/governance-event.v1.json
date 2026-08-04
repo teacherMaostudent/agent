@@ -5,19 +5,44 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "eventId",
-    "eventType",
-    "sourceService",
-    "occurredAt",
-    "executionContext",
+    "event_id",
+    "source_service",
+    "event_type",
+    "trace_id",
+    "tenant_id",
+    "occurred_at",
     "payload"
   ],
   "properties": {
-    "eventId": {"type": "string", "minLength": 1, "maxLength": 160},
-    "eventType": {"type": "string", "minLength": 1, "maxLength": 160},
-    "sourceService": {"type": "string", "minLength": 1, "maxLength": 100},
-    "occurredAt": {"type": "string", "format": "date-time"},
-    "executionContext": {"$ref": "execution-context.v1.json"},
+    "schema_version": {"const": "1.0", "default": "1.0"},
+    "event_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "source_service": {"type": "string", "minLength": 1, "maxLength": 100},
+    "event_type": {"type": "string", "minLength": 1, "maxLength": 150},
+    "trace_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "tenant_id": {"type": "string", "minLength": 1, "maxLength": 100},
+    "occurred_at": {"type": "string", "format": "date-time"},
     "payload": {"type": "object"}
-  }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"event_type": {"const": "tool.execution.completed"}}},
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["tool_name", "tool_version", "status", "risk", "approval_granted"]
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "llm.request.completed"}}},
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["request_id", "model", "data_region", "cost", "cost_currency", "success"]
+          }
+        }
+      }
+    }
+  ]
 }

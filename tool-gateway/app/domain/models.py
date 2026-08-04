@@ -46,6 +46,7 @@ class HttpTransport(StrictModel):
     auth_header: str | None = Field(default=None, max_length=100)
     auth_env: str | None = Field(default=None, max_length=200)
     allowed_hosts: list[str] = Field(min_length=1)
+    allow_private_networks: bool = False
 
     @field_validator("allowed_hosts")
     @classmethod
@@ -61,6 +62,7 @@ class McpTransport(StrictModel):
     auth_header: str | None = Field(default=None, max_length=100)
     auth_env: str | None = Field(default=None, max_length=200)
     allowed_hosts: list[str] = Field(min_length=1)
+    allow_private_networks: bool = False
 
     @field_validator("allowed_hosts")
     @classmethod

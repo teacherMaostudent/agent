@@ -4,6 +4,7 @@ import asyncio
 import json
 import sqlite3
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -32,6 +33,17 @@ class SqliteRepository:
         def operation() -> None:
             with self._connect() as connection:
                 connection.executescript(schema)
+                columns = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(releases)")
+                }
+                if "quality_gate_id" not in columns:
+                    connection.execute("ALTER TABLE releases ADD COLUMN quality_gate_id TEXT")
+                if "quality_gate_metrics_json" not in columns:
+                    connection.execute(
+                        "ALTER TABLE releases ADD COLUMN quality_gate_metrics_json "
+                        "TEXT NOT NULL DEFAULT '{}'"
+                    )
 
         await asyncio.to_thread(operation)
 
@@ -42,6 +54,33 @@ class SqliteRepository:
                 return bool(row and row["ok"] == 1)
 
         return await asyncio.to_thread(operation)
+
+    async def acquire_lease(self, lease_name: str, owner_id: str, ttl_seconds: float) -> bool:
+        now = datetime.now(UTC)
+        expires_at = now + timedelta(seconds=ttl_seconds)
+
+        def operation(connection: sqlite3.Connection) -> bool:
+            cursor = connection.execute(
+                """
+                INSERT INTO controller_leases(lease_name, owner_id, expires_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(lease_name) DO UPDATE SET
+                    owner_id = excluded.owner_id,
+                    expires_at = excluded.expires_at,
+                    updated_at = excluded.updated_at
+                WHERE controller_leases.owner_id = excluded.owner_id
+                   OR controller_leases.expires_at <= excluded.updated_at
+                """,
+                (
+                    lease_name,
+                    owner_id,
+                    expires_at.isoformat(),
+                    now.isoformat(),
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return await self._write(operation)
 
     async def create_agent(self, agent: AgentDefinition, event: OutboxEvent) -> None:
         def operation(connection: sqlite3.Connection) -> None:
@@ -187,8 +226,9 @@ class SqliteRepository:
                 INSERT INTO releases (
                     tenant_id, release_id, agent_id, version_id, environment,
                     rollout_percentage, tenant_allowlist_json, status, previous_release_id,
-                    reason, created_by, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    reason, quality_gate_id, quality_gate_metrics_json,
+                    created_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     release.tenant_id,
@@ -201,6 +241,8 @@ class SqliteRepository:
                     release.status.value,
                     release.previous_release_id,
                     release.reason,
+                    release.quality_gate_id,
+                    _json(release.quality_gate_metrics),
                     release.created_by,
                     release.created_at.isoformat(),
                     release.updated_at.isoformat(),
@@ -229,13 +271,15 @@ class SqliteRepository:
         event: OutboxEvent,
         related_release_id: str | None = None,
         related_status: ReleaseStatus | None = None,
-    ) -> None:
-        def operation(connection: sqlite3.Connection) -> None:
-            connection.execute(
+        expected_updated_at: str | None = None,
+    ) -> bool:
+        def operation(connection: sqlite3.Connection) -> bool:
+            cursor = connection.execute(
                 """
                 UPDATE releases
                 SET rollout_percentage = ?, tenant_allowlist_json = ?, status = ?, updated_at = ?
                 WHERE tenant_id = ? AND release_id = ?
+                  AND (? IS NULL OR updated_at = ?)
                 """,
                 (
                     release.rollout_percentage,
@@ -244,8 +288,12 @@ class SqliteRepository:
                     release.updated_at.isoformat(),
                     release.tenant_id,
                     release.release_id,
+                    expected_updated_at,
+                    expected_updated_at,
                 ),
             )
+            if cursor.rowcount != 1:
+                return False
             if related_release_id and related_status:
                 connection.execute(
                     """
@@ -260,8 +308,9 @@ class SqliteRepository:
                     ),
                 )
             self._insert_event(connection, event)
+            return True
 
-        await self._write(operation)
+        return await self._write(operation)
 
     async def get_release(self, tenant_id: str, release_id: str) -> ReleaseManifest | None:
         def operation(connection: sqlite3.Connection) -> ReleaseManifest | None:
@@ -433,9 +482,7 @@ class SqliteRepository:
 
         return await self._write(operation)
 
-    async def get_model_release(
-        self, tenant_id: str, release_id: str
-    ) -> dict[str, Any] | None:
+    async def get_model_release(self, tenant_id: str, release_id: str) -> dict[str, Any] | None:
         def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
             row = connection.execute(
                 """
@@ -582,6 +629,8 @@ def _release_from_row(row: sqlite3.Row) -> ReleaseManifest:
             "status": row["status"],
             "previous_release_id": row["previous_release_id"],
             "reason": row["reason"],
+            "quality_gate_id": row["quality_gate_id"],
+            "quality_gate_metrics": json.loads(row["quality_gate_metrics_json"]),
             "created_by": row["created_by"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],

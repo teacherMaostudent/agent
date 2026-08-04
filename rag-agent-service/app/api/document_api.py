@@ -11,7 +11,14 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 @router.post("/upload")
 def upload_document(file: UploadFile = File(...)) -> Document:
     path, sha256 = container.storage.save_upload(file.filename or "upload.bin", file.file)
-    document = Document(filename=file.filename or path.name, content_type=file.content_type, file_path=path, sha256=sha256)
+    object_key = container.storage.object_key_for(path)
+    document = Document(
+        filename=file.filename or path.name,
+        content_type=file.content_type,
+        file_path=path,
+        sha256=sha256,
+        metadata={**({"object_key": object_key} if object_key else {})},
+    )
     return container.repository.save_document(document)
 
 

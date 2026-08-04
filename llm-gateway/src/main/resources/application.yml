@@ -5,13 +5,18 @@ spring:
   application:
     name: llm-gateway
   datasource:
-    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/llm_gateway?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&createDatabaseIfNotExist=true}
-    username: ${MYSQL_USERNAME:root}
-    password: ${MYSQL_PASSWORD:970402}
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/llm_gateway}
+    username: ${DATABASE_USERNAME:llm_gateway}
+    password: ${DATABASE_PASSWORD:llm_gateway}
+    driver-class-name: org.postgresql.Driver
   sql:
     init:
-      mode: ${MYSQL_INIT_MODE:always}
+      mode: ${DATABASE_INIT_MODE:always}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${OIDC_ISSUER_URI:http://localhost:8088/realms/agent-platform}
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -51,17 +56,18 @@ gateway:
   request-timeout: 60s
   max-retries: 0
   quota-store: ${GATEWAY_QUOTA_STORE:memory}
+  allow-anonymous: ${GATEWAY_ALLOW_ANONYMOUS:true}
   compatibility:
     agent-memory:
       # Historical demo only. Session memory is owned by rag-agent-service.
       enabled: ${GATEWAY_AGENT_MEMORY_ENABLED:false}
-  # 成本报表统一换算为 CNY。官方价格仍按各厂商原生币种保存，USD 汇率可由部署环境覆盖。
+  # Runtime budgets are denominated in USD, so every provider cost is normalized to USD.
   billing:
-    base-currency: CNY
+    base-currency: USD
     exchange-rate-version: ${FX_RATE_VERSION:2026-07-manual}
     exchange-rates:
-      CNY: 1.0
-      USD: ${USD_TO_CNY:7.20}
+      USD: 1.0
+      CNY: ${CNY_TO_USD:0.13888889}
   cost-prediction:
     enabled: true
     reservation-quantile: 0.95
@@ -74,6 +80,16 @@ gateway:
     cold-start-p99: 4096
   persistence:
     enabled: ${GATEWAY_PERSISTENCE_ENABLED:true}
+  governance:
+    capture-content: ${GATEWAY_GOVERNANCE_CAPTURE_CONTENT:false}
+  oidc:
+    enabled: ${GATEWAY_OIDC_ENABLED:false}
+    tenant-claim: ${GATEWAY_OIDC_TENANT_CLAIM:tenant_id}
+    roles-claim: ${GATEWAY_OIDC_ROLES_CLAIM:roles}
+  opa:
+    enabled: ${GATEWAY_OPA_ENABLED:false}
+    base-url: ${GATEWAY_OPA_BASE_URL:http://localhost:8181}
+    decision-path: ${GATEWAY_OPA_DECISION_PATH:agent_platform/llm/allow}
   admin:
     security:
       enabled: ${ADMIN_SECURITY_ENABLED:true}
@@ -85,6 +101,7 @@ gateway:
     ttl: 10m
     random-ttl-jitter: 30s
     mutex-protection-enabled: true
+    require-explicit-opt-in: ${GATEWAY_CACHE_REQUIRE_EXPLICIT_OPT_IN:true}
   resilience:
     circuit-failure-threshold: 3
     circuit-open-duration: 30s
@@ -401,5 +418,15 @@ platform-services:
   default-tenant: ${PLATFORM_DEFAULT_TENANT:demo-tenant}
   governance:
     base-url: ${GOVERNANCE_BASE_URL:http://localhost:8081}
+    auditor-key: ${GOVERNANCE_AUDITOR_API_KEY:}
+    event-key: ${GOVERNANCE_EVENT_INGESTION_KEY:}
   control-plane:
     base-url: ${CONTROL_PLANE_BASE_URL:http://localhost:8082}
+    admin-key: ${CONTROL_PLANE_ADMIN_API_KEY:}
+
+workload-identity:
+  token-url: ${WORKLOAD_IDENTITY_TOKEN_URL:}
+  client-id: ${WORKLOAD_IDENTITY_CLIENT_ID:llm-gateway}
+  client-secret: ${WORKLOAD_IDENTITY_CLIENT_SECRET:}
+  audience: ${WORKLOAD_IDENTITY_AUDIENCE:agent-platform}
+  scope: ${WORKLOAD_IDENTITY_SCOPE:}

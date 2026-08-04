@@ -9,12 +9,18 @@ description = "Asynchronous audit, evaluation, and compliance reporting for ente
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "aiokafka>=0.12,<1",
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
   "pydantic>=2.11,<3",
   "pydantic-settings>=2.10,<3",
   "uvicorn[standard]>=0.35,<1",
 ]
+
+[project.scripts]
+governance-kafka-consumer = "app.infrastructure.kafka_consumer:main"
+governance-worm-export = "app.infrastructure.worm_exporter:main"
+governance-kafka-replay = "app.infrastructure.kafka_replay:main"
 
 [project.optional-dependencies]
 dev = [
@@ -35,3 +41,6 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"

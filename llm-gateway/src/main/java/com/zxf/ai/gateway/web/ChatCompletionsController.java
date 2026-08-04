@@ -106,6 +106,7 @@ public class ChatCompletionsController {
                 headers.getFirst("X-Run-Id"),
                 headers.getFirst("X-Purpose"),
                 parseCostBudget(headers.getFirst("X-Cost-Budget")),
+                headers.getFirst("X-Data-Region"),
                 model,
                 stream
         );

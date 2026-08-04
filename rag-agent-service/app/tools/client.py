@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import httpx
 from opentelemetry import trace
+from platform_infra.identity import WorkloadTokenProvider
 
 from app.tools.registry import ToolContext, ToolRegistryError
 
@@ -21,12 +22,14 @@ class ToolGatewayClient:
         timeout: float = 30.0,
         *,
         client: httpx.Client | None = None,
+        workload_identity: WorkloadTokenProvider | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.service_api_key = service_api_key
         self.timeout = timeout
         self.client = client or httpx.Client(timeout=timeout)
         self._owns_client = client is None
+        self.workload_identity = workload_identity
         self._versions: dict[tuple[str, str], str] = {}
         self._versions_lock = Lock()
 
@@ -134,6 +137,8 @@ class ToolGatewayClient:
         }
         if self.service_api_key:
             headers["X-Tool-Gateway-Key"] = self.service_api_key
+        if self.workload_identity is not None:
+            headers.update(self.workload_identity.authorization_header())
         return headers
 
     @staticmethod

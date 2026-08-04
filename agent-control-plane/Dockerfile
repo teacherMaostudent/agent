@@ -9,11 +9,12 @@ WORKDIR /service
 RUN groupadd --system controlplane \
     && useradd --system --gid controlplane --home-dir /service controlplane
 
-COPY pyproject.toml README.md ./
-COPY app ./app
-COPY db ./db
+COPY platform-infra /platform-infra
+COPY agent-control-plane/pyproject.toml agent-control-plane/README.md ./
+COPY agent-control-plane/app ./app
+COPY agent-control-plane/db ./db
 
-RUN pip install .
+RUN pip install /platform-infra .
 
 RUN mkdir -p /data \
     && chown -R controlplane:controlplane /service /data

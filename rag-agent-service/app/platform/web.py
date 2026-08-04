@@ -1,10 +1,12 @@
 import secrets
-from contextlib import asynccontextmanager
 from collections.abc import Callable, Iterable
+from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from platform_infra.identity import OidcIdentityMiddleware
+from platform_infra.opa import OpaAuthorizationMiddleware
 
 from app.core.logging import configure_logging
 from app.observability import configure_tracing, instrument_fastapi
@@ -21,6 +23,7 @@ def create_service_app(
     settings = container.settings
     tracing_settings = settings.model_copy(update={"otel_service_name": service_name})
     configure_tracing(tracing_settings)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         yield
@@ -33,11 +36,15 @@ def create_service_app(
 
     @app.middleware("http")
     async def service_auth(request: Request, call_next):
-        if settings.require_service_auth and not request.url.path.endswith(("/health", "/health/ready")):
+        if settings.require_service_auth and not request.url.path.endswith(
+            ("/health", "/health/ready")
+        ):
             supplied = request.headers.get("X-Rag-Agent-Key", "")
             expected = settings.internal_service_api_key or settings.service_api_key
             if not secrets.compare_digest(supplied, expected):
-                return JSONResponse(status_code=401, content={"detail": "invalid service credential"})
+                return JSONResponse(
+                    status_code=401, content={"detail": "invalid service credential"}
+                )
         return await call_next(request)
 
     app.add_middleware(
@@ -46,6 +53,27 @@ def create_service_app(
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
+    )
+    public_paths = (
+        f"{settings.api_prefix}/health",
+        f"{settings.api_prefix}/health/ready",
+    )
+    app.add_middleware(
+        OpaAuthorizationMiddleware,
+        enabled=settings.opa_enabled,
+        base_url=settings.opa_base_url,
+        decision_path=settings.opa_decision_path,
+        public_paths=public_paths,
+        trusted_workload_prefixes=(),
+    )
+    app.add_middleware(
+        OidcIdentityMiddleware,
+        enabled=settings.oidc_enabled,
+        issuer=settings.oidc_issuer,
+        audience=settings.oidc_audience,
+        jwks_url=settings.oidc_jwks_url,
+        permissions_claim=getattr(settings, "oidc_permissions_claim", "permissions"),
+        public_paths=public_paths,
     )
 
     @app.get(f"{settings.api_prefix}/health", tags=["health"])
@@ -57,7 +85,9 @@ def create_service_app(
         try:
             detail = readiness() if readiness is not None else {}
         except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"dependency unavailable: {type(exc).__name__}") from exc
+            raise HTTPException(
+                status_code=503, detail=f"dependency unavailable: {type(exc).__name__}"
+            ) from exc
         return {"status": "UP", "service": service_name, **detail}
 
     for router in routers:

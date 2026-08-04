@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.contracts.context import ContextAssembleRequest, ContextPackage, ConversationMessage
 
@@ -33,3 +33,17 @@ def list_messages(
     return request.app.state.container.context_service.messages(
         session_id, x_tenant_id, x_user_id
     )
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+def delete_session(
+    session_id: str,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> None:
+    deleted = request.app.state.container.context_service.delete_session(
+        session_id, x_tenant_id, x_user_id
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="session not found")

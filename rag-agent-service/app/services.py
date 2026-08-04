@@ -1,14 +1,15 @@
 import logging
 
 from app.core.config import get_settings
+from app.bootstrap.repository import build_repository
 from app.agent.decision_engine import GatewayDecisionEngine, OfflineDecisionEngine
 from app.agent.graph import AgentGraph
+from app.runtime.harness import AgentHarness
 from app.generation.document_generator import DocumentGenerator
 from app.generation.llm_client import LlmChatClient
 from app.ingestion.parsers import DocumentParser
 from app.infrastructure.llm_gateway_client import LlmGatewayClient
 from app.knowledge.regulation_indexer import RegulationIndexer
-from app.knowledge.repository import InMemoryRepository
 from app.report.markdown_renderer import MarkdownReportRenderer
 from app.retrieval.embedder import build_embedder
 from app.retrieval.embedding_store import EmbeddingStore
@@ -18,8 +19,7 @@ from app.retrieval.semantic_retriever import SemanticRetriever
 from app.review.cross_document_reviewer import CrossDocumentReviewer
 from app.review.gmp_reviewer import GmpReviewService
 from app.review.llm_judge import LlmJudge
-from app.storage.local_storage import LocalFileStorage
-from app.knowledge.sqlite_repository import SqliteRepository
+from app.storage.factory import build_file_storage
 from app.storage.snapshot_store import SnapshotStore
 from app.tools.business import build_business_tool_registry
 
@@ -31,11 +31,8 @@ class AppContainer:
         self.settings = get_settings()
         # 持久化开关：sqlite 时用落盘仓库(重启不丢 documents/reviews)，
         # 默认 memory 保持测试全离线。向量不进 SQLite(设计红线)。
-        if self.settings.persistence == "sqlite":
-            self.repository = SqliteRepository(self.settings.sqlite_path)
-        else:
-            self.repository = InMemoryRepository()
-        self.storage = LocalFileStorage(self.settings)
+        self.repository = build_repository(self.settings)
+        self.storage = build_file_storage(self.settings)
         self.parser = DocumentParser()
         self.reranker = build_reranker(self.settings)
         self.retriever = HybridRetriever(
@@ -117,12 +114,16 @@ class AppContainer:
             if self.settings.llm_enabled
             else OfflineDecisionEngine()
         )
-        self.agent_graph = AgentGraph(
+        graph = AgentGraph(
             decision_engine,
             self.retriever,
             self.repository,
             self.tool_registry,
         )
+        self.agent_harness = AgentHarness(graph)
+        # Keep the legacy attribute for callers of the original synchronous
+        # API; all new execution paths use the Runtime Harness facade.
+        self.agent_graph = self.agent_harness
 
         # 逆向生成也经过网关，复用 reviewer 做"生成即自检"。
         if self._llm_ready():
