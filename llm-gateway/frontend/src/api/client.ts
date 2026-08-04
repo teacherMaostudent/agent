@@ -137,42 +137,6 @@ export async function chatCompletion(payload: unknown, stream = false, requestId
   return response.body
 }
 
-export async function uploadGmpDocument(file: File, businessId: string, documentType: string) {
-  const form = new FormData()
-  form.append('file', file)
-  if (businessId) form.append('businessId', businessId)
-  if (documentType) form.append('documentType', documentType)
-  return (await api.post('/v1/gmp/documents/upload', form, {
-    headers: { 'Content-Type': 'multipart/form-data', 'X-User-Id': 'console-demo' }
-  })).data
-}
-
-export async function startGmpReview(payload: GmpReviewRequest) {
-  return (await api.post('/v1/gmp/reviews', payload, {
-    headers: { 'X-User-Id': 'console-demo' }
-  })).data as GmpReviewTask
-}
-
-export async function getGmpReviews() {
-  return (await api.get('/admin/gmp/reviews')).data as GmpReviewTask[]
-}
-
-export async function getGmpSnapshot() {
-  return (await api.get('/admin/gmp')).data
-}
-
-export async function refreshGmpReview(taskId: string) {
-  return (await api.post(`/v1/gmp/reviews/${encodeURIComponent(taskId)}/refresh`)).data as GmpReviewTask
-}
-
-export async function rerunGmpReview(taskId: string) {
-  return (await api.post(`/v1/gmp/reviews/${encodeURIComponent(taskId)}/rerun`)).data as GmpReviewTask
-}
-
-export async function confirmGmpReview(taskId: string, payload: GmpHumanReviewRequest) {
-  return (await api.post(`/v1/gmp/reviews/${encodeURIComponent(taskId)}/confirm`, payload)).data as GmpReviewTask
-}
-
 export interface ProviderSummary {
   protocol: string
   baseUrl: string
@@ -190,47 +154,4 @@ export interface RouteConfig {
 export interface PromptTemplate {
   system?: string
   user?: string
-}
-
-export interface GmpReviewRequest {
-  documentId?: string
-  businessId?: string
-  documentType: string
-  content?: string
-  model?: string
-  checklistVersion?: string
-  reviewerHint?: string
-  metadata?: Record<string, unknown>
-}
-
-export interface GmpHumanReviewRequest {
-  reviewer?: string
-  action?: string
-  finalRiskLevel?: string
-  finalSummary?: string
-  finalResult?: unknown
-  notes?: string
-}
-
-export interface GmpReviewTask {
-  taskId: string
-  ragReviewId?: string
-  documentId?: string
-  businessId?: string
-  documentType: string
-  tenantId: string
-  userId: string
-  status: string
-  riskLevel?: string
-  summary?: string
-  needHumanReview: boolean
-  cost?: number
-  latencyMs?: number
-  ragResponse?: unknown
-  reviewer?: string
-  reviewedAt?: string
-  reviewNotes?: string
-  metadata?: Record<string, unknown>
-  createdAt: string
-  updatedAt: string
 }

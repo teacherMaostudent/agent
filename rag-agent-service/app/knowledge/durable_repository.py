@@ -4,11 +4,10 @@ import logging
 
 from pydantic import ValidationError
 
-from app.domain.models import Document, ReviewResult
+from app.domain.models import Document
 from app.knowledge.repository import InMemoryRepository
 
 _KIND_DOCUMENT = "document"
-_KIND_REVIEW = "review"
 log = logging.getLogger(__name__)
 
 
@@ -25,12 +24,6 @@ class DurableRepository(InMemoryRepository):
                 self.documents[document.document_id] = document
             except ValidationError:
                 log.warning("invalid persisted document ignored")
-        for payload in self._kv.all(_KIND_REVIEW):
-            try:
-                review = ReviewResult(**payload)
-                self.reviews[review.review_id] = review
-            except ValidationError:
-                log.warning("invalid persisted review ignored")
 
     def save_document(self, document: Document) -> Document:
         super().save_document(document)
@@ -55,19 +48,6 @@ class DurableRepository(InMemoryRepository):
             document.text,
             document.metadata,
         )
-
-    def save_review(self, review: ReviewResult) -> ReviewResult:
-        super().save_review(review)
-        self._kv.put(_KIND_REVIEW, review.review_id, review.model_dump(mode="json"))
-        return review
-
-    def get_review(self, review_id: str) -> ReviewResult | None:
-        payload = self._kv.get(_KIND_REVIEW, review_id)
-        if payload is None:
-            return None
-        review = ReviewResult(**payload)
-        self.reviews[review.review_id] = review
-        return review
 
     def close(self) -> None:
         self._kv.close()

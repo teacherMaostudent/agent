@@ -47,11 +47,9 @@ class RagQueryService:
                 span.set_attribute("rag.result_count", len(result.evidence))
                 span.set_attribute("tenant.id", request.tenant_id)
                 return result
-            chunks = [
-                chunk
-                for chunk in self.repository.regulation_chunks()
-                if self._authorized(chunk.metadata, request.tenant_id, request.user_id)
-            ]
+            # A general platform starts from tenant-owned documents; no domain
+            # regulation seed corpus is implicitly injected into retrieval.
+            chunks = []
             if request.document_id:
                 document = self.repository.get_document(request.document_id)
                 if document is not None and document.text:

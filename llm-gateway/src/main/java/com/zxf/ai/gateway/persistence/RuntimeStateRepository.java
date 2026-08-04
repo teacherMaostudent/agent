@@ -2,7 +2,6 @@ package com.zxf.ai.gateway.persistence;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.zxf.ai.gateway.rag.GmpReviewTask;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -64,46 +63,6 @@ public class RuntimeStateRepository {
 
     public void deleteDocument(String kind, String docId) {
         jdbcTemplate.update("DELETE FROM llm_runtime_documents WHERE kind = ? AND doc_id = ?", kind, docId);
-    }
-
-    public void saveGmpReviewTask(GmpReviewTask task) {
-        jdbcTemplate.update("""
-                        INSERT INTO llm_gmp_review_tasks(
-                            task_id, rag_review_id, document_id, business_id, document_type,
-                            tenant_id, user_id, status, risk_level, summary, need_human_review,
-                            cost, latency_ms, payload
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSONB))
-                        ON CONFLICT(task_id) DO UPDATE SET
-                            rag_review_id = excluded.rag_review_id,
-                            document_id = excluded.document_id,
-                            business_id = excluded.business_id,
-                            document_type = excluded.document_type,
-                            tenant_id = excluded.tenant_id,
-                            user_id = excluded.user_id,
-                            status = excluded.status,
-                            risk_level = excluded.risk_level,
-                            summary = excluded.summary,
-                            need_human_review = excluded.need_human_review,
-                            cost = excluded.cost,
-                            latency_ms = excluded.latency_ms,
-                            payload = excluded.payload,
-                            updated_at = CURRENT_TIMESTAMP
-                        """,
-                task.taskId(),
-                task.ragReviewId(),
-                task.documentId(),
-                task.businessId(),
-                task.documentType(),
-                task.tenantId(),
-                task.userId(),
-                task.status(),
-                task.riskLevel(),
-                task.summary(),
-                task.needHumanReview(),
-                task.cost(),
-                task.latencyMs(),
-                toJson(task));
     }
 
     public Optional<JsonNode> getCache(String cacheKey) {

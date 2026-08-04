@@ -248,7 +248,7 @@ class Settings(BaseSettings):
     @property
     def sqlite_path(self) -> Path:
         """业务数据 SQLite 文件(文档元数据 + 审查报告，重启不丢)。向量不进这里。"""
-        return self.data_dir / "gmp.db"
+        return self.data_dir / "rag-agent.db"
 
     @property
     def ingestion_jobs_path(self) -> Path:

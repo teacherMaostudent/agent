@@ -30,7 +30,7 @@ def request(client: httpx.Client, method: str, url: str, **kwargs: Any) -> dict[
 
 def spec() -> dict[str, Any]:
     return {
-        "display_name": "E2E GMP Review Agent",
+        "display_name": "E2E General Agent",
         "description": "Controlled integration fixture",
         "graph": {
             "graph_id": "e2e-graph", "entrypoint": "answer", "terminal_nodes": ["answer"],
@@ -70,7 +70,7 @@ def main() -> int:
             "X-Roles": "agent-admin",
             "X-Control-Plane-Admin-Key": "local-control-plane-admin-key",
         }
-        agent = f"gmp-e2e-{int(time.time())}"
+        agent = f"general-e2e-{int(time.time())}"
         created = request(client, "POST", f"{BASE['control']}/v1/agents", headers=manage,
                           json={"agent_id": agent, "spec": spec()})
         version = request(client, "POST", f"{BASE['control']}/v1/agents/{agent}/versions", headers=manage,

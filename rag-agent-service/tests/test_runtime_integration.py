@@ -11,7 +11,7 @@ def _context() -> ExecutionContext:
         session_id="session-1",
         tenant_id="tenant-a",
         user_id="user-a",
-        agent_id="gmp-review-agent",
+        agent_id="general-agent",
         agent_version="1.2.3",
         snapshot_id="version-abc",
         deadline_seconds=30,

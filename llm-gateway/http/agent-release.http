@@ -8,7 +8,7 @@ Content-Type: application/json
   "task": "检索审计追踪和记录保存要求，引用证据后回答",
   "session_id": "debug-session-001",
   "max_steps": 6,
-  "metadata": {"business": "gmp-review"}
+  "metadata": {"business": "enterprise-assistant"}
 }
 
 ### Start canary after an existing Judge Run passed

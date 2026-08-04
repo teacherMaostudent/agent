@@ -11,19 +11,19 @@ class GatewayRequestContextTest {
     void retainsCompleteAgentIdentityForAuditAndCostGovernance() {
         GatewayRequestContext context = GatewayRequestContext.create(
                 "req-1", "trace-1", "tenant-1", "user-1",
-                "gmp-agent", "2026.07.25", "session-1", "run-1",
-                "gmp-review", new BigDecimal("2.50"), "deepseek-v4-flash", true
+                "general-agent", "2026.07.25", "session-1", "run-1",
+                "enterprise-assistant", new BigDecimal("2.50"), "deepseek-v4-flash", true
         );
 
         assertThat(context.requestId()).isEqualTo("req-1");
         assertThat(context.traceId()).isEqualTo("trace-1");
         assertThat(context.tenantId()).isEqualTo("tenant-1");
         assertThat(context.userId()).isEqualTo("user-1");
-        assertThat(context.agentId()).isEqualTo("gmp-agent");
+        assertThat(context.agentId()).isEqualTo("general-agent");
         assertThat(context.agentVersion()).isEqualTo("2026.07.25");
         assertThat(context.sessionId()).isEqualTo("session-1");
         assertThat(context.runId()).isEqualTo("run-1");
-        assertThat(context.purpose()).isEqualTo("gmp-review");
+        assertThat(context.purpose()).isEqualTo("enterprise-assistant");
         assertThat(context.costBudget()).isEqualByComparingTo("2.50");
         assertThat(context.stream()).isTrue();
     }

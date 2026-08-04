@@ -56,7 +56,9 @@ class _LegacyRetrievalContext:
                 token_budget=12000,
                 estimated_tokens=0,
             )
-        chunks = list(self.repository.regulation_chunks())
+        # Legacy local mode retrieves only documents supplied by the caller;
+        # production retrieval is delegated to the RAG service.
+        chunks = []
         if request.document_id and self.repository.get_document(request.document_id):
             chunks.extend(self.repository.document_chunks(request.document_id))
         if request.content:

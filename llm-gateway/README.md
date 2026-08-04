@@ -425,7 +425,7 @@ POST /admin/observability/phoenix/traces
 - 线上闭环：自动采集请求/响应 Trace，完成 Schema、格式、usage 计算、超时、异常和成本检测。
 - 用户反馈：Playground 点赞/点踩绑定 `X-Request-Id`；点踩样本落库后异步强制执行 Judge。
 - 失败分流：高置信度自动归档 Bad Case，中置信度进入人工审核，低置信度进入普通抽检池。
-- Golden 治理：自动生成候选，但普通候选也必须人工确认；GMP/医疗/法律等高风险候选必须专家审批。
+- Golden 治理：自动生成候选，但普通候选也必须人工确认；法律、财务、安全等高风险候选必须专家审批。
 
 LLM Judge 默认由 Governance 使用 `qwen-plus`、`claude-3-5-haiku` 和
 `deepseek-v4-pro` 三个逻辑模型，并统一通过 Gateway 调用。模型和门禁阈值通过

@@ -60,7 +60,7 @@ class SemanticRetriever:
         query_vec = self.embedder.embed(query)
         return document_store.search(query_vec, top_k=top_k)
 
-    # --- 跨文档(多文件集):临时库,用完即弃,不落盘。见 [[gmp-cross-document-plan]] ---
+    # Temporary multi-document index: used only for the current operation and never persisted.
 
     def build_document_set_store(
         self, files: list[tuple[str, str, str]]

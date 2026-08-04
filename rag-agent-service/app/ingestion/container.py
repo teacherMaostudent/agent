@@ -8,7 +8,6 @@ from app.ingestion.parsers import DocumentParser
 from app.ingestion.postgres_job_store import PostgresIngestionJobStore
 from app.ingestion.processor import IngestionJobProcessor
 from app.ingestion.temporal_jobs import TemporalIngestionJobStore
-from app.knowledge.regulation_indexer import RegulationIndexer
 from app.retrieval.embedder import build_embedder
 from app.retrieval.search_projection import build_search_projection
 from app.storage.factory import build_file_storage
@@ -22,7 +21,6 @@ class IngestionContainer:
         self.search_projection = build_search_projection(self.settings)
         self.parser = DocumentParser()
         self.embedder = build_embedder(self.settings)
-        self.indexer = RegulationIndexer(self.embedder)
         backing_job_store = (
             PostgresIngestionJobStore(
                 self.settings.database_url, self.settings.database_schema

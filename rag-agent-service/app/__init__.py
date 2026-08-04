@@ -1,2 +1,1 @@
-"""GMP RAG and agent review service."""
-
+"""General-purpose RAG and Agent Runtime service."""

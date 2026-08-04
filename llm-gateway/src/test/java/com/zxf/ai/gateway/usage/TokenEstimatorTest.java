@@ -35,7 +35,7 @@ class TokenEstimatorTest {
                 {
                   "model": "gpt-4o-mini",
                   "messages": [
-                    {"role": "user", "content": "请审查这份GMP文件是否缺少起草人、审核人、分发、修订、回收和作废流程。"}
+                    {"role": "user", "content": "请检查这份企业流程文件是否缺少审批、分发、修订、归档和作废流程。"}
                   ]
                 }
                 """);

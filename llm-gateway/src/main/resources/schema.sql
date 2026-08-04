@@ -25,25 +25,3 @@ CREATE TABLE IF NOT EXISTS llm_cache_stats (
     stat_value BIGINT NOT NULL DEFAULT 0,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE TABLE IF NOT EXISTS llm_gmp_review_tasks (
-    task_id VARCHAR(160) PRIMARY KEY,
-    rag_review_id VARCHAR(160),
-    document_id VARCHAR(160),
-    business_id VARCHAR(160),
-    document_type VARCHAR(160) NOT NULL,
-    tenant_id VARCHAR(120) NOT NULL,
-    user_id VARCHAR(120) NOT NULL,
-    status VARCHAR(60) NOT NULL,
-    risk_level VARCHAR(40),
-    summary VARCHAR(1000),
-    need_human_review BOOLEAN NOT NULL DEFAULT FALSE,
-    cost DECIMAL(18, 8) NOT NULL DEFAULT 0,
-    latency_ms BIGINT NOT NULL DEFAULT 0,
-    payload JSONB,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_llm_gmp_review_status ON llm_gmp_review_tasks(status);
-CREATE INDEX IF NOT EXISTS idx_llm_gmp_review_tenant ON llm_gmp_review_tasks(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_llm_gmp_review_updated ON llm_gmp_review_tasks(updated_at DESC);

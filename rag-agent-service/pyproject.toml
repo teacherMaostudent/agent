@@ -1,7 +1,7 @@
 [project]
 name = "rag-agent-service"
 version = "0.1.0"
-description = "GMP-oriented RAG and agent review service for llm-gateway."
+description = "General-purpose RAG and Agent Runtime service."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.111.0",

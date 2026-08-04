@@ -44,18 +44,6 @@ public class RagAgentClient {
                 .onErrorMap(this::toGatewayException);
     }
 
-    public Mono<JsonNode> startGmpReview(GmpReviewRequest request) {
-        ensureEnabled();
-        return client.post()
-                .uri("/api/v1/reviews/gmp")
-                .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(request)
-                .retrieve()
-                .bodyToMono(JsonNode.class)
-                .timeout(properties.getResponseTimeout())
-                .onErrorMap(this::toGatewayException);
-    }
-
     public Mono<JsonNode> runAgent(JsonNode request, String tenantId, String userId, String requestId) {
         ensureEnabled();
         return client.post()
@@ -66,26 +54,6 @@ public class RagAgentClient {
                 .header("X-Request-Id", requestId)
                 .header("X-Permissions", properties.getPermissions())
                 .bodyValue(request)
-                .retrieve()
-                .bodyToMono(JsonNode.class)
-                .timeout(properties.getResponseTimeout())
-                .onErrorMap(this::toGatewayException);
-    }
-
-    public Mono<JsonNode> getReview(String ragReviewId) {
-        ensureEnabled();
-        return client.get()
-                .uri("/api/v1/reviews/{reviewId}", ragReviewId)
-                .retrieve()
-                .bodyToMono(JsonNode.class)
-                .timeout(properties.getResponseTimeout())
-                .onErrorMap(this::toGatewayException);
-    }
-
-    public Mono<JsonNode> rerunReview(String ragReviewId) {
-        ensureEnabled();
-        return client.post()
-                .uri("/api/v1/reviews/{reviewId}/rerun", ragReviewId)
                 .retrieve()
                 .bodyToMono(JsonNode.class)
                 .timeout(properties.getResponseTimeout())

@@ -10,13 +10,6 @@ class ParseResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class GmpReviewRequest(BaseModel):
-    document_id: str | None = None
-    content: str | None = None
-    document_type: str = "gmp_document"
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
 class KnowledgeImportRequest(BaseModel):
     items: list[dict[str, Any]]
 
@@ -58,7 +51,7 @@ class AnnotateFindingRequest(BaseModel):
 
 class AgentRunRequest(BaseModel):
     task: str
-    agent_id: str = Field(default="gmp-review-agent", min_length=2, max_length=160)
+    agent_id: str = Field(default="general-agent", min_length=2, max_length=160)
     environment: str = Field(default="production", min_length=2, max_length=64)
     document_id: str | None = None
     content: str | None = None

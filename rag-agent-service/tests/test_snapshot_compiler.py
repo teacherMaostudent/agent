@@ -45,7 +45,7 @@ def snapshot() -> dict:
             ],
             "knowledge": [
                 {
-                    "knowledge_base": "gmp",
+                    "knowledge_base": "enterprise-documents",
                     "version": "2026.08",
                     "filters": {"status": "published"},
                     "top_k": 12,

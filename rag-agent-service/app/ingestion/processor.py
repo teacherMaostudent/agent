@@ -9,7 +9,6 @@ class IngestionJobProcessor:
         handlers = {
             "PARSE": self._parse,
             "OCR": self._ocr,
-            "REINDEX": self._reindex,
         }
         handler = handlers.get(job.job_type)
         if handler is None:
@@ -58,10 +57,3 @@ class IngestionJobProcessor:
             self.container.repository.document_chunks(document.document_id),
         )
         return {"document_id": document.document_id, "text_length": len(text)}
-
-    def _reindex(self, job: IngestionJob) -> dict:
-        stats = self.container.indexer.build(
-            source_dir=self.container.settings.regulation_source_dir,
-            store_path=self.container.settings.regulation_store_path,
-        )
-        return dict(stats)

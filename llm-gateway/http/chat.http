@@ -10,7 +10,7 @@ X-Agent-Id: rag-agent-service
 X-Agent-Version: 1.0.0
 X-Session-Id: session-demo-001
 X-Run-Id: run-demo-001
-X-Purpose: gmp-compliance-review
+X-Purpose: enterprise-document-analysis
 X-Cost-Budget: 1.00
 
 {
@@ -32,7 +32,7 @@ X-Agent-Id: rag-agent-service
 X-Agent-Version: 1.0.0
 X-Session-Id: session-demo-001
 X-Run-Id: run-demo-stream-001
-X-Purpose: gmp-compliance-review
+X-Purpose: enterprise-document-analysis
 X-Cost-Budget: 1.00
 
 {
