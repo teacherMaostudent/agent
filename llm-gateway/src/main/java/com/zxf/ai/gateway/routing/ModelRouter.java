@@ -42,6 +42,24 @@ public class ModelRouter {
         return routeKeys.stream().map(this::toEndpoint).toList();
     }
 
+    /** Reject an evaluation when its frozen route release or model revision drifted. */
+    public List<ModelEndpoint> resolvePinned(
+            String requestedModel, String expectedRouteVersion, String expectedModelRevision) {
+        if (expectedRouteVersion == null || expectedRouteVersion.isBlank()
+                || expectedModelRevision == null || expectedModelRevision.isBlank()) {
+            return resolve(requestedModel);
+        }
+        GatewayProperties.Route route = properties.getRoutes().get(requestedModel);
+        if (route == null || !expectedRouteVersion.equals(route.getVersion())) {
+            throw new GatewayException(HttpStatus.CONFLICT, "Pinned route version is unavailable");
+        }
+        List<ModelEndpoint> endpoints = resolve(requestedModel);
+        if (endpoints.stream().anyMatch(endpoint -> !expectedModelRevision.equals(endpoint.model().getRevision()))) {
+            throw new GatewayException(HttpStatus.CONFLICT, "Pinned model revision is unavailable");
+        }
+        return endpoints;
+    }
+
     private String selectPrimary(GatewayProperties.Route route) {
         for (GatewayProperties.CanaryTarget canary : route.getCanary()) {
             int percent = Math.max(0, Math.min(100, canary.getPercent()));

@@ -1,5 +1,9 @@
 # agent-control-plane
 
+> Governance quality gates used for release decisions must reference an
+> immutable `EvaluationSnapshot`. Its frozen route version and model revision
+> are enforced by LLM Gateway before any evaluator model call is made.
+
 Agent 管理面与配置面。它负责定义、校验、版本化和发布 Agent，但**不执行 Agent
 推理**。线上 Runtime 只读取已经发布的不可变快照，不直接读取会持续变化的草稿表。
 

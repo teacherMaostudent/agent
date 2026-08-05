@@ -46,6 +46,8 @@ class LlmGatewayClient:
         headers.update(self._workload_identity.authorization_header())
         payload = {
             "model": model,
+            "route_version": route_version,
+            "model_revision": model_revision,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

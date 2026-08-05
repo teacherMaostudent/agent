@@ -254,6 +254,8 @@ public class GatewayProperties {
     }
 
     public static class Model {
+        /** Immutable provider revision, deployment digest, or vendor snapshot ID. */
+        private String revision = "unversioned";
         /**
          * 真正发给上游厂商的模型名，允许和业务侧请求的逻辑模型名不同。
          */
@@ -287,6 +289,9 @@ public class GatewayProperties {
         public void setUpstreamModel(String upstreamModel) {
             this.upstreamModel = upstreamModel;
         }
+
+        public String getRevision() { return revision; }
+        public void setRevision(String revision) { this.revision = revision; }
 
         public BigDecimal getInputPricePer1k() {
             return inputPricePer1k;
@@ -413,6 +418,8 @@ public class GatewayProperties {
     }
 
     public static class Route {
+        /** Control Plane release version for this logical route. */
+        private String version = "unversioned";
         /**
          * 默认优先调用的目标，格式固定为 provider:model。
          */
@@ -464,6 +471,9 @@ public class GatewayProperties {
         public void setPrimary(String primary) {
             this.primary = primary;
         }
+
+        public String getVersion() { return version; }
+        public void setVersion(String version) { this.version = version; }
 
         public List<String> getFallbacks() {
             return fallbacks;

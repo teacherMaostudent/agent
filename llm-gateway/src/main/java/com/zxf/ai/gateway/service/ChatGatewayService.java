@@ -95,14 +95,20 @@ public class ChatGatewayService {
          * 这样后续缓存、token 预估、路由、日志和上游调用使用的都是“最终 Prompt”，
          * 避免出现“缓存按模板变量命中，但真实请求按展开后 Prompt 消耗”的口径不一致。
          */
+        String routeVersion = request.path("route_version").asText("");
+        String modelRevision = request.path("model_revision").asText("");
         JsonNode preparedRequest = promptTemplateService.apply(request);
+        if (preparedRequest.isObject()) {
+            ((com.fasterxml.jackson.databind.node.ObjectNode) preparedRequest).remove(List.of("route_version", "model_revision"));
+        }
         return requestCacheService.cachedOrCompute(context.tenantId(), preparedRequest,
-                        () -> completeUncached(context, preparedRequest))
+                        () -> completeUncached(context, preparedRequest, routeVersion, modelRevision))
                 .doOnSuccess(response -> publishTrace(context, preparedRequest, response, true, null))
                 .doOnError(error -> publishTrace(context, preparedRequest, null, false, error));
     }
 
-    private Mono<JsonNode> completeUncached(GatewayRequestContext context, JsonNode request) {
+    private Mono<JsonNode> completeUncached(GatewayRequestContext context, JsonNode request,
+            String routeVersion, String modelRevision) {
         // 先按 prompt 预估 token 并预留额度，避免请求已经打到上游后才发现用户超额。
         // completion token 和真实成本会在模型成功返回后再补记。
         /*
@@ -117,7 +123,8 @@ public class ChatGatewayService {
          * - 没有权重配置时走 primary；
          * - 最后追加 fallbacks 作为失败兜底链路。
          */
-        List<ModelEndpoint> endpoints = modelRouter.resolve(request.path("model").asText(context.requestedModel()));
+        List<ModelEndpoint> endpoints = modelRouter.resolvePinned(
+                request.path("model").asText(context.requestedModel()), routeVersion, modelRevision);
         ReservationPlan plan = reserveUsage(context, endpoints, request);
         return tryComplete(context, request, endpoints, 0, plan, null);
     }
@@ -127,8 +134,14 @@ public class ChatGatewayService {
          * 流式请求同样先渲染 Prompt 模板。
          * 区别是流式响应不能像普通 JSON 响应一样整体缓存，所以 RequestCacheService 不参与 stream 链路。
          */
+        String routeVersion = request.path("route_version").asText("");
+        String modelRevision = request.path("model_revision").asText("");
         JsonNode preparedRequest = promptTemplateService.apply(request);
-        List<ModelEndpoint> endpoints = modelRouter.resolve(preparedRequest.path("model").asText(context.requestedModel()));
+        if (preparedRequest.isObject()) {
+            ((com.fasterxml.jackson.databind.node.ObjectNode) preparedRequest).remove(List.of("route_version", "model_revision"));
+        }
+        List<ModelEndpoint> endpoints = modelRouter.resolvePinned(
+                preparedRequest.path("model").asText(context.requestedModel()), routeVersion, modelRevision);
         ReservationPlan plan = reserveUsage(context, endpoints, preparedRequest);
         return tryStream(context, preparedRequest, endpoints, 0, plan);
     }
