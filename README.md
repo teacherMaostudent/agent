@@ -1,5 +1,16 @@
 # Agent Platform
 
+## Model lifecycle extension
+
+`model-lab` is intentionally an offline experiment service rather than part of
+the online Agent Runtime. It registers reproducible LoRA/QLoRA, DPO/GRPO and
+distributed-training plans, evaluation results and model cards. Only approved
+artifacts should be published as Ollama/vLLM routes through Control Plane.
+
+RAG ingestion treats image OCR as labelled derived evidence: it is searchable,
+but keeps provenance and visual-review metadata while the original artifact
+remains authoritative.
+
 面向企业知识问答、受控业务自动化和合规审计的多服务 Agent 平台。仓库采用 monorepo
 组织共享契约、部署文件和联调脚本；运行时仍保持明确的服务边界，因此可以按负载、数据域和
 合规等级独立部署与扩缩容。

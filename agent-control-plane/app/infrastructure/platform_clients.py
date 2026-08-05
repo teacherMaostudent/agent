@@ -116,3 +116,19 @@ class GovernanceQualityClient:
             )
             response.raise_for_status()
             return response.json()
+
+
+class ModelLabClient:
+    """Verify that an offline model artifact passed evaluation before online rollout."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    async def approved_artifact(self, experiment_id: str) -> dict[str, Any]:
+        async with httpx.AsyncClient(base_url=self._settings.model_lab_base_url, timeout=30) as client:
+            response = await client.get(f"/v1/experiments/{experiment_id}")
+            response.raise_for_status()
+            record = response.json()
+        if record.get("status") != "APPROVED" or not record.get("model_card"):
+            raise ValueError("Model Lab experiment is not approved with a model card")
+        return record

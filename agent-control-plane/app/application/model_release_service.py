@@ -13,9 +13,11 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+import httpx
+
 from app.application.exceptions import InvalidStateError, NotFoundError, PolicyViolationError
 from app.core.config import Settings
-from app.infrastructure.platform_clients import GatewayPolicyClient, GovernanceQualityClient
+from app.infrastructure.platform_clients import GatewayPolicyClient, GovernanceQualityClient, ModelLabClient
 from app.infrastructure.sqlite_repository import SqliteRepository
 
 logger = logging.getLogger(__name__)
@@ -35,12 +37,14 @@ class ModelReleaseService:
         settings: Settings,
         gateway: GatewayPolicyClient,
         governance: GovernanceQualityClient,
+        model_lab: ModelLabClient | None = None,
     ) -> None:
         """Initialize ModelReleaseService dependencies and local state."""
         self._repository = repository
         self._settings = settings
         self._gateway = gateway
         self._governance = governance
+        self._model_lab = model_lab
 
     async def start(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
         """Start a bounded canary only when the referenced quality gate passed."""
@@ -53,6 +57,17 @@ class ModelReleaseService:
             raise PolicyViolationError("canaryPercent must be between 1 and 50.")
         previous = await self._gateway.route(route_name)
         gate = await self._governance.quality_gate(tenant_id, _required(request, "judgeRunId"))
+        experiment_id = str(request.get("modelLabExperimentId") or "")
+        model_artifact = None
+        if self._settings.model_lab_required and not experiment_id:
+            raise PolicyViolationError("modelLabExperimentId is required for model route releases")
+        if experiment_id:
+            if self._model_lab is None:
+                raise PolicyViolationError("Model Lab validation is not configured")
+            try:
+                model_artifact = await self._model_lab.approved_artifact(experiment_id)
+            except (httpx.HTTPError, ValueError) as exc:
+                raise PolicyViolationError(f"Model Lab gate rejected release: {exc}") from exc
         now = _now()
         release = {
             "id": uuid4().hex,
@@ -61,13 +76,15 @@ class ModelReleaseService:
             "canaryPercent": percent,
             "status": "QUALITY_GATE_REJECTED" if not gate.get("passed") else "CANARY_ACTIVE",
             "qualityGateId": gate.get("id"),
+            "modelLabExperimentId": experiment_id or None,
+            "modelArtifact": (model_artifact or {}).get("model_card"),
             "startedAt": now,
             "updatedAt": now,
             "previousRoute": previous,
             "metrics": gate.get("metrics") or {},
             "reasons": gate.get("reasons") or [],
         }
-        if gate.get("passed"):
+        if gate.get("passed") and (not experiment_id or model_artifact is not None):
             canary = deepcopy(previous)
             canary["canary"] = [{"target": target, "percent": percent}]
             await self._gateway.upsert_route(route_name, canary)

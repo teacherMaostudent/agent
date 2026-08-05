@@ -1,0 +1,18 @@
+[project]
+name = "agent-model-lab"
+version = "0.1.0"
+description = "Experiment registry and quality gate for Agent Platform model artifacts"
+requires-python = ">=3.11"
+dependencies = ["fastapi>=0.111.0", "uvicorn[standard]>=0.30.0", "pydantic>=2.8.0"]
+
+[project.optional-dependencies]
+training = [
+  "transformers>=4.45.0",
+  "peft>=0.13.0",
+  "datasets>=3.0.0",
+  "trl>=0.11.0",
+  "bitsandbytes>=0.43.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

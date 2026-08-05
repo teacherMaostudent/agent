@@ -10,7 +10,7 @@ from contextlib import suppress
 from app.application.control_plane_service import ControlPlaneService
 from app.application.model_release_service import ModelReleaseService
 from app.core.config import Settings
-from app.infrastructure.platform_clients import GatewayPolicyClient, GovernanceQualityClient
+from app.infrastructure.platform_clients import GatewayPolicyClient, GovernanceQualityClient, ModelLabClient
 from app.infrastructure.postgres_repository import PostgresRepository
 from app.infrastructure.sqlite_repository import SqliteRepository
 from app.infrastructure.temporal_release import TemporalReleaseOrchestrator
@@ -32,6 +32,7 @@ class AppContainer:
         )
         self.gateway_policy = GatewayPolicyClient(settings)
         self.governance_quality = GovernanceQualityClient(settings)
+        self.model_lab = ModelLabClient(settings)
         self.service = ControlPlaneService(
             self.repository,
             governance=self.governance_quality,
@@ -43,7 +44,7 @@ class AppContainer:
             ),
         )
         self.model_releases = ModelReleaseService(
-            self.repository, settings, self.gateway_policy, self.governance_quality
+            self.repository, settings, self.gateway_policy, self.governance_quality, self.model_lab
         )
         self._monitor_task: asyncio.Task[None] | None = None
         self._controller_id = f"{socket.gethostname()}-{os.getpid()}"

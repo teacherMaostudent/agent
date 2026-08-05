@@ -124,6 +124,12 @@ services:
     volumes: ["tool-gateway-data:/service/data"]
     depends_on: [agent-governance, ingestion-api]
 
+  model-lab:
+    build: ./model-lab
+    restart: unless-stopped
+    ports:
+      - "8091:8091"
+
   postgres:
     image: postgres:17-alpine
     environment:

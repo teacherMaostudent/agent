@@ -32,6 +32,15 @@ class IngestionJobProcessor:
         text, metadata = self.container.parser.parse(path)
         document.text = text
         document.metadata.update(metadata)
+        document.metadata.setdefault(
+            "evidence_provenance",
+            {
+                "artifact_sha256": document.sha256,
+                "parser": metadata.get("parser", "unknown"),
+                "source_modality": metadata.get("source_modality", "text"),
+                "derived_at": "ingestion",
+            },
+        )
         document.status = "PARSED"
         self.container.repository.save_document(document)
         self.container.search_projection.index_document(

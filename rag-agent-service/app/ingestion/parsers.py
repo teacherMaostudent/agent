@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 from app.ingestion.file_detector import detect_file_type
 
@@ -6,7 +7,7 @@ from app.ingestion.file_detector import detect_file_type
 class DocumentParser:
     """Best-effort parser with optional heavy dependencies kept at module boundaries."""
 
-    def parse(self, path: Path) -> tuple[str, dict]:
+    def parse(self, path: Path) -> tuple[str, dict[str, Any]]:
         file_type = detect_file_type(path)
         if file_type in {"text", "markdown"}:
             return path.read_text(encoding="utf-8", errors="ignore"), {"parser": file_type}
@@ -17,7 +18,16 @@ class DocumentParser:
         if file_type == "excel":
             return self._parse_excel(path), {"parser": "pandas"}
         if file_type == "image":
-            return "", {"parser": "ocr_pending", "warning": "OCR adapter is reserved for PaddleOCR integration."}
+            # Images are first-class evidence sources: OCR output is retained
+            # with a provenance marker so downstream prompts can distinguish
+            # recognized text from author-provided digital text.
+            text = self._ocr_image(path)
+            return text, {
+                "parser": "rapidocr",
+                "source_modality": "image",
+                "evidence_quality": "ocr_extracted",
+                "requires_visual_review": True,
+            }
         return path.read_text(encoding="utf-8", errors="ignore"), {"parser": "fallback-text"}
 
     def _parse_pdf(self, path: Path) -> str:
@@ -61,6 +71,26 @@ class DocumentParser:
                 if progress:
                     progress(i + 1, total)
         return "\n".join(pages_text)
+
+    def _ocr_image(self, path: Path) -> str:
+        """Extract text locally and label it as OCR-derived evidence.
+
+        The original image remains the authoritative artifact in object storage;
+        OCR text is a searchable derivative and must not be presented as a
+        pixel-perfect transcription without visual review.
+        """
+        try:
+            from PIL import Image  # type: ignore
+            import numpy as np  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("image OCR requires Pillow and numpy") from exc
+        from app.ingestion.ocr_engine import OcrEngine
+
+        with Image.open(path) as image:
+            # RapidOCR expects BGR/RGB-like arrays; converting removes palette
+            # and alpha variability before the local engine receives pixels.
+            pixels = np.asarray(image.convert("RGB"))
+        return OcrEngine.instance().recognize_image(pixels[:, :, ::-1])
 
     def _parse_word(self, path: Path) -> str:
         try:
