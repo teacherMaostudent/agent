@@ -61,6 +61,11 @@ def test_evaluation_assets_regression_judge_and_gate_are_governance_owned(
             "groundTruth": "Approval is required.",
             "contexts": ["Approval is required before release."],
             "tags": ["release"],
+            "expertLabels": {"passed": True},
+            "labelerId": "expert-1",
+            "reviewStatus": "APPROVED",
+            "criticality": "critical",
+            "expectedEvidenceIds": ["doc-approval"],
         },
     )
     assert golden.status_code == 200, golden.text
@@ -95,10 +100,12 @@ def test_evaluation_assets_regression_judge_and_gate_are_governance_owned(
             "candidateModel": "candidate",
             "caseIds": ["case-1"],
             "candidateAnswers": {"What is required?": "Approval is required."},
+            "retrievedEvidenceByCase": {"case-1": [{"id": "doc-approval"}]},
         },
     )
     assert judge.status_code == 200, judge.text
     assert judge.json()["metrics"]["averageScore"] == 90.0
+    assert judge.json()["metrics"]["retrieval"]["recallAtK"] == 1.0
     snapshot_id = judge.json()["evaluationSnapshotId"]
     snapshot = next(
         item
@@ -111,6 +118,13 @@ def test_evaluation_assets_regression_judge_and_gate_are_governance_owned(
     assert snapshot["sampling"] == {"temperature": 0, "topP": 1, "maxTokens": 2000}
     assert snapshot["outputSchemaVersion"] == "governance-judge-output/v1"
     assert snapshot["assets"]["goldenCases"][0]["groundTruth"] == "Approval is required."
+
+    calibration = client.post(
+        f"/v1/governance/evaluations/judge-runs/{judge.json()['id']}/calibration",
+        headers=auditor_headers,
+    )
+    assert calibration.status_code == 200, calibration.text
+    assert calibration.json()["passed"] is True
 
     gate = client.post(
         f"/v1/governance/evaluations/judge-runs/{judge.json()['id']}/quality-gate",

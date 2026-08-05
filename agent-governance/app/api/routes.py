@@ -175,6 +175,16 @@ async def run_judge(
     return await container.evaluation.judge(identity.tenant_id, identity.user_id, request)
 
 
+@router.post("/v1/governance/evaluations/judge-runs/{run_id}/calibration", tags=["evaluation"])
+async def calibrate_judge(run_id: str, identity: Auditor, container: Container) -> dict[str, Any]:
+    return await container.evaluation.calibrate(identity.tenant_id, run_id)
+
+
+@router.get("/v1/governance/evaluations/calibration/weekly-report", tags=["evaluation"])
+async def weekly_calibration_report(identity: Auditor, container: Container) -> dict[str, Any]:
+    return await container.evaluation.weekly_calibration_report(identity.tenant_id)
+
+
 @router.post(
     "/v1/governance/evaluations/judge-runs/{run_id}/quality-gate",
     tags=["evaluation"],

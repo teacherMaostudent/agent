@@ -7,6 +7,7 @@ execution facts but never decides whether a release passes a quality gate.
 from __future__ import annotations
 
 import json
+import math
 import re
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
@@ -32,6 +33,7 @@ QUALITY_GATE = "eval-quality-gate"
 ONLINE_SAMPLE = "eval-online-sample"
 GOLDEN_CANDIDATE = "eval-golden-candidate"
 EVALUATION_SNAPSHOT = "eval-execution-snapshot"
+CALIBRATION_RUN = "eval-calibration-run"
 
 JUDGE_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -100,6 +102,7 @@ class EvaluationService:
             "executionSnapshots": await self._repository.list_documents(
                 tenant_id, EVALUATION_SNAPSHOT
             ),
+            "calibrationRuns": await self._repository.list_documents(tenant_id, CALIBRATION_RUN),
         }
 
     async def upsert_asset(
@@ -132,8 +135,7 @@ class EvaluationService:
         # Purging before insert keeps the retention guarantee true even when
         # the producer is high-volume and no background janitor is running.
         cutoff = (
-            datetime.now(UTC)
-            - timedelta(days=self._settings.online_trace_retention_days)
+            datetime.now(UTC) - timedelta(days=self._settings.online_trace_retention_days)
         ).isoformat()
         await self._repository.purge_documents_before(
             tenant_id, [PHOENIX_TRACE, ONLINE_SAMPLE], cutoff
@@ -470,6 +472,10 @@ class EvaluationService:
                     "finalVerdict": final,
                     "arbitrated": arbitrator is not None,
                     "disagreement": disagreement,
+                    "retrieval": _retrieval_metrics(
+                        case,
+                        (request.get("retrievedEvidenceByCase") or {}).get(case["id"], []),
+                    ),
                 }
             )
 
@@ -491,11 +497,103 @@ class EvaluationService:
                 "passRate": (len(results) - failed) / len(results),
                 "arbitrationRate": arbitrated / len(results),
                 "failedCases": failed,
+                "retrieval": _average_retrieval(results),
+                "groups": _group_metrics(results, cases),
             },
             "status": "COMPLETED",
             "metadata": request.get("metadata") or {},
         }
         return await self._repository.upsert_document(tenant_id, JUDGE_RUN, run["id"], run)
+
+    async def calibrate(self, tenant_id: str, judge_run_id: str) -> dict[str, Any]:
+        """Compare frozen Judge verdicts with expert labels, not raw LLM output."""
+        run = await self._repository.get_document(tenant_id, JUDGE_RUN, judge_run_id)
+        if not run:
+            raise NotFoundError(f"Unknown judge run: {judge_run_id}")
+        snapshot = await self._repository.get_document(
+            tenant_id, EVALUATION_SNAPSHOT, run["evaluationSnapshotId"]
+        )
+        cases = {item["id"]: item for item in snapshot["assets"]["goldenCases"]}
+        pairs = []
+        for result in run["cases"]:
+            label = cases[result["caseId"]].get("expertLabels") or {}
+            if "passed" in label:
+                pairs.append(
+                    (
+                        bool(label["passed"]),
+                        bool(result["finalVerdict"]["passed"]),
+                        cases[result["caseId"]],
+                    )
+                )
+        if not pairs:
+            raise ValueError("Calibration requires Golden Cases with expertLabels.passed")
+        agreement = sum(expected == actual for expected, actual, _ in pairs) / len(pairs)
+        severe = sum(
+            expected and not actual and case.get("criticality") in {"high", "critical"}
+            for expected, actual, case in pairs
+        ) / len(pairs)
+        critical = [
+            (expected, actual)
+            for expected, actual, case in pairs
+            if case.get("criticality") in {"high", "critical"}
+        ]
+        critical_agreement = (
+            sum(left == right for left, right in critical) / len(critical) if critical else 1.0
+        )
+        result = {
+            "id": f"cal_{uuid4().hex}",
+            "judgeRunId": judge_run_id,
+            "timestamp": _now(),
+            "evaluationSnapshotHash": run["evaluationSnapshotHash"],
+            "metrics": {
+                "agreement": agreement,
+                "kappa": _kappa(pairs),
+                "severeErrorRate": severe,
+                "criticalAgreement": critical_agreement,
+                "sampleSize": len(pairs),
+            },
+        }
+        limits = {
+            "minKappa": self._settings.judge_calibration_min_kappa,
+            "minCriticalAgreement": self._settings.judge_calibration_min_critical_agreement,
+            "maxSevereErrorRate": self._settings.judge_calibration_max_severe_error_rate,
+        }
+        result["passed"] = (
+            result["metrics"]["kappa"] >= limits["minKappa"]
+            and critical_agreement >= limits["minCriticalAgreement"]
+            and severe <= limits["maxSevereErrorRate"]
+        )
+        result["limits"] = limits
+        return await self._repository.upsert_document(
+            tenant_id, CALIBRATION_RUN, result["id"], result
+        )
+
+    async def weekly_calibration_report(self, tenant_id: str) -> dict[str, Any]:
+        """Produce the weekly drift signal and a stratified human-review queue."""
+        calibrations = await self._repository.list_documents(tenant_id, CALIBRATION_RUN, 200)
+        samples = await self._repository.list_documents(tenant_id, ONLINE_SAMPLE, 2_000)
+        newest = calibrations[0] if calibrations else {"metrics": {}}
+        previous = calibrations[1] if len(calibrations) > 1 else {"metrics": {}}
+        latest = newest.get("metrics", {})
+        prior = previous.get("metrics", {})
+        priority = [
+            sample
+            for sample in samples
+            if sample.get("disposition") == "HUMAN_REVIEW"
+            or (sample.get("judgeResult") or {}).get("primaryVerdict", {}).get("passed")
+            != (sample.get("judgeResult") or {}).get("secondaryVerdict", {}).get("passed")
+            or sample.get("criticality") in {"high", "critical"}
+        ]
+        return {
+            "window": "weekly",
+            "latestCalibration": newest if calibrations else None,
+            "drift": {
+                "agreementDelta": latest.get("agreement", 0) - prior.get("agreement", 0),
+                "kappaDelta": latest.get("kappa", 0) - prior.get("kappa", 0),
+            },
+            "humanReviewCandidates": priority,
+            "selectionReasons": ["low-score/failure", "judge-disagreement", "high-criticality"],
+        }
 
     async def _compile_snapshot(
         self,
@@ -568,6 +666,16 @@ class EvaluationService:
         if not run:
             raise NotFoundError(f"Unknown judge run: {run_id}")
         overrides = request or {}
+        calibration = None
+        calibration_id = overrides.get("calibrationRunId")
+        if self._settings.judge_calibration_required:
+            if not calibration_id:
+                raise ValueError("A passing calibrationRunId is required for a quality gate")
+            calibration = await self._repository.get_document(
+                tenant_id, CALIBRATION_RUN, str(calibration_id)
+            )
+            if not calibration or not calibration.get("passed"):
+                raise ValueError("Judge calibration is missing or failed")
         limits = {
             "minimumAverageScore": float(
                 overrides.get("minAverageScore", self._settings.quality_gate_min_average_score)
@@ -595,6 +703,11 @@ class EvaluationService:
             reasons.append("arbitrationRate above maximum")
         if int(metrics["failedCases"]) > limits["maximumFailedCases"]:
             reasons.append("failedCases above maximum")
+        for group, values in (metrics.get("groups") or {}).items():
+            if group in {"high", "critical"} and values["failedCases"]:
+                reasons.append(f"{group} criticality group has failed cases")
+        if (metrics.get("retrieval") or {}).get("recallAtK", 1) < 1:
+            reasons.append("expected evidence Recall@K below 1.0")
         result = {
             "id": uuid4().hex,
             "runId": run_id,
@@ -602,6 +715,7 @@ class EvaluationService:
             "passed": not reasons,
             "exitCode": 0 if not reasons else 1,
             "metrics": {**metrics, **limits},
+            "calibrationRunId": calibration_id,
             "reasons": reasons,
         }
         return await self._repository.upsert_document(tenant_id, QUALITY_GATE, result["id"], result)
@@ -756,8 +870,7 @@ def _validated_judge_output(text: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != set(JUDGE_OUTPUT_SCHEMA["required"]):
         raise ValueError("Judge response does not match governance-judge-output/v1")
     if not isinstance(value["dimensionScores"], dict) or not all(
-        isinstance(score, int) and 0 <= score <= 100
-        for score in value["dimensionScores"].values()
+        isinstance(score, int) and 0 <= score <= 100 for score in value["dimensionScores"].values()
     ):
         raise ValueError("Judge dimensionScores must be integer scores between 0 and 100")
     if not isinstance(value["overallScore"], int) or not 0 <= value["overallScore"] <= 100:
@@ -790,6 +903,58 @@ def _average(values: Any) -> float:
     """Internal helper for module; preserve its caller-facing invariant."""
     items = [float(item) for item in values]
     return round(sum(items) / len(items), 4) if items else 0.0
+
+
+def _retrieval_metrics(case: dict[str, Any], retrieved: list[dict[str, Any]]) -> dict[str, float]:
+    """Compute retrieval metrics from immutable evidence IDs, never answer-text similarity."""
+    expected = set(case.get("expectedEvidenceIds") or [])
+    ids = [
+        str(item.get("id") or item.get("chunkId") or item.get("documentId") or "")
+        for item in retrieved
+    ]
+    hits = [item for item in ids if item in expected]
+    if not expected:
+        return {"recallAtK": 1.0, "precisionAtK": 1.0, "mrr": 1.0, "ndcg": 1.0}
+    first = next((index + 1 for index, item in enumerate(ids) if item in expected), None)
+    dcg = sum(1 / math.log2(index + 2) for index, item in enumerate(ids) if item in expected)
+    ideal = sum(1 / math.log2(index + 2) for index in range(min(len(expected), len(ids))))
+    return {
+        "recallAtK": len(set(hits)) / len(expected),
+        "precisionAtK": len(hits) / len(ids) if ids else 0.0,
+        "mrr": 1 / first if first else 0.0,
+        "ndcg": dcg / ideal if ideal else 0.0,
+    }
+
+
+def _average_retrieval(results: list[dict[str, Any]]) -> dict[str, float]:
+    """Aggregate only deterministic evidence-level metrics across the frozen run."""
+    return {
+        key: _average(item["retrieval"][key] for item in results)
+        for key in ("recallAtK", "precisionAtK", "mrr", "ndcg")
+    }
+
+
+def _group_metrics(
+    results: list[dict[str, Any]], cases: list[dict[str, Any]]
+) -> dict[str, dict[str, int]]:
+    """Expose risk-group failures so averages cannot hide a critical regression."""
+    criticality = {item["id"]: str(item.get("criticality") or "normal").lower() for item in cases}
+    groups: dict[str, dict[str, int]] = {}
+    for result in results:
+        bucket = groups.setdefault(criticality[result["caseId"]], {"cases": 0, "failedCases": 0})
+        bucket["cases"] += 1
+        bucket["failedCases"] += int(not result["finalVerdict"]["passed"])
+    return groups
+
+
+def _kappa(pairs: list[tuple[bool, bool, dict[str, Any]]]) -> float:
+    """Cohen's kappa for expert-versus-Judge binary labels."""
+    total = len(pairs)
+    observed = sum(expected == actual for expected, actual, _ in pairs) / total
+    expected_positive = sum(expected for expected, _, _ in pairs) / total
+    actual_positive = sum(actual for _, actual, _ in pairs) / total
+    chance = expected_positive * actual_positive + (1 - expected_positive) * (1 - actual_positive)
+    return 1.0 if chance == 1 and observed == 1 else round((observed - chance) / (1 - chance), 4)
 
 
 def _weighted_score(scores: dict[str, int], rubric: dict[str, Any]) -> int:

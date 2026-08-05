@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     quality_gate_min_pass_rate: float = Field(default=0.9, ge=0, le=1)
     quality_gate_max_arbitration_rate: float = Field(default=0.5, ge=0, le=1)
     quality_gate_max_failed_cases: int = Field(default=0, ge=0)
+    judge_calibration_required: bool = False
+    judge_calibration_min_kappa: float = Field(default=0.8, ge=-1, le=1)
+    judge_calibration_min_critical_agreement: float = Field(default=0.95, ge=0, le=1)
+    judge_calibration_max_severe_error_rate: float = Field(default=0.01, ge=0, le=1)
     online_trace_sample_rate: float = Field(default=1.0, ge=0, le=1)
     capture_prompt_response_content: bool = False
     online_trace_retention_days: int = Field(default=30, ge=1, le=3650)
@@ -106,6 +110,8 @@ class Settings(BaseSettings):
                 unsafe.append("GOVERNANCE_KAFKA_BOOTSTRAP_SERVERS is required")
             if not self.cdc_required:
                 unsafe.append("GOVERNANCE_CDC_REQUIRED must be true")
+            if not self.judge_calibration_required:
+                unsafe.append("GOVERNANCE_JUDGE_CALIBRATION_REQUIRED must be true")
             if not self.worm_bucket or not self.worm_kms_key_id:
                 unsafe.append("GOVERNANCE_WORM_BUCKET and WORM_KMS_KEY_ID are required")
             if unsafe:
