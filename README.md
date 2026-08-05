@@ -11,6 +11,15 @@ RAG ingestion treats image OCR as labelled derived evidence: it is searchable,
 but keeps provenance and visual-review metadata while the original artifact
 remains authoritative.
 
+## CDC event delivery
+
+Production audit events use PostgreSQL Transactional Outbox plus Debezium/Kafka
+Connect.  The business services write only their local transaction; the
+`debezium-register` deployment job upserts and verifies the connector, and
+Governance consumes the canonical Kafka topic with idempotency and DLQ handling.
+See [CDC/Kafka Connect runbook](docs/cdc-kafka-connect-runbook.md) and run
+`py -3.12 scripts/production_readiness.py` before every production rollout.
+
 面向企业知识问答、受控业务自动化和合规审计的多服务 Agent 平台。仓库采用 monorepo
 组织共享契约、部署文件和联调脚本；运行时仍保持明确的服务边界，因此可以按负载、数据域和
 合规等级独立部署与扩缩容。

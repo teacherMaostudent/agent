@@ -52,6 +52,7 @@ class Container:
             self.settings.governance_event_key,
             self.settings.http_connect_timeout,
             build_workload_token_provider(self.settings),
+            self.settings.governance_delivery_mode,
         )
         self.execution = ToolExecutionService(
             self.registry,

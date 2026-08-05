@@ -27,6 +27,7 @@ class GovernanceOutboxPublisher:
         event_key: str,
         timeout: float,
         workload_identity: WorkloadTokenProvider | None = None,
+        delivery_mode: str = "direct",
     ) -> None:
         """Initialize GovernanceOutboxPublisher dependencies and local state."""
         self.repository = repository
@@ -34,6 +35,7 @@ class GovernanceOutboxPublisher:
         self.event_key = event_key
         self.timeout = timeout
         self.workload_identity = workload_identity
+        self.delivery_mode = delivery_mode
 
     def publish_invocation(
         self,
@@ -73,7 +75,10 @@ class GovernanceOutboxPublisher:
 
     async def flush(self) -> None:
         """Perform flush within the GovernanceOutboxPublisher ownership boundary."""
-        if not self.base_url:
+        # CDC observes the committed outbox row.  Sending the same row over
+        # HTTP would create a second transport and turn deduplication into a
+        # correctness requirement rather than a safety net.
+        if self.delivery_mode == "cdc" or not self.base_url:
             return
         headers = {"X-Governance-Event-Key": self.event_key} if self.event_key else {}
         if self.workload_identity is not None:

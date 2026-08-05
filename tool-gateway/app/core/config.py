@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     http_connect_timeout: float = Field(default=5, gt=0, le=60)
     governance_base_url: str = ""
     governance_event_key: str = ""
+    governance_delivery_mode: str = "direct"
     redis_url: str = Field(default="", repr=False)
     oidc_enabled: bool = False
     oidc_issuer: str = ""
@@ -82,12 +83,16 @@ class Settings(BaseSettings):
                 )
             if not self.opa_enabled:
                 unsafe.append("TOOL_GATEWAY_OPA_ENABLED must be true")
+            if self.governance_delivery_mode != "cdc":
+                unsafe.append("TOOL_GATEWAY_GOVERNANCE_DELIVERY_MODE must be cdc")
             if self.mtls_enabled and not all(
                 (self.mtls_ca_file, self.mtls_cert_file, self.mtls_key_file)
             ):
                 unsafe.append("TOOL_GATEWAY mTLS certificate paths are required")
             if unsafe:
                 raise ValueError("Unsafe production configuration: " + "; ".join(unsafe))
+        if self.governance_delivery_mode not in {"direct", "cdc"}:
+            raise ValueError("TOOL_GATEWAY_GOVERNANCE_DELIVERY_MODE must be direct or cdc")
         return self
 
     def ensure_directories(self) -> None:

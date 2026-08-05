@@ -60,6 +60,7 @@ class AgentRuntimeContainer:
             self.settings.internal_service_api_key,
             self.settings.service_http_timeout,
             self.workload_identity,
+            self.settings.governance_delivery_mode,
         )
         self.llm_gateway = LlmGatewayClient(
             base_url=self.settings.llm_gateway_base_url,

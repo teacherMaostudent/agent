@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 import signal
+from datetime import UTC, datetime
 from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
@@ -46,6 +47,23 @@ def _event(value: bytes) -> GovernanceEvent:
     elif isinstance(document, dict) and "payload" in document:
         payload = document["payload"]
         document = json.loads(payload) if isinstance(payload, str) else payload
+    # ExtractNewRecordState unwraps Debezium records before routing them to the
+    # shared Governance topic.  The three outbox tables do not use identical
+    # column sets, so payload_json remains the stable cross-service contract.
+    if isinstance(document, dict) and isinstance(document.get("payload_json"), str):
+        payload = json.loads(document["payload_json"])
+        if isinstance(payload, dict) and "event_id" in payload:
+            document = payload
+        else:
+            document = {
+                "event_id": document["event_id"],
+                "source_service": "outbox",
+                "event_type": document.get("event_type", "platform.outbox.event"),
+                "trace_id": document.get("trace_id", document["event_id"]),
+                "tenant_id": document.get("tenant_id", "system"),
+                "occurred_at": document.get("occurred_at"),
+                "payload": payload or {},
+            }
     return GovernanceEvent.model_validate(document)
 
 
@@ -83,6 +101,7 @@ async def consume(settings: Settings) -> None:
             for records in batches.values():
                 for record in records:
                     try:
+                        await _respect_retry_not_before(record.headers)
                         await container.service.ingest(_event(record.value))
                     except Exception as exc:
                         # Do not abandon an offset silently: the failed record
@@ -94,10 +113,6 @@ async def consume(settings: Settings) -> None:
                             if attempts < settings.kafka_max_attempts
                             else settings.kafka_dlq_topic
                         )
-                        if topic == settings.kafka_retry_topic:
-                            await asyncio.sleep(
-                                min(settings.kafka_retry_backoff_max_seconds, 2**attempts)
-                            )
                         await producer.send_and_wait(
                             topic,
                             key=record.key,
@@ -106,6 +121,16 @@ async def consume(settings: Settings) -> None:
                                 ("x-attempt", str(attempts).encode()),
                                 ("x-error", f"{type(exc).__name__}: {exc}"[:500].encode()),
                                 ("x-original-topic", record.topic.encode()),
+                                (
+                                    "x-not-before",
+                                    str(
+                                        datetime.now(UTC).timestamp()
+                                        + min(
+                                            settings.kafka_retry_backoff_max_seconds,
+                                            2**attempts,
+                                        )
+                                    ).encode(),
+                                ),
                             ],
                         )
             if batches:
@@ -122,6 +147,7 @@ def main() -> None:
         raise RuntimeError("GOVERNANCE_KAFKA_BOOTSTRAP_SERVERS is required")
     asyncio.run(consume(settings))
 
+
 def _attempts(headers: list[tuple[str, bytes]] | None) -> int:
     """Internal helper for module; preserve its caller-facing invariant."""
     for name, value in headers or []:
@@ -131,3 +157,23 @@ def _attempts(headers: list[tuple[str, bytes]] | None) -> int:
             except ValueError:
                 return 0
     return 0
+
+
+async def _respect_retry_not_before(headers: list[tuple[str, bytes]] | None) -> None:
+    """Delay retry-topic delivery without committing an event before its backoff.
+
+    The delay intentionally blocks the affected partition, preserving event
+    order for an aggregate.  Production deployments can replace this bounded
+    mechanism with a dedicated delayed-topic scheduler without changing the
+    event contract.
+    """
+    for name, value in headers or []:
+        if name != "x-not-before":
+            continue
+        try:
+            remaining = float(value.decode()) - datetime.now(UTC).timestamp()
+        except ValueError:
+            return
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        return

@@ -338,6 +338,7 @@ class GovernanceOutboxPublisher:
         event_key: str,
         timeout: float,
         workload_identity: WorkloadTokenProvider | None = None,
+        delivery_mode: str = "direct",
     ) -> None:
         """Initialize GovernanceOutboxPublisher dependencies and local state."""
         self.store, self.base_url, self.event_key, self.timeout = (
@@ -347,6 +348,7 @@ class GovernanceOutboxPublisher:
             timeout,
         )
         self.workload_identity = workload_identity
+        self.delivery_mode = delivery_mode
 
     def publish_run(
         self,
@@ -406,7 +408,10 @@ class GovernanceOutboxPublisher:
 
     def flush(self) -> None:
         """Perform flush within the GovernanceOutboxPublisher ownership boundary."""
-        if not self.base_url:
+        # In CDC mode Kafka Connect is the sole transport owner.  Keeping the
+        # row untouched preserves an immutable audit source and avoids HTTP/
+        # CDC double delivery from the same completed runtime transaction.
+        if self.delivery_mode == "cdc" or not self.base_url:
             return
         headers = {"X-Governance-Event-Key": self.event_key} if self.event_key else {}
         if self.workload_identity is not None:

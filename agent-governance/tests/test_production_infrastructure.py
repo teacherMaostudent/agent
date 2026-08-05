@@ -30,6 +30,34 @@ def test_debezium_outbox_envelope_becomes_canonical_event() -> None:
     assert event.payload == {"release_id": "release-1"}
 
 
+def test_unwrapped_debezium_outbox_row_becomes_canonical_event() -> None:
+    value = json.dumps(
+        {
+            "event_id": "event-2",
+            "event_type": "tool.execution.completed",
+            "trace_id": "trace-2",
+            "tenant_id": "tenant-a",
+            "occurred_at": "2026-08-01T00:00:00Z",
+            "payload_json": json.dumps(
+                {
+                    "tool_name": "controlled_scan",
+                    "tool_version": "1.0.0",
+                    "status": "succeeded",
+                    "risk": "read_only",
+                    "approval_granted": False,
+                }
+            ),
+        }
+    ).encode()
+
+    event = _event(value)
+
+    assert event.event_id == "event-2"
+    assert event.event_type == "tool.execution.completed"
+    assert event.payload["tool_name"] == "controlled_scan"
+    assert event.payload["tool_version"] == "1.0.0"
+
+
 def test_retry_attempt_header_is_defensive() -> None:
     assert _attempts([("x-attempt", b"3")]) == 3
     assert _attempts([("x-attempt", b"not-a-number")]) == 0

@@ -42,6 +42,7 @@ x-rag-env: &rag-env
   RAG_CONTROL_PLANE_RUNTIME_KEY: ${CONTROL_PLANE_RUNTIME_API_KEY}
   RAG_GOVERNANCE_BASE_URL: http://agent-governance:8081
   RAG_GOVERNANCE_EVENT_KEY: ${GOVERNANCE_EVENT_INGESTION_KEY}
+  RAG_GOVERNANCE_DELIVERY_MODE: cdc
   RAG_CONTEXT_SERVICE_BASE_URL: http://agent-context-service:8002
   RAG_RAG_QUERY_BASE_URL: http://rag-query-api:8003
   RAG_TOOL_GATEWAY_BASE_URL: http://tool-gateway:8090
@@ -83,7 +84,7 @@ secrets:
 services:
   postgres:
     image: ${POSTGRES_IMAGE}
-    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10"]
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10", "-c", "max_wal_senders=10"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -117,14 +118,34 @@ services:
 
   kafka-connect:
     image: ${DEBEZIUM_CONNECT_IMAGE}
+    restart: unless-stopped
     environment:
       BOOTSTRAP_SERVERS: kafka:9092
       GROUP_ID: agent-platform-connect
       CONFIG_STORAGE_TOPIC: connect-configs
       OFFSET_STORAGE_TOPIC: connect-offsets
       STATUS_STORAGE_TOPIC: connect-status
+      CONFIG_STORAGE_REPLICATION_FACTOR: ${KAFKA_CONNECT_INTERNAL_TOPIC_REPLICATION_FACTOR:-1}
+      OFFSET_STORAGE_REPLICATION_FACTOR: ${KAFKA_CONNECT_INTERNAL_TOPIC_REPLICATION_FACTOR:-1}
+      STATUS_STORAGE_REPLICATION_FACTOR: ${KAFKA_CONNECT_INTERNAL_TOPIC_REPLICATION_FACTOR:-1}
+      KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
     depends_on: [kafka, postgres]
     ports: ["8083:8083"]
+
+  debezium-register:
+    image: python:3.12-alpine
+    restart: "no"
+    environment:
+      KAFKA_CONNECT_URL: http://kafka-connect:8083
+      DEBEZIUM_CONFIG_PATH: /scripts/platform-outbox.json
+      DEBEZIUM_REGISTER_TIMEOUT_SECONDS: ${DEBEZIUM_REGISTER_TIMEOUT_SECONDS:-120}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./deploy/debezium:/scripts:ro
+    depends_on: [kafka-connect]
 
   temporal:
     image: ${TEMPORAL_IMAGE}
@@ -237,6 +258,7 @@ services:
       GOVERNANCE_WORKLOAD_CLIENT_SECRET: ${GOVERNANCE_WORKLOAD_CLIENT_SECRET}
       GOVERNANCE_WORKLOAD_AUDIENCE: ${OIDC_AUDIENCE}
       GOVERNANCE_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      GOVERNANCE_CDC_REQUIRED: "true"
       GOVERNANCE_WORM_BUCKET: ${AUDIT_BUCKET}
       GOVERNANCE_WORM_REGION: ${S3_REGION}
       GOVERNANCE_WORM_KMS_KEY_ID: ${WORM_KMS_KEY_ID}
@@ -258,6 +280,9 @@ services:
     extends:
       service: agent-governance
     command: governance-kafka-consumer
+    depends_on:
+      debezium-register:
+        condition: service_completed_successfully
 
   agent-runtime:
     <<: *rag-service
@@ -317,6 +342,7 @@ services:
       TOOL_GATEWAY_CONTRACTS_SCHEMA_DIR: /service/platform-contracts/schemas
       TOOL_GATEWAY_GOVERNANCE_BASE_URL: http://agent-governance:8081
       TOOL_GATEWAY_GOVERNANCE_EVENT_KEY: ${GOVERNANCE_EVENT_INGESTION_KEY}
+      TOOL_GATEWAY_GOVERNANCE_DELIVERY_MODE: cdc
       TOOL_GATEWAY_OTEL_ENABLED: "true"
       TOOL_GATEWAY_OTEL_ENDPOINT: http://otel-collector:4318/v1/traces
     secrets:

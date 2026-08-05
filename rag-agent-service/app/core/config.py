@@ -93,6 +93,7 @@ class Settings(BaseSettings):
     control_plane_runtime_key: str = ""
     governance_base_url: str = ""
     governance_event_key: str = ""
+    governance_delivery_mode: str = "direct"
     context_service_base_url: str = "http://localhost:8002"
     rag_query_base_url: str = "http://localhost:8003"
     tool_gateway_base_url: str = "http://localhost:8090"
@@ -206,10 +207,14 @@ class Settings(BaseSettings):
                 unsafe.append("RAG_OPA_ENABLED must be true")
             if not self.redis_url:
                 unsafe.append("RAG_REDIS_URL is required")
+            if self.governance_delivery_mode != "cdc":
+                unsafe.append("RAG_GOVERNANCE_DELIVERY_MODE must be cdc")
             if self.mtls_enabled and not all((self.mtls_ca_file, self.mtls_cert_file, self.mtls_key_file)):
                 unsafe.append("RAG mTLS certificate paths are required")
             if unsafe:
                 raise ValueError("Unsafe production configuration: " + "; ".join(unsafe))
+        if self.governance_delivery_mode not in {"direct", "cdc"}:
+            raise ValueError("RAG_GOVERNANCE_DELIVERY_MODE must be direct or cdc")
         for name, value in {
             "RAG_CONTEXT_SERVICE_BASE_URL": self.context_service_base_url,
             "RAG_RAG_QUERY_BASE_URL": self.rag_query_base_url,

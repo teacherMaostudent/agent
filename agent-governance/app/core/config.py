@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     workload_audience: str = "agent-platform"
     workload_scope: str = ""
     kafka_bootstrap_servers: str = ""
+    cdc_required: bool = False
     kafka_governance_topic: str = "agent.governance.events.v1"
     kafka_retry_topic: str = "agent.governance.events.retry.v1"
     kafka_dlq_topic: str = "agent.governance.events.dlq.v1"
@@ -90,6 +91,8 @@ class Settings(BaseSettings):
                 )
             if not self.kafka_bootstrap_servers:
                 unsafe.append("GOVERNANCE_KAFKA_BOOTSTRAP_SERVERS is required")
+            if not self.cdc_required:
+                unsafe.append("GOVERNANCE_CDC_REQUIRED must be true")
             if not self.worm_bucket or not self.worm_kms_key_id:
                 unsafe.append("GOVERNANCE_WORM_BUCKET and WORM_KMS_KEY_ID are required")
             if unsafe:
