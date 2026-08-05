@@ -21,6 +21,14 @@ flowchart LR
 
 ## 当前能力
 
+### 评测自身的可复现性
+
+每次 Regression 或 Judge Run 均先生成不可变 `EvaluationSnapshot`，并将其
+ID 与 SHA-256 写入运行记录。Snapshot 冻结 Prompt、Golden Case、Rubric、模型
+及其 provider revision、Gateway route version、temperature/top_p/max_tokens 和
+`governance-judge-output/v1` JSON Schema。评测资产后续更新不会改变已完成
+Run；若模型供应商未遵从结构化输出，Governance 会本地 fail-closed 拒绝结果。
+
 - 幂等接收事件：同一 `event_id` 只会记录和评测一次。
 - 记录不可变审计事件，按租户隔离并可使用游标查询。
 - 规则评测：未获批准的高风险工具调用、违规模型、违规数据区域、缺少知识证据、成本或时延超限。

@@ -26,6 +26,11 @@ class LlmGatewayClient:
         user: str,
         purpose: str,
         max_tokens: int = 2_000,
+        temperature: float = 0,
+        top_p: float = 1,
+        response_schema: dict[str, Any] | None = None,
+        model_revision: str = "",
+        route_version: str = "",
     ) -> dict[str, Any]:
         headers = {
             "X-Api-Key": self._settings.llm_gateway_api_key,
@@ -35,6 +40,8 @@ class LlmGatewayClient:
             "X-Agent-Id": "agent-governance",
             "X-Agent-Version": "1.0",
             "X-Purpose": purpose,
+            "X-Model-Revision": model_revision,
+            "X-Model-Route-Version": route_version,
         }
         headers.update(self._workload_identity.authorization_header())
         payload = {
@@ -43,9 +50,19 @@ class LlmGatewayClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "temperature": 0,
+            "temperature": temperature,
+            "top_p": top_p,
             "max_tokens": max_tokens,
         }
+        if response_schema:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "governance_judge_v1",
+                    "strict": True,
+                    "schema": response_schema,
+                },
+            }
         async with httpx.AsyncClient(
             base_url=self._settings.llm_gateway_base_url,
             timeout=self._settings.llm_gateway_timeout_seconds,

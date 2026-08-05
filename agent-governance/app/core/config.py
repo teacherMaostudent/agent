@@ -54,8 +54,15 @@ class Settings(BaseSettings):
     llm_gateway_api_key: str = Field(default="governance-service-key", repr=False)
     llm_gateway_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
     judge_primary_model: str = "qwen-plus"
+    judge_primary_model_revision: str = "local-dev"
     judge_secondary_model: str = "claude-3-5-haiku"
+    judge_secondary_model_revision: str = "local-dev"
     judge_arbitrator_model: str = "deepseek-v4-pro"
+    judge_arbitrator_model_revision: str = "local-dev"
+    judge_model_route_version: str = "governance-evaluation-v1"
+    judge_temperature: float = Field(default=0, ge=0, le=2)
+    judge_top_p: float = Field(default=1, gt=0, le=1)
+    judge_max_tokens: int = Field(default=2_000, ge=64, le=16_000)
     judge_disagreement_threshold: int = Field(default=15, ge=0, le=100)
     quality_gate_min_average_score: float = Field(default=75, ge=0, le=100)
     quality_gate_min_pass_rate: float = Field(default=0.9, ge=0, le=1)
@@ -77,6 +84,12 @@ class Settings(BaseSettings):
                 unsafe.append("GOVERNANCE_AUDITOR_API_KEY is required")
             if self.llm_gateway_api_key == "governance-service-key":
                 unsafe.append("GOVERNANCE_LLM_GATEWAY_API_KEY must be rotated")
+            if "local-dev" in {
+                self.judge_primary_model_revision,
+                self.judge_secondary_model_revision,
+                self.judge_arbitrator_model_revision,
+            }:
+                unsafe.append("GOVERNANCE_JUDGE_*_MODEL_REVISION must be pinned")
             if self.online_trace_sample_rate >= 1:
                 unsafe.append("GOVERNANCE_ONLINE_TRACE_SAMPLE_RATE must be below 1 in production")
             if self.database_backend != "postgres" or not self.database_url:

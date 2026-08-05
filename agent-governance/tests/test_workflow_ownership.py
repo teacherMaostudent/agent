@@ -65,6 +65,17 @@ def test_evaluation_assets_regression_judge_and_gate_are_governance_owned(
     )
     assert golden.status_code == 200, golden.text
 
+    prompt = client.put(
+        "/v1/governance/evaluations/prompt-versions",
+        headers=auditor_headers,
+        json={
+            "id": "p1",
+            "version": "1.0.0",
+            "system": "Evaluate only against the supplied evidence and return JSON.",
+        },
+    )
+    assert prompt.status_code == 200, prompt.text
+
     regression = client.post(
         "/v1/governance/evaluations/regression-runs",
         headers=auditor_headers,
@@ -88,6 +99,18 @@ def test_evaluation_assets_regression_judge_and_gate_are_governance_owned(
     )
     assert judge.status_code == 200, judge.text
     assert judge.json()["metrics"]["averageScore"] == 90.0
+    snapshot_id = judge.json()["evaluationSnapshotId"]
+    snapshot = next(
+        item
+        for item in client.get("/v1/governance/evaluations", headers=auditor_headers).json()[
+            "executionSnapshots"
+        ]
+        if item["id"] == snapshot_id
+    )
+    assert len(snapshot["contentHash"]) == 64
+    assert snapshot["sampling"] == {"temperature": 0, "topP": 1, "maxTokens": 2000}
+    assert snapshot["outputSchemaVersion"] == "governance-judge-output/v1"
+    assert snapshot["assets"]["goldenCases"][0]["groundTruth"] == "Approval is required."
 
     gate = client.post(
         f"/v1/governance/evaluations/judge-runs/{judge.json()['id']}/quality-gate",

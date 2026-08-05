@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from hashlib import sha256
 from typing import Any
 from uuid import uuid4
 
@@ -29,6 +31,32 @@ JUDGE_RUN = "eval-judge-run"
 QUALITY_GATE = "eval-quality-gate"
 ONLINE_SAMPLE = "eval-online-sample"
 GOLDEN_CANDIDATE = "eval-golden-candidate"
+EVALUATION_SNAPSHOT = "eval-execution-snapshot"
+
+JUDGE_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "dimensionScores",
+        "overallScore",
+        "passed",
+        "reason",
+        "unsupportedClaims",
+        "evidence",
+    ],
+    "properties": {
+        "dimensionScores": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "overallScore": {"type": "integer", "minimum": 0, "maximum": 100},
+        "passed": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "unsupportedClaims": {"type": "array", "items": {"type": "string"}},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+    },
+}
+DEFAULT_JUDGE_PROMPT = (
+    "You are an independent evaluator. Return only JSON matching the supplied schema. "
+    "Score only from the question, reference answer, context and candidate answer."
+)
 
 
 def _now() -> str:
@@ -69,6 +97,9 @@ class EvaluationService:
             "judgeRubrics": await self._repository.list_documents(tenant_id, JUDGE_RUBRIC),
             "judgeRuns": await self._repository.list_documents(tenant_id, JUDGE_RUN),
             "qualityGates": await self._repository.list_documents(tenant_id, QUALITY_GATE),
+            "executionSnapshots": await self._repository.list_documents(
+                tenant_id, EVALUATION_SNAPSHOT
+            ),
         }
 
     async def upsert_asset(
@@ -331,6 +362,10 @@ class EvaluationService:
         """Run the bounded run regression operation and surface failures."""
         answers = request.get("answerByQuestion") or {}
         cases = await self._repository.list_documents(tenant_id, GOLDEN_CASE)
+        execution_snapshot = await self._compile_snapshot(
+            tenant_id, request, cases, await self._rubric(tenant_id, request.get("rubricId"))
+        )
+        cases = execution_snapshot["assets"]["goldenCases"]
         scores = []
         for case in cases:
             answer = str(answers.get(case.get("question"), ""))
@@ -350,6 +385,8 @@ class EvaluationService:
             "timestamp": _now(),
             "promptVersionId": request.get("promptVersionId"),
             "retrievalStrategyId": request.get("retrievalStrategyId"),
+            "evaluationSnapshotId": execution_snapshot["id"],
+            "evaluationSnapshotHash": execution_snapshot["contentHash"],
             "scores": scores,
             "summary": {
                 key: _average(item[key] for item in scores)
@@ -371,29 +408,41 @@ class EvaluationService:
         cases = [item for item in all_cases if not selected or item["id"] in selected]
         if not cases:
             raise NotFoundError("No Golden cases matched the Judge request.")
+        execution_snapshot = await self._compile_snapshot(tenant_id, request, cases, rubric)
+        assets = execution_snapshot["assets"]
+        cases = assets["goldenCases"]
+        rubric = assets["rubric"]
 
         results = []
         for case in cases:
             answer = (request.get("candidateAnswers") or {}).get(case.get("question"))
             if not answer:
-                answer = await self._candidate_answer(tenant_id, user_id, request, case)
+                answer = await self._candidate_answer(
+                    tenant_id,
+                    user_id,
+                    execution_snapshot["models"]["candidate"],
+                    assets["prompt"],
+                    case,
+                )
             primary = await self._judge_once(
                 tenant_id,
                 user_id,
-                self._settings.judge_primary_model,
+                execution_snapshot["models"]["primary"],
                 "primary",
                 case,
                 answer,
                 rubric,
+                assets["prompt"],
             )
             secondary = await self._judge_once(
                 tenant_id,
                 user_id,
-                self._settings.judge_secondary_model,
+                execution_snapshot["models"]["secondary"],
                 "secondary",
                 case,
                 answer,
                 rubric,
+                assets["prompt"],
             )
             disagreement = abs(primary["overallScore"] - secondary["overallScore"])
             arbitrator = None
@@ -401,11 +450,12 @@ class EvaluationService:
                 arbitrator = await self._judge_once(
                     tenant_id,
                     user_id,
-                    self._settings.judge_arbitrator_model,
+                    execution_snapshot["models"]["arbitrator"],
                     "arbitrator",
                     case,
                     answer,
                     rubric,
+                    assets["prompt"],
                     prior=[primary, secondary],
                 )
             final = arbitrator or _consensus(primary, secondary, rubric)
@@ -433,6 +483,8 @@ class EvaluationService:
             "rubricId": rubric["id"],
             "promptVersionId": request.get("promptVersionId"),
             "retrievalStrategyId": request.get("retrievalStrategyId"),
+            "evaluationSnapshotId": execution_snapshot["id"],
+            "evaluationSnapshotHash": execution_snapshot["contentHash"],
             "cases": results,
             "metrics": {
                 "averageScore": _average(final_scores),
@@ -444,6 +496,69 @@ class EvaluationService:
             "metadata": request.get("metadata") or {},
         }
         return await self._repository.upsert_document(tenant_id, JUDGE_RUN, run["id"], run)
+
+    async def _compile_snapshot(
+        self,
+        tenant_id: str,
+        request: dict[str, Any],
+        cases: list[dict[str, Any]],
+        rubric: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Freeze every variable that can change an evaluation result before execution."""
+        prompt = await self._prompt(tenant_id, request.get("promptVersionId"))
+        snapshot = {
+            "id": f"evalsnap_{uuid4().hex}",
+            "createdAt": _now(),
+            "assets": {
+                "prompt": deepcopy(prompt),
+                "rubric": deepcopy(rubric),
+                "goldenCases": deepcopy(cases),
+                "retrievalStrategyId": request.get("retrievalStrategyId"),
+            },
+            "models": {
+                "primary": self._model_spec("primary"),
+                "secondary": self._model_spec("secondary"),
+                "arbitrator": self._model_spec("arbitrator"),
+                "candidate": {
+                    "model": str(
+                        request.get("candidateModel") or self._settings.judge_primary_model
+                    ),
+                    "revision": str(request.get("candidateModelRevision") or "caller-declared"),
+                },
+            },
+            "sampling": {
+                "temperature": self._settings.judge_temperature,
+                "topP": self._settings.judge_top_p,
+                "maxTokens": self._settings.judge_max_tokens,
+            },
+            "outputSchema": deepcopy(JUDGE_OUTPUT_SCHEMA),
+            "outputSchemaVersion": "governance-judge-output/v1",
+            "routeVersion": self._settings.judge_model_route_version,
+        }
+        snapshot["contentHash"] = _hash(
+            {key: value for key, value in snapshot.items() if key != "id"}
+        )
+        return await self._repository.upsert_document(
+            tenant_id, EVALUATION_SNAPSHOT, snapshot["id"], snapshot
+        )
+
+    async def _prompt(self, tenant_id: str, prompt_id: object) -> dict[str, Any]:
+        """Resolve a versioned prompt; never silently read a mutable prompt at run time."""
+        if prompt_id:
+            prompt = await self._repository.get_document(tenant_id, PROMPT_VERSION, str(prompt_id))
+            if not prompt:
+                raise NotFoundError(f"Unknown prompt version: {prompt_id}")
+            if not isinstance(prompt.get("system"), str) or not prompt["system"].strip():
+                raise ValueError("Prompt version must contain a non-empty system field")
+            return prompt
+        return {"id": "governance-judge-v1", "version": "1.0.0", "system": DEFAULT_JUDGE_PROMPT}
+
+    def _model_spec(self, role: str) -> dict[str, str]:
+        """Bind an evaluator role to a configured model revision and route release."""
+        return {
+            "model": str(getattr(self._settings, f"judge_{role}_model")),
+            "revision": str(getattr(self._settings, f"judge_{role}_model_revision")),
+        }
 
     async def quality_gate(
         self, tenant_id: str, run_id: str, request: dict[str, Any] | None
@@ -541,17 +656,23 @@ class EvaluationService:
         self,
         tenant_id: str,
         user_id: str,
-        request: dict[str, Any],
+        model_spec: dict[str, str],
+        prompt: dict[str, Any],
         case: dict[str, Any],
     ) -> str:
         """Internal helper for EvaluationService; preserve its caller-facing invariant."""
         response = await self._gateway.complete(
             tenant_id=tenant_id,
             user_id=user_id,
-            model=str(request.get("candidateModel") or self._settings.judge_primary_model),
-            system="Answer only from the supplied reference context.",
+            model=model_spec["model"],
+            system=str(prompt["system"]),
             user=json.dumps(case, ensure_ascii=False),
             purpose="evaluation-candidate",
+            max_tokens=self._settings.judge_max_tokens,
+            temperature=self._settings.judge_temperature,
+            top_p=self._settings.judge_top_p,
+            model_revision=model_spec["revision"],
+            route_version=self._settings.judge_model_route_version,
         )
         return str(response["content"])
 
@@ -559,11 +680,12 @@ class EvaluationService:
         self,
         tenant_id: str,
         user_id: str,
-        model: str,
+        model: str | dict[str, str],
         role: str,
         case: dict[str, Any],
         answer: str,
         rubric: dict[str, Any],
+        prompt: dict[str, Any] | None = None,
         prior: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Internal helper for EvaluationService; preserve its caller-facing invariant."""
@@ -575,18 +697,22 @@ class EvaluationService:
             "rubric": rubric,
             "priorJudgments": prior,
         }
+        model_spec = model if isinstance(model, dict) else {"model": model, "revision": "legacy"}
         response = await self._gateway.complete(
             tenant_id=tenant_id,
             user_id=user_id,
-            model=model,
-            system=(
-                "You are an independent evaluator. Return JSON only with "
-                "dimensionScores, overallScore, passed, reason, unsupportedClaims, evidence."
-            ),
+            model=model_spec["model"],
+            system=str((prompt or {}).get("system") or DEFAULT_JUDGE_PROMPT),
             user=json.dumps(payload, ensure_ascii=False),
             purpose=f"evaluation-judge-{role}",
+            max_tokens=self._settings.judge_max_tokens,
+            temperature=self._settings.judge_temperature,
+            top_p=self._settings.judge_top_p,
+            response_schema=JUDGE_OUTPUT_SCHEMA,
+            model_revision=model_spec["revision"],
+            route_version=self._settings.judge_model_route_version,
         )
-        parsed = _json_object(str(response["content"]))
+        parsed = _validated_judge_output(str(response["content"]))
         scores = {
             item["name"]: int((parsed.get("dimensionScores") or {}).get(item["name"], 0))
             for item in rubric.get("dimensions", [])
@@ -600,7 +726,8 @@ class EvaluationService:
         gateway = raw.get("gateway") or {}
         return {
             "judgeRole": role,
-            "model": model,
+            "model": model_spec["model"],
+            "modelRevision": model_spec["revision"],
             "dimensionScores": scores,
             "overallScore": overall,
             "passed": passed,
@@ -614,21 +741,35 @@ class EvaluationService:
         }
 
 
-def _json_object(text: str) -> dict[str, Any]:
-    """Internal helper for module; preserve its caller-facing invariant."""
-    stripped = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.I)
+def _hash(value: object) -> str:
+    """Hash canonical JSON so a run can prove precisely which inputs it consumed."""
+    serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha256(serialized.encode()).hexdigest()
+
+
+def _validated_judge_output(text: str) -> dict[str, Any]:
+    """Fail closed when a provider ignores the requested strict JSON schema."""
     try:
-        value = json.loads(stripped)
-        return value if isinstance(value, dict) else {}
+        value = json.loads(text)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", stripped, flags=re.S)
-        if not match:
-            return {}
-        try:
-            value = json.loads(match.group())
-            return value if isinstance(value, dict) else {}
-        except json.JSONDecodeError:
-            return {}
+        raise ValueError("Judge response is not valid JSON") from None
+    if not isinstance(value, dict) or set(value) != set(JUDGE_OUTPUT_SCHEMA["required"]):
+        raise ValueError("Judge response does not match governance-judge-output/v1")
+    if not isinstance(value["dimensionScores"], dict) or not all(
+        isinstance(score, int) and 0 <= score <= 100
+        for score in value["dimensionScores"].values()
+    ):
+        raise ValueError("Judge dimensionScores must be integer scores between 0 and 100")
+    if not isinstance(value["overallScore"], int) or not 0 <= value["overallScore"] <= 100:
+        raise ValueError("Judge overallScore must be an integer between 0 and 100")
+    if not isinstance(value["passed"], bool) or not isinstance(value["reason"], str):
+        raise ValueError("Judge passed and reason fields have invalid types")
+    for field in ("unsupportedClaims", "evidence"):
+        if not isinstance(value[field], list) or not all(
+            isinstance(item, str) for item in value[field]
+        ):
+            raise ValueError(f"Judge {field} must be a string array")
+    return value
 
 
 def _tokens(value: str) -> set[str]:
