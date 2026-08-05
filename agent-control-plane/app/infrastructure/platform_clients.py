@@ -14,15 +14,18 @@ class GatewayPolicyClient:
     """Executes route reads/mutations; orchestration remains in Control Plane."""
 
     def __init__(self, settings: Settings) -> None:
+        """Initialize GatewayPolicyClient dependencies and local state."""
         self._settings = settings
 
     def _auth(self) -> httpx.BasicAuth:
+        """Internal helper for GatewayPolicyClient; preserve its caller-facing invariant."""
         return httpx.BasicAuth(
             self._settings.llm_gateway_admin_username,
             self._settings.llm_gateway_admin_password,
         )
 
     def _client_options(self) -> dict[str, Any]:
+        """Internal helper for GatewayPolicyClient; preserve its caller-facing invariant."""
         return mtls_httpx_options(
             enabled=self._settings.mtls_enabled,
             ca_file=self._settings.mtls_ca_file,
@@ -31,6 +34,7 @@ class GatewayPolicyClient:
         )
 
     async def route(self, route_name: str) -> dict[str, Any]:
+        """Perform route within the GatewayPolicyClient ownership boundary."""
         async with httpx.AsyncClient(
             base_url=self._settings.llm_gateway_base_url,
             auth=self._auth(),
@@ -45,6 +49,7 @@ class GatewayPolicyClient:
         return routes[route_name]
 
     async def upsert_route(self, route_name: str, route: dict[str, Any]) -> dict[str, Any]:
+        """Persist state while preserving the transaction and audit boundary."""
         async with httpx.AsyncClient(
             base_url=self._settings.llm_gateway_base_url,
             auth=self._auth(),
@@ -58,6 +63,7 @@ class GatewayPolicyClient:
     async def performance_summary(
         self, since: datetime, route_name: str, target: str
     ) -> dict[str, Any]:
+        """Perform performance summary within the GatewayPolicyClient ownership boundary."""
         provider, model = target.split(":", 1)
         async with httpx.AsyncClient(
             base_url=self._settings.llm_gateway_base_url,
@@ -80,10 +86,12 @@ class GatewayPolicyClient:
 
 class GovernanceQualityClient:
     def __init__(self, settings: Settings) -> None:
+        """Initialize GovernanceQualityClient dependencies and local state."""
         self._settings = settings
         self._workload_identity = build_workload_token_provider(settings)
 
     async def quality_gate(self, tenant_id: str, run_id: str) -> dict[str, Any]:
+        """Perform quality gate within the GovernanceQualityClient ownership boundary."""
         headers = {
             "X-Tenant-Id": tenant_id,
             "X-User-Id": self._settings.governance_user_id,

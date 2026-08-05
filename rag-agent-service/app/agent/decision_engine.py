@@ -35,6 +35,7 @@ class GatewayDecisionEngine:
     uses_llm = True
 
     def __init__(self, gateway: LlmGatewayClient, model: str) -> None:
+        """Initialize GatewayDecisionEngine dependencies and local state."""
         self.gateway = gateway
         self.model = model
 
@@ -139,6 +140,7 @@ class GatewayDecisionEngine:
         return AgentDecision.model_validate(raw)
 
     def last_cost_usd(self) -> float | None:
+        """Perform last cost usd within the GatewayDecisionEngine ownership boundary."""
         return self.gateway.last_cost_usd()
 
 
@@ -148,6 +150,7 @@ class OfflineDecisionEngine:
     uses_llm = False
 
     def decide(self, state: AgentState, tool_registry: ToolRegistry) -> AgentDecision:
+        """Perform decide within the OfflineDecisionEngine ownership boundary."""
         if not state.get("evidence"):
             return AgentDecision(
                 action=AgentAction.RETRIEVE,

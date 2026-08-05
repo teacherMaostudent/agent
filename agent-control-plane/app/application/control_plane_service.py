@@ -59,6 +59,7 @@ class ControlPlaneService:
         require_quality_gate: bool = False,
         tool_catalog_validator=None,
     ) -> None:
+        """Internal helper that preserves Control Plane lifecycle invariants."""
         self._repository = repository
         self._governance = governance
         self._require_quality_gate = require_quality_gate
@@ -97,12 +98,14 @@ class ControlPlaneService:
         return agent
 
     async def get_agent(self, identity: Identity, agent_id: str) -> AgentDefinition:
+        """Return the tenant-scoped record or raise the domain not-found error."""
         agent = await self._repository.get_agent(identity.tenant_id, agent_id)
         if not agent:
             raise NotFoundError(f"Agent '{agent_id}' was not found.")
         return agent
 
     async def list_agents(self, identity: Identity) -> list[AgentDefinition]:
+        """List records within the caller tenant without changing release state."""
         return await self._repository.list_agents(identity.tenant_id)
 
     async def update_draft(
@@ -151,6 +154,7 @@ class ControlPlaneService:
         return updated
 
     async def validate_draft(self, identity: Identity, agent_id: str) -> ValidationReport:
+        """Validate release inputs against tenant policy without mutating the draft."""
         agent = await self.get_agent(identity, agent_id)
         policy = await self.get_tenant_policy(identity)
         return validate_agent_spec(agent.draft, policy)
@@ -240,6 +244,7 @@ class ControlPlaneService:
         return version
 
     async def list_versions(self, identity: Identity, agent_id: str) -> list[AgentVersion]:
+        """List records within the caller tenant without changing release state."""
         await self.get_agent(identity, agent_id)
         return await self._repository.list_versions(identity.tenant_id, agent_id)
 
@@ -249,6 +254,7 @@ class ControlPlaneService:
         agent_id: str,
         version_id: str,
     ) -> AgentVersion:
+        """Return the tenant-scoped record or raise the domain not-found error."""
         version = await self._repository.get_version(identity.tenant_id, agent_id, version_id)
         if not version:
             raise NotFoundError(f"Version '{version_id}' was not found for agent '{agent_id}'.")
@@ -261,6 +267,7 @@ class ControlPlaneService:
         request: ReleaseCreate,
         trace_id: str,
     ) -> ReleaseManifest:
+        """Persist a new immutable lifecycle record and its transactional outbox event."""
         version = await self.get_version(identity, agent_id, request.version_id)
         gate: dict[str, Any] = {}
         if self._require_quality_gate and not request.quality_gate_run_id:
@@ -355,10 +362,12 @@ class ControlPlaneService:
         agent_id: str,
         environment: str | None = None,
     ) -> list[ReleaseManifest]:
+        """List records within the caller tenant without changing release state."""
         await self.get_agent(identity, agent_id)
         return await self._repository.list_releases(identity.tenant_id, agent_id, environment)
 
     async def get_release(self, identity: Identity, release_id: str) -> ReleaseManifest:
+        """Return the tenant-scoped record or raise the domain not-found error."""
         release = await self._repository.get_release(identity.tenant_id, release_id)
         if not release:
             raise NotFoundError(f"Release '{release_id}' was not found.")
@@ -371,6 +380,7 @@ class ControlPlaneService:
         request: ReleasePromote,
         trace_id: str,
     ) -> ReleaseManifest:
+        """Apply the requested release transition only from an allowed prior state."""
         release = await self.get_release(identity, release_id)
         if release.status != ReleaseStatus.ACTIVE:
             raise InvalidStateError(
@@ -435,6 +445,7 @@ class ControlPlaneService:
         release_id: str,
         trace_id: str,
     ) -> ReleaseManifest:
+        """Apply the requested release transition only from an allowed prior state."""
         release = await self.get_release(identity, release_id)
         if release.status != ReleaseStatus.ACTIVE:
             raise InvalidStateError(
@@ -468,6 +479,7 @@ class ControlPlaneService:
         release_id: str,
         trace_id: str,
     ) -> ReleaseManifest:
+        """Apply the requested release transition only from an allowed prior state."""
         release = await self.get_release(identity, release_id)
         if release.status not in {ReleaseStatus.ACTIVE, ReleaseStatus.PAUSED}:
             raise InvalidStateError(
@@ -510,6 +522,7 @@ class ControlPlaneService:
         environment: str,
         session_id: str,
     ) -> RuntimeResolution:
+        """Resolve a stable execution snapshot for one tenant and session binding."""
         await self.get_agent(identity, agent_id)
         binding = await self._repository.get_session_binding(
             identity.tenant_id,
@@ -590,11 +603,13 @@ class ControlPlaneService:
         identity: Identity,
         release_id: str,
     ) -> PublishedSnapshot:
+        """Return the tenant-scoped record or raise the domain not-found error."""
         release = await self.get_release(identity, release_id)
         version = await self.get_version(identity, release.agent_id, release.version_id)
         return version.snapshot
 
     async def get_tenant_policy(self, identity: Identity) -> TenantPolicy:
+        """Return the tenant-scoped record or raise the domain not-found error."""
         policy = await self._repository.get_tenant_policy(identity.tenant_id)
         return policy or TenantPolicy(tenant_id=identity.tenant_id)
 
@@ -604,6 +619,7 @@ class ControlPlaneService:
         request: TenantPolicyUpdate,
         trace_id: str,
     ) -> TenantPolicy:
+        """Apply a concurrency-safe update and publish its auditable state transition."""
         policy = TenantPolicy(
             tenant_id=identity.tenant_id,
             **request.model_dump(),
@@ -631,6 +647,7 @@ class ControlPlaneService:
         after_sequence: int,
         limit: int,
     ) -> OutboxList:
+        """List records within the caller tenant without changing release state."""
         items, next_cursor = await self._repository.list_outbox(
             identity.tenant_id,
             after_sequence,
@@ -647,6 +664,7 @@ class ControlPlaneService:
         assignment: str,
         pinned: bool,
     ) -> RuntimeResolution:
+        """Internal helper that preserves Control Plane lifecycle invariants."""
         version = await self.get_version(identity, release.agent_id, release.version_id)
         return RuntimeResolution(
             tenant_id=identity.tenant_id,
@@ -669,6 +687,7 @@ class ControlPlaneService:
         aggregate_id: str,
         payload: dict[str, Any],
     ) -> OutboxEvent:
+        """Internal helper that preserves Control Plane lifecycle invariants."""
         return OutboxEvent(
             event_id=f"evt_{uuid4().hex}",
             event_type=event_type,
@@ -682,6 +701,7 @@ class ControlPlaneService:
 
 
 def _hash(value: Any) -> str:
+    """Internal helper that preserves Control Plane lifecycle invariants."""
     canonical = json.dumps(
         value,
         ensure_ascii=False,
@@ -693,6 +713,7 @@ def _hash(value: Any) -> str:
 
 
 def _component_hashes(spec: dict[str, Any]) -> dict[str, str]:
+    """Internal helper that preserves Control Plane lifecycle invariants."""
     return {
         "knowledge": _hash(spec["knowledge"]),
         "tools": _hash(spec["tools"]),
@@ -700,5 +721,6 @@ def _component_hashes(spec: dict[str, Any]) -> dict[str, str]:
 
 
 def _bucket(tenant_id: str, agent_id: str, environment: str, session_id: str) -> int:
+    """Internal helper that preserves Control Plane lifecycle invariants."""
     key = f"{tenant_id}:{agent_id}:{environment}:{session_id}".encode()
     return int.from_bytes(hashlib.sha256(key).digest()[:8], "big") % 100

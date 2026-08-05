@@ -18,6 +18,7 @@ from app.domain.errors import CircuitOpenError, RateLimitError
 
 class FixedWindowRateLimiter:
     def __init__(self) -> None:
+        """Initialize FixedWindowRateLimiter dependencies and local state."""
         self._events: dict[str, deque[float]] = defaultdict(deque)
         self._lock = Lock()
 
@@ -43,9 +44,11 @@ class RedisFixedWindowRateLimiter:
     """
 
     def __init__(self, redis_url: str) -> None:
+        """Initialize RedisFixedWindowRateLimiter dependencies and local state."""
         self._client = redis.Redis.from_url(redis_url, decode_responses=True)
 
     def acquire(self, key: str, limit_per_minute: int) -> None:
+        """Perform acquire within the RedisFixedWindowRateLimiter ownership boundary."""
         window = int(time() // 60)
         allowed = self._client.eval(
             self._SCRIPT,
@@ -58,6 +61,7 @@ class RedisFixedWindowRateLimiter:
             raise RateLimitError("tool rate limit exceeded")
 
     def ping(self) -> bool:
+        """Perform ping within the RedisFixedWindowRateLimiter ownership boundary."""
         return bool(self._client.ping())
 
 
@@ -69,6 +73,7 @@ class _CircuitState:
 
 class CircuitBreaker:
     def __init__(self) -> None:
+        """Initialize CircuitBreaker dependencies and local state."""
         self._states: dict[str, _CircuitState] = defaultdict(_CircuitState)
         self._lock = Lock()
 
@@ -86,6 +91,7 @@ class CircuitBreaker:
             raise CircuitOpenError("tool circuit breaker is open")
 
     def record_success(self, key: str) -> None:
+        """Run the bounded record success operation and surface failures."""
         with self._lock:
             self._states[key] = _CircuitState()
 

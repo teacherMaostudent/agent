@@ -58,6 +58,7 @@ async def replay(settings: Settings, event_id: str, max_records: int) -> int:
 
 
 def main() -> None:
+    """Perform main within the module ownership boundary."""
     parser = argparse.ArgumentParser(description="Explicitly replay Governance DLQ events")
     parser.add_argument("--event-id", default="")
     parser.add_argument("--max-records", type=int, default=1)

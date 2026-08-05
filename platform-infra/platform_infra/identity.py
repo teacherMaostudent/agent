@@ -38,6 +38,7 @@ class OidcIdentityMiddleware:
         trusted_workload_prefixes: Iterable[str] = (),
         workload_roles: Iterable[str] = ("platform-workload",),
     ) -> None:
+        """Initialize OidcIdentityMiddleware dependencies and local state."""
         self.app = app
         self.enabled = enabled
         self.issuer = issuer.rstrip("/")
@@ -56,6 +57,7 @@ class OidcIdentityMiddleware:
         )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Internal helper for OidcIdentityMiddleware; preserve its caller-facing invariant."""
         if (
             not self.enabled
             or scope["type"] != "http"
@@ -121,11 +123,13 @@ class OidcIdentityMiddleware:
 
     @staticmethod
     async def _reject(send: Send, detail: str) -> None:
+        """Internal helper for OidcIdentityMiddleware; preserve its caller-facing invariant."""
         response = JSONResponse({"detail": detail}, status_code=401)
         await response({"type": "http"}, lambda: None, send)
 
 
 def _required_claim(claims: dict[str, Any], name: str) -> str:
+    """Internal helper for module; preserve its caller-facing invariant."""
     value = claims.get(name)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"required claim is missing: {name}")
@@ -133,6 +137,7 @@ def _required_claim(claims: dict[str, Any], name: str) -> str:
 
 
 def _roles(value: Any) -> list[str]:
+    """Internal helper for module; preserve its caller-facing invariant."""
     if isinstance(value, str):
         return [part.strip() for part in value.split(",") if part.strip()]
     if isinstance(value, list):
@@ -141,6 +146,7 @@ def _roles(value: Any) -> list[str]:
 
 
 def _required_header(headers: Headers, name: str) -> str:
+    """Internal helper for module; preserve its caller-facing invariant."""
     value = headers.get(name, "").strip()
     if not value:
         raise ValueError(f"verified workload did not provide delegated header: {name}")
@@ -160,6 +166,7 @@ class WorkloadTokenProvider:
         scope: str = "",
         timeout: float = 5.0,
     ) -> None:
+        """Initialize WorkloadTokenProvider dependencies and local state."""
         self.token_url = token_url
         self.client_id = client_id
         self.client_secret = client_secret
@@ -172,9 +179,11 @@ class WorkloadTokenProvider:
 
     @property
     def enabled(self) -> bool:
+        """Perform enabled within the WorkloadTokenProvider ownership boundary."""
         return bool(self.token_url and self.client_id and self.client_secret)
 
     def authorization_header(self) -> dict[str, str]:
+        """Perform authorization header within the WorkloadTokenProvider ownership boundary."""
         if not self.enabled:
             return {}
         return {"Authorization": f"Bearer {self.access_token()}"}
@@ -207,6 +216,7 @@ class WorkloadTokenProvider:
 
 
 def build_workload_token_provider(settings: Any) -> WorkloadTokenProvider:
+    """Perform build workload token provider within the module ownership boundary."""
     return WorkloadTokenProvider(
         token_url=getattr(settings, "workload_token_url", ""),
         client_id=getattr(settings, "workload_client_id", ""),

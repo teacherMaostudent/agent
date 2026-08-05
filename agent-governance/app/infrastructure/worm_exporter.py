@@ -21,6 +21,7 @@ from app.core.config import Settings
 
 
 def _merkle_root(hashes: list[str]) -> str:
+    """Internal helper for module; preserve its caller-facing invariant."""
     if not hashes:
         return hashlib.sha256(b"").hexdigest()
     level = [bytes.fromhex(value) for value in hashes]
@@ -95,6 +96,7 @@ async def export_tenant(settings: Settings, tenant_id: str) -> dict:
 
 
 def main() -> None:
+    """Perform main within the module ownership boundary."""
     import argparse
 
     parser = argparse.ArgumentParser(description="Export an audit chain to WORM storage")

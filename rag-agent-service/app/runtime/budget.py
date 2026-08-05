@@ -17,16 +17,19 @@ class BudgetGuard:
     def __init__(
         self, llm_call_reservation_usd: float, tool_call_reservation_usd: float
     ) -> None:
+        """Initialize BudgetGuard dependencies and local state."""
         self.llm_call_reservation_usd = llm_call_reservation_usd
         self.tool_call_reservation_usd = tool_call_reservation_usd
 
     def ensure_active(self, budget: RuntimeBudget) -> None:
+        """Validate the required invariant before dependent execution can continue."""
         if datetime.now(UTC) >= budget.deadline_at:
             raise RuntimeLimitExceeded(
                 "DEADLINE_EXCEEDED", "The run deadline has expired."
             )
 
     def reserve_llm(self, budget: RuntimeBudget) -> RuntimeBudget:
+        """Perform reserve llm within the BudgetGuard ownership boundary."""
         self.ensure_active(budget)
         if budget.llm_calls >= budget.max_llm_calls:
             raise RuntimeLimitExceeded(
@@ -39,6 +42,7 @@ class BudgetGuard:
         )
 
     def reserve_tool(self, budget: RuntimeBudget) -> RuntimeBudget:
+        """Perform reserve tool within the BudgetGuard ownership boundary."""
         self.ensure_active(budget)
         if budget.tool_calls >= budget.max_tool_calls:
             raise RuntimeLimitExceeded(
@@ -51,6 +55,7 @@ class BudgetGuard:
         )
 
     def reserve_retrieval(self, budget: RuntimeBudget) -> RuntimeBudget:
+        """Perform reserve retrieval within the BudgetGuard ownership boundary."""
         self.ensure_active(budget)
         if budget.retrieval_rounds >= budget.max_retrieval_rounds:
             raise RuntimeLimitExceeded(
@@ -66,6 +71,7 @@ class BudgetGuard:
         )
 
     def count_step(self, budget: RuntimeBudget) -> RuntimeBudget:
+        """Perform count step within the BudgetGuard ownership boundary."""
         self.ensure_active(budget)
         if budget.step_count >= budget.max_steps:
             raise RuntimeLimitExceeded(
@@ -99,6 +105,7 @@ class BudgetGuard:
         tool_calls: int | None = None,
         cost: float,
     ) -> RuntimeBudget:
+        """Internal helper for BudgetGuard; preserve its caller-facing invariant."""
         next_cost = budget.spent_cost_usd + cost
         if next_cost > budget.max_cost_usd:
             raise RuntimeLimitExceeded(
@@ -117,6 +124,7 @@ class BudgetGuard:
 
     @staticmethod
     def _ensure_attempt(budget: RuntimeBudget) -> None:
+        """Internal helper for BudgetGuard; preserve its caller-facing invariant."""
         if budget.attempts_used >= budget.max_attempts:
             raise RuntimeLimitExceeded(
                 "ATTEMPT_BUDGET_EXCEEDED",

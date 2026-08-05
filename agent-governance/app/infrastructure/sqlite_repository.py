@@ -22,15 +22,18 @@ T = TypeVar("T")
 class SqliteRepository:
     """Serialize audit ledger writes so every tenant chain has one predecessor."""
     def __init__(self, database_path: Path, schema_path: Path) -> None:
+        """Initialize SqliteRepository dependencies and local state."""
         self._database_path = database_path
         self._schema_path = schema_path
         self._write_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
+        """Perform initialize within the SqliteRepository ownership boundary."""
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         schema = self._schema_path.read_text(encoding="utf-8")
 
         def operation() -> None:
+            """Perform operation within the module ownership boundary."""
             with self._connect() as connection:
                 connection.executescript(schema)
                 columns = {
@@ -78,12 +81,15 @@ class SqliteRepository:
         await asyncio.to_thread(operation)
 
     async def healthcheck(self) -> bool:
+        """Perform healthcheck within the SqliteRepository ownership boundary."""
         return await self._read(
             lambda connection: connection.execute("SELECT 1").fetchone() is not None
         )
 
     async def ingest(self, event: GovernanceEvent, findings: list[Finding]) -> bool:
+        """Perform ingest within the SqliteRepository ownership boundary."""
         def operation(connection: sqlite3.Connection) -> bool:
+            """Perform operation within the module ownership boundary."""
             previous = connection.execute(
                 "SELECT event_hash FROM audit_events WHERE tenant_id = ? "
                 "ORDER BY sequence DESC LIMIT 1",
@@ -157,7 +163,9 @@ class SqliteRepository:
         return await self._write(operation)
 
     async def verify_audit_chain(self, tenant_id: str) -> dict[str, Any]:
+        """Validate the required invariant before dependent execution can continue."""
         def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            """Perform operation within the module ownership boundary."""
             rows = connection.execute(
                 "SELECT * FROM audit_events WHERE tenant_id = ? ORDER BY sequence ASC",
                 (tenant_id,),
@@ -187,7 +195,9 @@ class SqliteRepository:
     async def list_audit_events(
         self, tenant_id: str, after_sequence: int, limit: int
     ) -> tuple[list[AuditEvent], int | None]:
+        """List only values visible within the caller's tenant and lifecycle scope."""
         def operation(connection: sqlite3.Connection) -> tuple[list[AuditEvent], int | None]:
+            """Perform operation within the module ownership boundary."""
             rows = connection.execute(
                 """SELECT * FROM audit_events WHERE tenant_id = ? AND sequence > ?
                    ORDER BY sequence ASC LIMIT ?""",
@@ -202,7 +212,9 @@ class SqliteRepository:
     async def list_findings(
         self, tenant_id: str, status: FindingStatus | None, limit: int
     ) -> list[Finding]:
+        """List only values visible within the caller's tenant and lifecycle scope."""
         def operation(connection: sqlite3.Connection) -> list[Finding]:
+            """Perform operation within the module ownership boundary."""
             query = "SELECT * FROM findings WHERE tenant_id = ?"
             params: list[object] = [tenant_id]
             if status:
@@ -217,7 +229,9 @@ class SqliteRepository:
     async def resolve_finding(
         self, tenant_id: str, finding_id: str, resolved_by: str, note: str, timestamp: str
     ) -> Finding | None:
+        """Apply the requested state transition with configured consistency checks."""
         def operation(connection: sqlite3.Connection) -> Finding | None:
+            """Perform operation within the module ownership boundary."""
             cursor = connection.execute(
                 """
                 UPDATE findings
@@ -245,7 +259,9 @@ class SqliteRepository:
         return await self._write(operation)
 
     async def get_finding(self, tenant_id: str, finding_id: str) -> Finding | None:
+        """Return the requested value through the established ownership boundary."""
         def operation(connection: sqlite3.Connection) -> Finding | None:
+            """Perform operation within the module ownership boundary."""
             row = connection.execute(
                 "SELECT * FROM findings WHERE tenant_id = ? AND finding_id = ?",
                 (tenant_id, finding_id),
@@ -255,6 +271,7 @@ class SqliteRepository:
         return await self._read(operation)
 
     async def get_tenant_policy(self, tenant_id: str) -> TenantPolicy | None:
+        """Return the requested value through the established ownership boundary."""
         return await self._read(
             lambda connection: _policy_from_row(
                 connection.execute(
@@ -264,12 +281,15 @@ class SqliteRepository:
         )
 
     async def upsert_tenant_policy(self, policy: TenantPolicy, event: AuditEvent) -> None:
+        """Persist state while preserving the transaction and audit boundary."""
         await self._write(lambda connection: _upsert_policy_and_audit(connection, policy, event))
 
     async def report(
         self, tenant_id: str, from_time: str | None, to_time: str | None
     ) -> tuple[int, dict[str, int], list[Finding]]:
+        """Perform report within the SqliteRepository ownership boundary."""
         def operation(connection: sqlite3.Connection) -> tuple[int, dict[str, int], list[Finding]]:
+            """Perform operation within the module ownership boundary."""
             clauses = ["tenant_id = ?"]
             params: list[object] = [tenant_id]
             if from_time:
@@ -315,6 +335,7 @@ class SqliteRepository:
     async def upsert_document(
         self, tenant_id: str, kind: str, document_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
+        """Persist state while preserving the transaction and audit boundary."""
         now = payload.get("updatedAt") or payload.get("createdAt")
         if not isinstance(now, str) or not now:
             from datetime import UTC, datetime
@@ -322,6 +343,7 @@ class SqliteRepository:
             now = datetime.now(UTC).isoformat()
 
         def operation(connection: sqlite3.Connection) -> dict[str, Any]:
+            """Perform operation within the module ownership boundary."""
             connection.execute(
                 """
                 INSERT INTO governance_documents (
@@ -340,7 +362,9 @@ class SqliteRepository:
     async def get_document(
         self, tenant_id: str, kind: str, document_id: str
     ) -> dict[str, Any] | None:
+        """Return the requested value through the established ownership boundary."""
         def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            """Perform operation within the module ownership boundary."""
             row = connection.execute(
                 """
                 SELECT payload_json FROM governance_documents
@@ -355,7 +379,9 @@ class SqliteRepository:
     async def list_documents(
         self, tenant_id: str, kind: str, limit: int = 1_000
     ) -> list[dict[str, Any]]:
+        """List only values visible within the caller's tenant and lifecycle scope."""
         def operation(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+            """Perform operation within the module ownership boundary."""
             rows = connection.execute(
                 """
                 SELECT payload_json FROM governance_documents
@@ -371,10 +397,12 @@ class SqliteRepository:
     async def purge_documents_before(
         self, tenant_id: str, kinds: list[str], cutoff: str
     ) -> int:
+        """Release or remove owned state without bypassing cleanup rules."""
         if not kinds:
             return 0
 
         def operation(connection: sqlite3.Connection) -> int:
+            """Perform operation within the module ownership boundary."""
             placeholders = ",".join("?" for _ in kinds)
             cursor = connection.execute(
                 f"DELETE FROM governance_documents WHERE tenant_id = ? "
@@ -386,16 +414,20 @@ class SqliteRepository:
         return await self._write(operation)
 
     async def _read(self, operation: Callable[[sqlite3.Connection], T]) -> T:
+        """Internal helper for SqliteRepository; preserve its caller-facing invariant."""
         def run() -> T:
+            """Perform run within the module ownership boundary."""
             with self._connect() as connection:
                 return operation(connection)
 
         return await asyncio.to_thread(run)
 
     async def _write(self, operation: Callable[[sqlite3.Connection], T]) -> T:
+        """Internal helper for SqliteRepository; preserve its caller-facing invariant."""
         async with self._write_lock:
 
             def run() -> T:
+                """Perform run within the module ownership boundary."""
                 with self._connect() as connection:
                     connection.execute("BEGIN IMMEDIATE")
                     try:
@@ -409,6 +441,7 @@ class SqliteRepository:
             return await asyncio.to_thread(run)
 
     def _connect(self) -> sqlite3.Connection:
+        """Internal helper for SqliteRepository; preserve its caller-facing invariant."""
         connection = sqlite3.connect(self._database_path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
@@ -416,10 +449,12 @@ class SqliteRepository:
 
 
 def _json(value: object) -> str:
+    """Internal helper for module; preserve its caller-facing invariant."""
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _audit_from_row(row: sqlite3.Row) -> AuditEvent:
+    """Internal helper for module; preserve its caller-facing invariant."""
     return AuditEvent.model_validate(
         {
             "sequence": row["sequence"],
@@ -438,6 +473,7 @@ def _audit_from_row(row: sqlite3.Row) -> AuditEvent:
 
 
 def _finding_from_row(row: sqlite3.Row) -> Finding:
+    """Internal helper for module; preserve its caller-facing invariant."""
     return Finding.model_validate(
         {
             "finding_id": row["finding_id"],
@@ -459,12 +495,14 @@ def _finding_from_row(row: sqlite3.Row) -> Finding:
 
 
 def _policy_from_row(row: sqlite3.Row | None) -> TenantPolicy | None:
+    """Internal helper for module; preserve its caller-facing invariant."""
     return TenantPolicy.model_validate_json(row["policy_json"]) if row else None
 
 
 def _upsert_policy_and_audit(
     connection: sqlite3.Connection, policy: TenantPolicy, event: AuditEvent
 ) -> None:
+    """Internal helper for module; preserve its caller-facing invariant."""
     connection.execute(
         """
         INSERT INTO tenant_policies (tenant_id, policy_json, updated_by, updated_at)

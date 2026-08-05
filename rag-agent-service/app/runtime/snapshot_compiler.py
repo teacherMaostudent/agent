@@ -43,10 +43,12 @@ class CompiledAgentPlan(BaseModel):
 
     @property
     def retrieval_top_k(self) -> int:
+        """Perform retrieval top k within the CompiledAgentPlan ownership boundary."""
         return max((int(item.get("top_k", 8)) for item in self.knowledge), default=8)
 
     @property
     def knowledge_filters(self) -> dict[str, Any]:
+        """Perform knowledge filters within the CompiledAgentPlan ownership boundary."""
         return {
             str(item["knowledge_base"]): item.get("filters", {})
             for item in self.knowledge
@@ -60,6 +62,7 @@ def compile_snapshot(
     agent_id: str,
     fallback_model: str,
 ) -> CompiledAgentPlan:
+    """Perform compile snapshot within the module ownership boundary."""
     if not snapshot:
         return _local_plan(fallback_model)
     if snapshot.get("schema_version") != "1.0":
@@ -138,6 +141,7 @@ def compile_snapshot(
 
 
 def render_prompt(plan: dict[str, Any], variables: dict[str, Any]) -> str:
+    """Perform render prompt within the module ownership boundary."""
     template = str(plan.get("prompt_template", ""))
     used = set(_VARIABLE.findall(template))
     missing = sorted(name for name in used if _resolve(variables, name) is None)
@@ -145,6 +149,7 @@ def render_prompt(plan: dict[str, Any], variables: dict[str, Any]) -> str:
         raise SnapshotCompileError(f"published prompt variables are missing: {missing}")
 
     def replace(match: re.Match[str]) -> str:
+        """Perform replace within the module ownership boundary."""
         value = _resolve(variables, match.group(1))
         return str(value) if value is not None else ""
 
@@ -152,6 +157,7 @@ def render_prompt(plan: dict[str, Any], variables: dict[str, Any]) -> str:
 
 
 def validate_tool_manifests(plan: dict[str, Any], manifests: list[dict[str, Any]]) -> None:
+    """Validate the required invariant before dependent execution can continue."""
     actual = {(str(item.get("name")), str(item.get("version"))): item for item in manifests}
     for binding in plan.get("tools", []):
         key = (str(binding.get("tool_name")), str(binding.get("version")))
@@ -170,6 +176,7 @@ def validate_tool_manifests(plan: dict[str, Any], manifests: list[dict[str, Any]
 
 
 def validate_final_output(plan: dict[str, Any], answer: str) -> None:
+    """Validate the required invariant before dependent execution can continue."""
     schema = plan.get("prompt_output_schema")
     if not schema:
         return
@@ -189,6 +196,7 @@ def validate_final_output(plan: dict[str, Any], answer: str) -> None:
 def _reachable_order(
     entrypoint: str, edges: list[Any], node_kinds: dict[str, str]
 ) -> list[str]:
+    """Internal helper for module; preserve its caller-facing invariant."""
     adjacency: dict[str, list[str]] = {name: [] for name in node_kinds}
     for edge in edges:
         if not isinstance(edge, dict):
@@ -209,6 +217,7 @@ def _reachable_order(
 
 
 def _mapping(value: dict[str, Any], name: str) -> dict[str, Any]:
+    """Internal helper for module; preserve its caller-facing invariant."""
     item = value.get(name)
     if not isinstance(item, dict):
         raise SnapshotCompileError(f"published snapshot {name} is missing")
@@ -216,6 +225,7 @@ def _mapping(value: dict[str, Any], name: str) -> dict[str, Any]:
 
 
 def _required(value: dict[str, Any], name: str) -> Any:
+    """Internal helper for module; preserve its caller-facing invariant."""
     item = value.get(name)
     if item is None or item == "":
         raise SnapshotCompileError(f"published snapshot field is required: {name}")
@@ -223,6 +233,7 @@ def _required(value: dict[str, Any], name: str) -> Any:
 
 
 def _resolve(values: dict[str, Any], path: str) -> Any:
+    """Internal helper for module; preserve its caller-facing invariant."""
     current: Any = values
     for part in path.split("."):
         if not isinstance(current, dict) or part not in current:
@@ -232,6 +243,7 @@ def _resolve(values: dict[str, Any], path: str) -> Any:
 
 
 def _local_plan(model: str) -> CompiledAgentPlan:
+    """Internal helper for module; preserve its caller-facing invariant."""
     return CompiledAgentPlan(
         contract_hash="local-unversioned",
         graph_id="runtime-default",

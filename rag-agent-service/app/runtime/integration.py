@@ -31,6 +31,7 @@ class ControlPlaneClient:
         workload_identity: WorkloadTokenProvider | None = None,
         mtls: dict[str, Any] | None = None,
     ) -> None:
+        """Initialize ControlPlaneClient dependencies and local state."""
         self.base_url = base_url.rstrip("/")
         self.runtime_key = runtime_key
         self.timeout = timeout
@@ -72,6 +73,7 @@ class RuntimeStore:
     """Small durable Run + transactional-outbox store; PostgreSQL is the production adapter."""
 
     def __init__(self, path: Path) -> None:
+        """Initialize RuntimeStore dependencies and local state."""
         path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
@@ -125,6 +127,7 @@ class RuntimeStore:
             self._connection.commit()
 
     def create(self, context: ExecutionContext) -> RuntimeRun:
+        """Perform create within the RuntimeStore ownership boundary."""
         now = datetime.now(UTC)
         run = RuntimeRun(
             run_id=context.run_id,
@@ -171,6 +174,7 @@ class RuntimeStore:
         return run
 
     def get(self, tenant_id: str, run_id: str) -> RuntimeRun | None:
+        """Perform get within the RuntimeStore ownership boundary."""
         with self._lock:
             row = self._connection.execute(
                 "SELECT * FROM runtime_runs WHERE tenant_id = ? AND run_id = ?",
@@ -179,6 +183,7 @@ class RuntimeStore:
         return self._from_row(row) if row else None
 
     def cancel(self, tenant_id: str, run_id: str) -> RuntimeRun | None:
+        """Perform cancel within the RuntimeStore ownership boundary."""
         now = datetime.now(UTC).isoformat()
         with self._lock:
             self._connection.execute(
@@ -194,6 +199,7 @@ class RuntimeStore:
     def finish(
         self, run_id: str, status: str, result: dict, error_code: str = ""
     ) -> None:
+        """Perform finish within the RuntimeStore ownership boundary."""
         with self._lock:
             self._connection.execute(
                 "UPDATE runtime_runs SET status = ?, result_json = ?, error_code = ?, updated_at = ? WHERE run_id = ?",
@@ -247,6 +253,7 @@ class RuntimeStore:
                 raise
 
     def enqueue_governance(self, event: dict[str, Any]) -> None:
+        """Persist state while preserving the transaction and audit boundary."""
         with self._lock:
             self._connection.execute(
                 "INSERT INTO runtime_outbox(event_id, payload_json, created_at) "
@@ -260,6 +267,7 @@ class RuntimeStore:
             self._connection.commit()
 
     def pending_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Perform pending events within the RuntimeStore ownership boundary."""
         now = datetime.now(UTC).isoformat()
         with self._lock:
             rows = self._connection.execute(
@@ -271,6 +279,7 @@ class RuntimeStore:
         return [json.loads(row["payload_json"]) for row in rows]
 
     def mark_delivered(self, event_id: str) -> None:
+        """Perform mark delivered within the RuntimeStore ownership boundary."""
         with self._lock:
             self._connection.execute(
                 "UPDATE runtime_outbox SET delivered_at = ? WHERE event_id = ?",
@@ -279,6 +288,7 @@ class RuntimeStore:
             self._connection.commit()
 
     def mark_delivery_failed(self, event_id: str, error: str) -> None:
+        """Perform mark delivery failed within the RuntimeStore ownership boundary."""
         with self._lock:
             row = self._connection.execute(
                 "SELECT attempts FROM runtime_outbox WHERE event_id = ?", (event_id,)
@@ -297,11 +307,13 @@ class RuntimeStore:
             self._connection.commit()
 
     def close(self) -> None:
+        """Perform close within the RuntimeStore ownership boundary."""
         with self._lock:
             self._connection.close()
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> RuntimeRun:
+        """Internal helper for RuntimeStore; preserve its caller-facing invariant."""
         return RuntimeRun(
             run_id=row["run_id"],
             tenant_id=row["tenant_id"],
@@ -327,6 +339,7 @@ class GovernanceOutboxPublisher:
         timeout: float,
         workload_identity: WorkloadTokenProvider | None = None,
     ) -> None:
+        """Initialize GovernanceOutboxPublisher dependencies and local state."""
         self.store, self.base_url, self.event_key, self.timeout = (
             store,
             base_url.rstrip("/"),
@@ -342,6 +355,7 @@ class GovernanceOutboxPublisher:
         result: dict[str, Any],
         error_code: str = "",
     ) -> None:
+        """Perform publish run within the GovernanceOutboxPublisher ownership boundary."""
         self.store.enqueue_governance(
             self.event_for_run(context, status, result, error_code)
         )
@@ -353,6 +367,7 @@ class GovernanceOutboxPublisher:
         result: dict[str, Any],
         error_code: str = "",
     ) -> dict[str, Any]:
+        """Perform event for run within the GovernanceOutboxPublisher ownership boundary."""
         plan = result.get("execution_plan", {})
         complexity = plan.get("complexity", {}) if isinstance(plan, dict) else {}
         route = plan.get("route", {}) if isinstance(plan, dict) else {}
@@ -390,6 +405,7 @@ class GovernanceOutboxPublisher:
         }
 
     def flush(self) -> None:
+        """Perform flush within the GovernanceOutboxPublisher ownership boundary."""
         if not self.base_url:
             return
         headers = {"X-Governance-Event-Key": self.event_key} if self.event_key else {}

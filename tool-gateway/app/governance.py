@@ -28,6 +28,7 @@ class GovernanceOutboxPublisher:
         timeout: float,
         workload_identity: WorkloadTokenProvider | None = None,
     ) -> None:
+        """Initialize GovernanceOutboxPublisher dependencies and local state."""
         self.repository = repository
         self.base_url = base_url.rstrip("/")
         self.event_key = event_key
@@ -41,6 +42,7 @@ class GovernanceOutboxPublisher:
         spec: ToolSpec,
         approval_granted: bool,
     ) -> None:
+        """Perform publish invocation within the GovernanceOutboxPublisher ownership boundary."""
         self.repository.enqueue_event(
             {
                 "event_id": f"evt_{uuid4().hex}",
@@ -70,6 +72,7 @@ class GovernanceOutboxPublisher:
         )
 
     async def flush(self) -> None:
+        """Perform flush within the GovernanceOutboxPublisher ownership boundary."""
         if not self.base_url:
             return
         headers = {"X-Governance-Event-Key": self.event_key} if self.event_key else {}

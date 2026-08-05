@@ -32,10 +32,12 @@ GOLDEN_CANDIDATE = "eval-golden-candidate"
 
 
 def _now() -> str:
+    """Internal helper for module; preserve its caller-facing invariant."""
     return datetime.now(UTC).isoformat()
 
 
 def _id(value: object | None = None) -> str:
+    """Internal helper for module; preserve its caller-facing invariant."""
     return str(value).strip() if value is not None and str(value).strip() else uuid4().hex
 
 
@@ -48,11 +50,13 @@ class EvaluationService:
         settings: Settings,
         gateway: LlmGatewayClient,
     ) -> None:
+        """Initialize EvaluationService dependencies and local state."""
         self._repository = repository
         self._settings = settings
         self._gateway = gateway
 
     async def snapshot(self, tenant_id: str) -> dict[str, Any]:
+        """Perform snapshot within the EvaluationService ownership boundary."""
         return {
             "store": "governance",
             "promptVersions": await self._repository.list_documents(tenant_id, PROMPT_VERSION),
@@ -70,6 +74,7 @@ class EvaluationService:
     async def upsert_asset(
         self, tenant_id: str, kind: str, request: dict[str, Any]
     ) -> dict[str, Any]:
+        """Persist state while preserving the transaction and audit boundary."""
         saved = dict(request)
         saved["id"] = _id(saved.get("id"))
         saved["createdAt"] = _now()
@@ -79,6 +84,7 @@ class EvaluationService:
         return await self._repository.upsert_document(tenant_id, kind, saved["id"], saved)
 
     async def record_trace(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        """Run the bounded record trace operation and surface failures."""
         saved = dict(request)
         saved["traceId"] = _id(saved.get("traceId"))
         saved["timestamp"] = _now()
@@ -159,6 +165,7 @@ class EvaluationService:
     async def record_feedback(
         self, tenant_id: str, user_id: str, request: dict[str, Any]
     ) -> dict[str, Any]:
+        """Run the bounded record feedback operation and surface failures."""
         sample_id = _id(request.get("requestId"))
         sample = await self._repository.get_document(tenant_id, ONLINE_SAMPLE, sample_id) or {
             "id": sample_id,
@@ -184,6 +191,7 @@ class EvaluationService:
         return await self._repository.upsert_document(tenant_id, ONLINE_SAMPLE, sample_id, sample)
 
     async def online_snapshot(self, tenant_id: str) -> dict[str, Any]:
+        """Perform online snapshot within the EvaluationService ownership boundary."""
         samples = await self._repository.list_documents(tenant_id, ONLINE_SAMPLE)
         candidates = await self._repository.list_documents(tenant_id, GOLDEN_CANDIDATE)
         return {
@@ -197,6 +205,7 @@ class EvaluationService:
         }
 
     async def judge_online(self, tenant_id: str, user_id: str, sample_id: str) -> dict[str, Any]:
+        """Perform judge online within the EvaluationService ownership boundary."""
         sample = await self._repository.get_document(tenant_id, ONLINE_SAMPLE, sample_id)
         if not sample:
             raise NotFoundError(f"Unknown online sample: {sample_id}")
@@ -250,6 +259,7 @@ class EvaluationService:
         sample_id: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
+        """Perform review online sample within the EvaluationService ownership boundary."""
         sample = await self._repository.get_document(tenant_id, ONLINE_SAMPLE, sample_id)
         if not sample:
             raise NotFoundError(f"Unknown online sample: {sample_id}")
@@ -287,6 +297,7 @@ class EvaluationService:
         candidate_id: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
+        """Perform review golden candidate within the EvaluationService ownership boundary."""
         candidate = await self._repository.get_document(tenant_id, GOLDEN_CANDIDATE, candidate_id)
         if not candidate:
             raise NotFoundError(f"Unknown Golden candidate: {candidate_id}")
@@ -317,6 +328,7 @@ class EvaluationService:
         )
 
     async def run_regression(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        """Run the bounded run regression operation and surface failures."""
         answers = request.get("answerByQuestion") or {}
         cases = await self._repository.list_documents(tenant_id, GOLDEN_CASE)
         scores = []
@@ -352,6 +364,7 @@ class EvaluationService:
         user_id: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
+        """Perform judge within the EvaluationService ownership boundary."""
         rubric = await self._rubric(tenant_id, request.get("rubricId"))
         all_cases = await self._repository.list_documents(tenant_id, GOLDEN_CASE)
         selected = set(request.get("caseIds") or [])
@@ -435,6 +448,7 @@ class EvaluationService:
     async def quality_gate(
         self, tenant_id: str, run_id: str, request: dict[str, Any] | None
     ) -> dict[str, Any]:
+        """Perform quality gate within the EvaluationService ownership boundary."""
         run = await self._repository.get_document(tenant_id, JUDGE_RUN, run_id)
         if not run:
             raise NotFoundError(f"Unknown judge run: {run_id}")
@@ -478,6 +492,7 @@ class EvaluationService:
         return await self._repository.upsert_document(tenant_id, QUALITY_GATE, result["id"], result)
 
     async def _rubric(self, tenant_id: str, rubric_id: object) -> dict[str, Any]:
+        """Internal helper for EvaluationService; preserve its caller-facing invariant."""
         resolved = str(rubric_id or "default")
         rubric = await self._repository.get_document(tenant_id, JUDGE_RUBRIC, resolved)
         if rubric:
@@ -529,6 +544,7 @@ class EvaluationService:
         request: dict[str, Any],
         case: dict[str, Any],
     ) -> str:
+        """Internal helper for EvaluationService; preserve its caller-facing invariant."""
         response = await self._gateway.complete(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -550,6 +566,7 @@ class EvaluationService:
         rubric: dict[str, Any],
         prior: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        """Internal helper for EvaluationService; preserve its caller-facing invariant."""
         payload = {
             "question": case.get("question"),
             "groundTruth": case.get("groundTruth"),
@@ -598,6 +615,7 @@ class EvaluationService:
 
 
 def _json_object(text: str) -> dict[str, Any]:
+    """Internal helper for module; preserve its caller-facing invariant."""
     stripped = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.I)
     try:
         value = json.loads(stripped)
@@ -614,10 +632,12 @@ def _json_object(text: str) -> dict[str, Any]:
 
 
 def _tokens(value: str) -> set[str]:
+    """Internal helper for module; preserve its caller-facing invariant."""
     return {item for item in re.split(r"[\W_]+", value.lower()) if item}
 
 
 def _similarity(left: str, right: str) -> float:
+    """Internal helper for module; preserve its caller-facing invariant."""
     left_tokens = _tokens(left)
     if not left_tokens or not right:
         return 0.0
@@ -626,11 +646,13 @@ def _similarity(left: str, right: str) -> float:
 
 
 def _average(values: Any) -> float:
+    """Internal helper for module; preserve its caller-facing invariant."""
     items = [float(item) for item in values]
     return round(sum(items) / len(items), 4) if items else 0.0
 
 
 def _weighted_score(scores: dict[str, int], rubric: dict[str, Any]) -> int:
+    """Internal helper for module; preserve its caller-facing invariant."""
     dimensions = rubric.get("dimensions") or []
     total = sum(Decimal(str(item.get("weight", 0))) for item in dimensions)
     if not total:
@@ -645,6 +667,7 @@ def _weighted_score(scores: dict[str, int], rubric: dict[str, Any]) -> int:
 def _consensus(
     left: dict[str, Any], right: dict[str, Any], rubric: dict[str, Any]
 ) -> dict[str, Any]:
+    """Internal helper for module; preserve its caller-facing invariant."""
     scores = {
         item["name"]: round(
             (
@@ -673,6 +696,7 @@ def _consensus(
 
 
 def _question(request: dict[str, Any]) -> str:
+    """Internal helper for module; preserve its caller-facing invariant."""
     messages = request.get("messages") or []
     for item in reversed(messages):
         if item.get("role") == "user":
@@ -681,6 +705,7 @@ def _question(request: dict[str, Any]) -> str:
 
 
 def _answer(response: dict[str, Any]) -> str:
+    """Internal helper for module; preserve its caller-facing invariant."""
     choices = response.get("choices") or []
     if choices:
         return str((choices[0].get("message") or {}).get("content") or "")

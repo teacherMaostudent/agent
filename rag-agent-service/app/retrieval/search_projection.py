@@ -18,6 +18,7 @@ from app.retrieval.vector_retriever import HashEmbeddingRetriever
 
 class NullSearchProjection:
     def index_document(self, document: Document, chunks: list[Chunk]) -> None:
+        """Perform index document within the NullSearchProjection ownership boundary."""
         del document, chunks
 
 
@@ -25,6 +26,7 @@ class OpenSearchProjection:
     """Rebuildable OpenSearch projection; PostgreSQL/S3 remain authoritative."""
 
     def __init__(self, settings) -> None:
+        """Initialize OpenSearchProjection dependencies and local state."""
         self.url = settings.opensearch_url.rstrip("/")
         self.alias = settings.opensearch_index_alias
         self.version = settings.opensearch_index_version
@@ -39,6 +41,7 @@ class OpenSearchProjection:
         self._ensure_index()
 
     def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        """Internal helper for OpenSearchProjection; preserve its caller-facing invariant."""
         response = httpx.request(
             method,
             f"{self.url}/{path.lstrip('/')}",
@@ -51,6 +54,7 @@ class OpenSearchProjection:
         return response
 
     def _ensure_index(self) -> None:
+        """Internal helper for OpenSearchProjection; preserve its caller-facing invariant."""
         exists = httpx.head(f"{self.url}/{self.index}", auth=self.auth, timeout=10)
         if exists.status_code == 404:
             self._request(
@@ -84,6 +88,7 @@ class OpenSearchProjection:
     def publish(self) -> None:
         # Alias swapping gives readers an all-or-nothing index version change;
         # they never observe a partially rebuilt index as the active corpus.
+        """Perform publish within the OpenSearchProjection ownership boundary."""
         current = httpx.get(f"{self.url}/_alias/{self.alias}", auth=self.auth, timeout=10)
         actions: list[dict[str, Any]] = []
         if current.status_code == 200:
@@ -95,6 +100,7 @@ class OpenSearchProjection:
         self._request("POST", "_aliases", json={"actions": actions})
 
     def index_document(self, document: Document, chunks: list[Chunk]) -> None:
+        """Perform index document within the OpenSearchProjection ownership boundary."""
         tenant_id = str(document.metadata.get("tenant_id", ""))
         if not tenant_id:
             raise ValueError("indexed documents require tenant_id")
@@ -121,6 +127,7 @@ class OpenSearchProjection:
     def search(self, request: RagSearchRequest) -> RagSearchResponse:
         # ACL constraints are filters, not post-processing.  Unauthorized
         # chunks must not influence scores or candidate counts at all.
+        """Perform search within the OpenSearchProjection ownership boundary."""
         acl_filter = [
             {"term": {"tenant_id": request.tenant_id}},
             {
@@ -174,6 +181,7 @@ class OpenSearchProjection:
 
 
 def build_search_projection(settings):
+    """Perform build search projection within the module ownership boundary."""
     if settings.search_backend == "opensearch":
         return OpenSearchProjection(settings)
     return NullSearchProjection()

@@ -51,6 +51,7 @@ def _context(
     # When OIDC is enabled, middleware has already verified the JWT and
     # reconstructed these identity headers.  The route intentionally remains
     # header-shaped so local/test callers and existing adapters stay compatible.
+    """Internal helper for module; preserve its caller-facing invariant."""
     return InvocationContext(
         tenant_id=x_tenant_id,
         user_id=x_user_id,
@@ -73,6 +74,7 @@ def list_tools(
     request: Request,
     context: Annotated[InvocationContext, Depends(_context)],
 ) -> list[ToolManifest]:
+    """List only values visible within the caller's tenant and lifecycle scope."""
     return request.app.state.container.registry.manifests(
         context.tenant_id,
         context.permissions,
@@ -91,6 +93,7 @@ async def invoke_tool(
     request: Request,
     context: Annotated[InvocationContext, Depends(_context)],
 ) -> InvocationResponse:
+    """Perform invoke tool within the module ownership boundary."""
     response = await request.app.state.container.execution.invoke(tool_name, payload, context)
     await request.app.state.container.governance.flush()
     if response.status == InvocationStatus.PENDING_APPROVAL:
@@ -108,6 +111,7 @@ def get_approval(
     request: Request,
     context: Annotated[InvocationContext, Depends(_context)],
 ) -> ApprovalRecord:
+    """Return the requested value through the established ownership boundary."""
     record = request.app.state.container.repository.get_approval(approval_id)
     if record is None or record.tenant_id != context.tenant_id or record.user_id != context.user_id:
         from app.domain.errors import ApprovalError
@@ -127,6 +131,7 @@ def approve(
     request: Request,
     context: Annotated[InvocationContext, Depends(_context)],
 ) -> ApprovalRecord:
+    """Perform approve within the module ownership boundary."""
     request.app.state.require_admin(request)
     return request.app.state.container.repository.decide_approval(
         approval_id,
@@ -148,6 +153,7 @@ def reject(
     request: Request,
     context: Annotated[InvocationContext, Depends(_context)],
 ) -> ApprovalRecord:
+    """Perform reject within the module ownership boundary."""
     request.app.state.require_admin(request)
     return request.app.state.container.repository.decide_approval(
         approval_id,
@@ -165,6 +171,7 @@ def audit(
     tool_name: str | None = Query(default=None, max_length=150),
     limit: int = Query(default=100, ge=1, le=1_000),
 ) -> AuditPage:
+    """Perform audit within the module ownership boundary."""
     items = request.app.state.container.repository.list_audit(
         context.tenant_id,
         tool_name=tool_name,

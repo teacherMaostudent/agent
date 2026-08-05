@@ -116,12 +116,14 @@ async def consume(settings: Settings) -> None:
 
 
 def main() -> None:
+    """Perform main within the module ownership boundary."""
     settings = Settings()
     if not settings.kafka_bootstrap_servers:
         raise RuntimeError("GOVERNANCE_KAFKA_BOOTSTRAP_SERVERS is required")
     asyncio.run(consume(settings))
 
 def _attempts(headers: list[tuple[str, bytes]] | None) -> int:
+    """Internal helper for module; preserve its caller-facing invariant."""
     for name, value in headers or []:
         if name == "x-attempt":
             try:

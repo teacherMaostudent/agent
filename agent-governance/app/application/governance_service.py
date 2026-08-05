@@ -34,9 +34,11 @@ class GovernanceService:
     not create findings again, preserving idempotency across outbox retries.
     """
     def __init__(self, repository: SqliteRepository) -> None:
+        """Initialize GovernanceService dependencies and local state."""
         self._repository = repository
 
     async def ingest(self, event: GovernanceEvent) -> IngestionResult:
+        """Perform ingest within the GovernanceService ownership boundary."""
         policy = await self.get_tenant_policy_for(event.tenant_id)
         findings = evaluate(event, policy)
         audit_event = AuditEvent(**event.model_dump(), sequence=0, received_at=utc_now())
@@ -50,6 +52,7 @@ class GovernanceService:
     async def list_audit_events(
         self, identity: Identity, after_sequence: int, limit: int
     ) -> AuditEventList:
+        """List only values visible within the caller's tenant and lifecycle scope."""
         items, next_cursor = await self._repository.list_audit_events(
             identity.tenant_id, after_sequence, limit
         )
@@ -58,6 +61,7 @@ class GovernanceService:
     async def list_findings(
         self, identity: Identity, status: FindingStatus | None, limit: int
     ) -> FindingList:
+        """List only values visible within the caller's tenant and lifecycle scope."""
         return FindingList(
             items=await self._repository.list_findings(identity.tenant_id, status, limit)
         )
@@ -65,6 +69,7 @@ class GovernanceService:
     async def resolve_finding(
         self, identity: Identity, finding_id: str, request: FindingResolution
     ) -> Finding:
+        """Apply the requested state transition with configured consistency checks."""
         finding = await self._repository.resolve_finding(
             identity.tenant_id,
             finding_id,
@@ -79,15 +84,18 @@ class GovernanceService:
         raise NotFoundError(f"Finding '{finding_id}' was not found.")
 
     async def get_tenant_policy(self, identity: Identity) -> TenantPolicy:
+        """Return the requested value through the established ownership boundary."""
         return await self.get_tenant_policy_for(identity.tenant_id)
 
     async def get_tenant_policy_for(self, tenant_id: str) -> TenantPolicy:
+        """Return the requested value through the established ownership boundary."""
         policy = await self._repository.get_tenant_policy(tenant_id)
         return policy or TenantPolicy(tenant_id=tenant_id)
 
     async def update_tenant_policy(
         self, identity: Identity, request: TenantPolicyUpdate
     ) -> TenantPolicy:
+        """Apply the requested state transition with configured consistency checks."""
         policy = TenantPolicy(
             tenant_id=identity.tenant_id,
             **request.model_dump(),
@@ -118,6 +126,7 @@ class GovernanceService:
     async def report(
         self, identity: Identity, from_time: datetime | None, to_time: datetime | None
     ) -> ComplianceReport:
+        """Perform report within the GovernanceService ownership boundary."""
         total, events_by_source, findings = await self._repository.report(
             identity.tenant_id,
             from_time.isoformat() if from_time else None,

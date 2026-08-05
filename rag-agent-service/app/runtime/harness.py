@@ -20,20 +20,25 @@ class ExecutorAdapter:
     """Common adapter contract for LangGraph, callable and future executors."""
 
     def run(self, initial: AgentState, thread_id: str) -> AgentRunResult:
+        """Perform run within the ExecutorAdapter ownership boundary."""
         raise NotImplementedError
 
     def resume(self, thread_id: str, approval: ApprovalResume, *, max_steps: int) -> AgentRunResult:
+        """Perform resume within the ExecutorAdapter ownership boundary."""
         raise NotImplementedError
 
 
 class GraphExecutor(ExecutorAdapter):
     def __init__(self, graph: AgentGraph) -> None:
+        """Initialize GraphExecutor dependencies and local state."""
         self.graph = graph
 
     def run(self, initial: AgentState, thread_id: str) -> AgentRunResult:
+        """Perform run within the GraphExecutor ownership boundary."""
         return self.graph.run(initial, thread_id)
 
     def resume(self, thread_id: str, approval: ApprovalResume, *, max_steps: int) -> AgentRunResult:
+        """Perform resume within the GraphExecutor ownership boundary."""
         return self.graph.resume(thread_id, approval, max_steps=max_steps)
 
 
@@ -41,13 +46,16 @@ class CallableExecutor(ExecutorAdapter):
     """Adapter for LangChain/Deep-Agent wrappers without coupling Runtime to them."""
 
     def __init__(self, run: Callable[[AgentState, str], AgentRunResult], resume: Callable[..., AgentRunResult] | None = None) -> None:
+        """Initialize CallableExecutor dependencies and local state."""
         self._run = run
         self._resume = resume
 
     def run(self, initial: AgentState, thread_id: str) -> AgentRunResult:
+        """Perform run within the CallableExecutor ownership boundary."""
         return self._run(initial, thread_id)
 
     def resume(self, thread_id: str, approval: ApprovalResume, *, max_steps: int) -> AgentRunResult:
+        """Perform resume within the CallableExecutor ownership boundary."""
         if self._resume is None:
             raise RuntimeError("executor does not support approval resume")
         return self._resume(thread_id, approval, max_steps=max_steps)
@@ -68,6 +76,7 @@ class AgentHarness:
         *,
         registry: Mapping[str, AgentGraph | ExecutorAdapter] | None = None,
     ) -> None:
+        """Initialize AgentHarness dependencies and local state."""
         self.graph = graph
         self._default_executor = GraphExecutor(graph)
         # The default graph preserves the current single-Agent behavior.  A
@@ -108,6 +117,7 @@ class AgentHarness:
 
     @property
     def registered_agents(self) -> tuple[str, ...]:
+        """Perform registered agents within the AgentHarness ownership boundary."""
         return tuple(sorted(self._registry))
 
     def run(self, initial: AgentState, thread_id: str) -> AgentRunResult:
@@ -128,10 +138,12 @@ class AgentHarness:
         )
 
     def _resolve(self, initial: AgentState) -> ExecutorAdapter:
+        """Internal helper for AgentHarness; preserve its caller-facing invariant."""
         agent_id = str(initial.get("agent_id") or "").strip()
         return self._registry.get(agent_id, self.graph)
 
     def _as_executor(self, value: Any) -> ExecutorAdapter:
+        """Internal helper for AgentHarness; preserve its caller-facing invariant."""
         return value if isinstance(value, ExecutorAdapter) else GraphExecutor(value)
 
     def __getattr__(self, name: str) -> Any:

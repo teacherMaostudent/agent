@@ -25,6 +25,7 @@ from app.domain.models import (
 
 
 def _now() -> datetime:
+    """Internal helper for module; preserve its caller-facing invariant."""
     return datetime.now(UTC)
 
 
@@ -36,6 +37,7 @@ class IdempotencyClaim:
 
 class SqliteRepository:
     def __init__(self, path: Path) -> None:
+        """Initialize SqliteRepository dependencies and local state."""
         path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.connection.row_factory = sqlite3.Row
@@ -63,6 +65,7 @@ class SqliteRepository:
                     self.connection.execute(statement)
 
     def ping(self) -> None:
+        """Perform ping within the SqliteRepository ownership boundary."""
         with self._lock:
             self.connection.execute("SELECT 1").fetchone()
 
@@ -133,6 +136,7 @@ class SqliteRepository:
         key: str,
         request_hash: str,
     ) -> InvocationResponse | None:
+        """Perform find idempotency within the SqliteRepository ownership boundary."""
         now = _now().isoformat()
         with self._lock:
             self.connection.execute(
@@ -166,6 +170,7 @@ class SqliteRepository:
         key: str,
         response: InvocationResponse,
     ) -> None:
+        """Apply the requested state transition with configured consistency checks."""
         with self._lock:
             self.connection.execute(
                 """
@@ -183,6 +188,7 @@ class SqliteRepository:
             )
 
     def release_idempotency(self, tenant_id: str, tool_name: str, key: str) -> None:
+        """Release or remove owned state without bypassing cleanup rules."""
         with self._lock:
             self.connection.execute(
                 """
@@ -197,6 +203,7 @@ class SqliteRepository:
         self,
         record: ApprovalRecord,
     ) -> ApprovalRecord:
+        """Return the requested value through the established ownership boundary."""
         now = _now()
         with self._lock:
             self._expire_approvals(now)
@@ -243,6 +250,7 @@ class SqliteRepository:
             return record
 
     def get_approval(self, approval_id: str) -> ApprovalRecord | None:
+        """Return the requested value through the established ownership boundary."""
         with self._lock:
             self._expire_approvals(_now())
             row = self.connection.execute(
@@ -260,6 +268,7 @@ class SqliteRepository:
         decided_by: str,
         reason: str,
     ) -> ApprovalRecord:
+        """Perform decide approval within the SqliteRepository ownership boundary."""
         now = _now()
         with self._lock:
             self._expire_approvals(now)
@@ -288,6 +297,7 @@ class SqliteRepository:
             return self._approval_from_row(updated)
 
     def consume_approval(self, approval_id: str) -> None:
+        """Apply the requested state transition with configured consistency checks."""
         with self._lock:
             cursor = self.connection.execute(
                 """
@@ -300,6 +310,7 @@ class SqliteRepository:
                 raise ApprovalError("approval was already consumed")
 
     def append_audit(self, record: AuditRecord) -> None:
+        """Persist state while preserving the transaction and audit boundary."""
         with self._lock:
             self.connection.execute(
                 """
@@ -328,6 +339,7 @@ class SqliteRepository:
             )
 
     def enqueue_event(self, event: dict[str, Any]) -> None:
+        """Persist state while preserving the transaction and audit boundary."""
         with self._lock:
             self.connection.execute(
                 "INSERT INTO event_outbox"
@@ -337,6 +349,7 @@ class SqliteRepository:
             )
 
     def pending_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Perform pending events within the SqliteRepository ownership boundary."""
         with self._lock:
             rows = self.connection.execute(
                 "SELECT payload_json FROM event_outbox WHERE delivered_at IS NULL "
@@ -346,6 +359,7 @@ class SqliteRepository:
         return [json.loads(row["payload_json"]) for row in rows]
 
     def mark_event_delivered(self, event_id: str) -> None:
+        """Perform mark event delivered within the SqliteRepository ownership boundary."""
         with self._lock:
             self.connection.execute(
                 "UPDATE event_outbox SET delivered_at = ? WHERE event_id = ?",
@@ -353,6 +367,7 @@ class SqliteRepository:
             )
 
     def mark_event_failed(self, event_id: str, error: str) -> None:
+        """Perform mark event failed within the SqliteRepository ownership boundary."""
         from datetime import timedelta
 
         with self._lock:
@@ -374,6 +389,7 @@ class SqliteRepository:
         tool_name: str | None = None,
         limit: int = 100,
     ) -> list[AuditRecord]:
+        """List only values visible within the caller's tenant and lifecycle scope."""
         sql = "SELECT * FROM audit_records WHERE tenant_id = ?"
         values: list[object] = [tenant_id]
         if tool_name:
@@ -404,10 +420,12 @@ class SqliteRepository:
         ]
 
     def close(self) -> None:
+        """Perform close within the SqliteRepository ownership boundary."""
         with self._lock:
             self.connection.close()
 
     def _expire_approvals(self, now: datetime) -> None:
+        """Internal helper for SqliteRepository; preserve its caller-facing invariant."""
         self.connection.execute(
             """
             UPDATE approvals SET status = 'EXPIRED'
@@ -418,6 +436,7 @@ class SqliteRepository:
 
     @staticmethod
     def _approval_from_row(row: sqlite3.Row) -> ApprovalRecord:
+        """Internal helper for SqliteRepository; preserve its caller-facing invariant."""
         return ApprovalRecord(
             approval_id=row["approval_id"],
             tenant_id=row["tenant_id"],

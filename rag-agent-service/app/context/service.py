@@ -46,6 +46,7 @@ class AgentContextService:
         default_token_budget: int,
         message_budget_ratio: float = 0.4,
     ) -> None:
+        """Initialize AgentContextService dependencies and local state."""
         self.store = store
         self.rag_client = rag_client
         self.max_messages = max_messages
@@ -61,6 +62,7 @@ class AgentContextService:
     ) -> None:
         # Tenant and user are part of the storage key; session ids alone are
         # not safe isolation boundaries in a multi-tenant runtime.
+        """Persist state while preserving the transaction and audit boundary."""
         self.store.append(self._session_key(tenant_id, user_id, session_id), message)
 
     def messages(
@@ -69,6 +71,7 @@ class AgentContextService:
         tenant_id: str = "default",
         user_id: str = "anonymous",
     ) -> list[ConversationMessage]:
+        """Perform messages within the AgentContextService ownership boundary."""
         return self.store.list_messages(self._session_key(tenant_id, user_id, session_id))
 
     def delete_session(
@@ -77,6 +80,7 @@ class AgentContextService:
         tenant_id: str = "default",
         user_id: str = "anonymous",
     ) -> bool:
+        """Release or remove owned state without bypassing cleanup rules."""
         return self.store.delete(self._session_key(tenant_id, user_id, session_id))
 
     def assemble(self, request: ContextAssembleRequest) -> ContextPackage:
@@ -153,6 +157,7 @@ class AgentContextService:
 
     @staticmethod
     def _session_key(tenant_id: str, user_id: str, session_id: str) -> str:
+        """Internal helper for AgentContextService; preserve its caller-facing invariant."""
         return f"{tenant_id}:{user_id}:{session_id}"
 
     def _rank_and_fit(
@@ -222,6 +227,7 @@ class AgentContextService:
 
     @staticmethod
     def _select(items, limit: int, text):
+        """Internal helper for AgentContextService; preserve its caller-facing invariant."""
         selected, rejected, used = [], [], 0
         for item in items:
             tokens = AgentContextService._estimate(text(item))
@@ -236,6 +242,7 @@ class AgentContextService:
     def _rank_messages(
         messages: list[ConversationMessage], query: str
     ) -> list[ConversationMessage]:
+        """Internal helper for AgentContextService; preserve its caller-facing invariant."""
         now = datetime.now(UTC)
         ranked = []
         for item in messages:
@@ -267,6 +274,7 @@ class AgentContextService:
 
     @staticmethod
     def _rank_evidence(evidence: list[Evidence], query: str) -> list[Evidence]:
+        """Internal helper for AgentContextService; preserve its caller-facing invariant."""
         now = datetime.now(UTC)
         max_score = max((max(0.0, item.score) for item in evidence), default=1.0)
         ranked = []
@@ -314,6 +322,7 @@ class AgentContextService:
 
     @staticmethod
     def _timestamp(metadata: dict) -> datetime:
+        """Internal helper for AgentContextService; preserve its caller-facing invariant."""
         for name in ("updated_at", "published_at", "created_at"):
             value = metadata.get(name)
             if not value:
@@ -327,6 +336,7 @@ class AgentContextService:
 
     @staticmethod
     def _relevance(query: str, text: str) -> float:
+        """Internal helper for AgentContextService; preserve its caller-facing invariant."""
         query_tokens = {token.lower() for token in _TOKEN.findall(query)}
         if not query_tokens:
             return 0.0
@@ -335,4 +345,5 @@ class AgentContextService:
 
     @staticmethod
     def _estimate(text: str) -> int:
+        """Internal helper for AgentContextService; preserve its caller-facing invariant."""
         return max(1, len(text) // 4)

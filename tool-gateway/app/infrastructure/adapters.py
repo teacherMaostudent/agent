@@ -36,6 +36,7 @@ class HttpToolAdapter:
         client: httpx.AsyncClient | None = None,
         client_options: dict[str, Any] | None = None,
     ) -> None:
+        """Initialize HttpToolAdapter dependencies and local state."""
         self.config = config
         self.allow_private_networks = allow_private_networks
         self.max_response_bytes = max_response_bytes
@@ -49,6 +50,7 @@ class HttpToolAdapter:
         )
 
     async def execute(self, arguments: dict[str, Any], context: InvocationContext) -> Any:
+        """Perform execute within the HttpToolAdapter ownership boundary."""
         url, remaining = _render_url(self.config.url, arguments)
         validate_outbound_url(
             url,
@@ -96,6 +98,7 @@ class HttpToolAdapter:
         return response.text
 
     async def close(self) -> None:
+        """Perform close within the HttpToolAdapter ownership boundary."""
         if self._owns_client:
             await self.client.aclose()
 
@@ -110,6 +113,7 @@ class McpToolAdapter:
         *,
         allow_private_networks: bool,
     ) -> None:
+        """Initialize McpToolAdapter dependencies and local state."""
         self.config = config
         self.allow_private_networks = allow_private_networks
         validate_outbound_url(
@@ -120,6 +124,7 @@ class McpToolAdapter:
         )
 
     async def execute(self, arguments: dict[str, Any], context: InvocationContext) -> Any:
+        """Perform execute within the McpToolAdapter ownership boundary."""
         validate_outbound_url(
             self.config.server_url,
             self.config.allowed_hosts,
@@ -162,6 +167,7 @@ class McpToolAdapter:
         return [item.model_dump(mode="json") for item in result.content]
 
     async def close(self) -> None:
+        """Perform close within the McpToolAdapter ownership boundary."""
         return None
 
 
@@ -175,15 +181,18 @@ class CallableToolAdapter:
             Any | Awaitable[Any],
         ],
     ) -> None:
+        """Initialize CallableToolAdapter dependencies and local state."""
         self.handler = handler
 
     async def execute(self, arguments: dict[str, Any], context: InvocationContext) -> Any:
+        """Perform execute within the CallableToolAdapter ownership boundary."""
         result = self.handler(arguments, context)
         if isinstance(result, Awaitable):
             return await result
         return result
 
     async def close(self) -> None:
+        """Perform close within the CallableToolAdapter ownership boundary."""
         return None
 
 
@@ -194,6 +203,7 @@ def build_http_adapter(
     max_response_bytes: int,
     client_options: dict[str, Any] | None = None,
 ) -> HttpToolAdapter:
+    """Perform build http adapter within the module ownership boundary."""
     return HttpToolAdapter(
         config,
         allow_private_networks=allow_private_networks,
@@ -203,9 +213,11 @@ def build_http_adapter(
 
 
 def _render_url(template: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Internal helper for module; preserve its caller-facing invariant."""
     consumed: set[str] = set()
 
     def replace(match: re.Match[str]) -> str:
+        """Perform replace within the module ownership boundary."""
         name = match.group(1)
         if name not in arguments:
             raise ToolUpstreamError(f"missing URL template argument: {name}")
@@ -225,6 +237,7 @@ def _build_headers(
     auth_env: str | None,
     context: InvocationContext,
 ) -> dict[str, str]:
+    """Internal helper for module; preserve its caller-facing invariant."""
     headers = {
         **static_headers,
         "X-Tenant-Id": context.tenant_id,
@@ -242,4 +255,5 @@ def _build_headers(
 
 
 async def close_adapters(adapters: list[ToolAdapter]) -> None:
+    """Release or remove owned state without bypassing cleanup rules."""
     await asyncio.gather(*(adapter.close() for adapter in adapters))
