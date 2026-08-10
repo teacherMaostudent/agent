@@ -1,0 +1,97 @@
+"""Configuration owned by the execution plane, not by the RAG service."""
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class RuntimeSettings(BaseSettings):
+    """Only settings required to execute a published Agent run."""
+
+    persistence: str = "memory"
+    data_dir: Path = Path("data")
+    database_url: str = Field(default="", repr=False)
+    database_schema: str = "rag_platform"
+    temporal_enabled: bool = False
+    temporal_target: str = "localhost:7233"
+    temporal_namespace: str = "default"
+    temporal_runtime_task_queue: str = "agent-runtime"
+    temporal_region_targets: str = ""
+    temporal_worker_region: str = ""
+    context_service_base_url: str = "http://localhost:8002"
+    rag_query_base_url: str = "http://localhost:8003"
+    tool_gateway_base_url: str = "http://localhost:8090"
+    tool_gateway_api_key: str = Field(default="", repr=False)
+    tool_gateway_startup_check: bool = False
+    llm_gateway_base_url: str = "http://localhost:8080"
+    llm_gateway_api_key: str = Field(default="", repr=False)
+    llm_enabled: bool = False
+    llm_startup_check: bool = False
+    llm_timeout: float = 60.0
+    agent_enabled: bool = True
+    agent_model: str = "deepseek-v4-flash"
+    agent_max_steps: int = 8
+    agent_deadline_seconds: int = 60
+    agent_attempt_budget: int = 6
+    agent_max_cost_usd: float = 1.0
+    agent_max_llm_calls: int = 8
+    agent_max_tool_calls: int = 6
+    agent_max_retrieval_rounds: int = 4
+    agent_llm_call_reservation_usd: float = 0.01
+    agent_tool_call_reservation_usd: float = 0.001
+    agent_tool_timeout: float = 20.0
+    agent_tool_result_max_chars: int = 12_000
+    runtime_flow_version: int = 1
+    runtime_snapshot_required: bool = False
+    control_plane_base_url: str = ""
+    control_plane_runtime_key: str = Field(default="", repr=False)
+    governance_base_url: str = ""
+    governance_event_key: str = Field(default="", repr=False)
+    governance_delivery_mode: str = "direct"
+    internal_service_api_key: str = Field(default="", repr=False)
+    service_http_timeout: float = 30.0
+    workload_token_url: str = ""
+    workload_client_id: str = "agent-runtime"
+    workload_client_secret: str = Field(default="", repr=False)
+    workload_audience: str = "agent-platform"
+    workload_scope: str = ""
+    mtls_enabled: bool = False
+    mtls_ca_file: str = ""
+    mtls_cert_file: str = ""
+    mtls_key_file: str = Field(default="", repr=False)
+    api_prefix: str = "/api/v1"
+    cors_origins: list[str] = []
+    require_service_auth: bool = False
+    service_api_key: str = Field(default="", repr=False)
+    oidc_enabled: bool = False
+    oidc_issuer: str = ""
+    oidc_audience: str = "agent-platform"
+    oidc_jwks_url: str = ""
+    opa_enabled: bool = False
+    opa_base_url: str = "http://localhost:8181"
+    opa_decision_path: str = "agent_platform/allow"
+
+    # RAG_ remains accepted during the deployment migration; the class itself
+    # owns no RAG implementation and can switch to RUNTIME_ in one release.
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="RAG_", extra="ignore")
+
+    @property
+    def runtime_store_path(self) -> Path:
+        return self.data_dir / "runtime_runs.db"
+
+    @property
+    def runtime_checkpoint_path(self) -> Path:
+        return self.data_dir / "runtime_checkpoints.db"
+
+    @property
+    def runtime_jobs_path(self) -> Path:
+        return self.data_dir / "runtime_jobs.db"
+
+
+@lru_cache
+def get_settings() -> RuntimeSettings:
+    settings = RuntimeSettings()
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    return settings

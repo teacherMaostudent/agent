@@ -18,10 +18,18 @@ x-python-service: &python-service
   volumes:
     - rag-data:/service/data
 
+x-runtime-service: &runtime-service
+  build:
+    context: ..
+    dockerfile: agent-runtime/Dockerfile
+  restart: unless-stopped
+  environment: *service-env
+  volumes:
+    - runtime-data:/service/data
+
 services:
   agent-runtime:
-    <<: *python-service
-    command: uvicorn apps.agent_runtime.main:app --host 0.0.0.0 --port 8001
+    <<: *runtime-service
     ports:
       - "8001:8001"
     depends_on:
@@ -30,7 +38,10 @@ services:
 
   agent-context-service:
     <<: *python-service
-    command: uvicorn apps.agent_context_service.main:app --host 0.0.0.0 --port 8002
+    build:
+      context: ..
+      dockerfile: rag-agent-service/Dockerfile
+      target: context-service
     ports:
       - "8002:8002"
     depends_on:
@@ -38,19 +49,28 @@ services:
 
   rag-query-api:
     <<: *python-service
-    command: uvicorn apps.rag_query_api.main:app --host 0.0.0.0 --port 8003
+    build:
+      context: ..
+      dockerfile: rag-agent-service/Dockerfile
+      target: rag-query-api
     ports:
       - "8003:8003"
 
   ingestion-api:
     <<: *python-service
-    command: uvicorn apps.ingestion_api.main:app --host 0.0.0.0 --port 8004
+    build:
+      context: ..
+      dockerfile: rag-agent-service/Dockerfile
+      target: ingestion-api
     ports:
       - "8004:8004"
 
   ingestion-worker:
     <<: *python-service
-    command: python -m apps.ingestion_worker.main
+    build:
+      context: ..
+      dockerfile: rag-agent-service/Dockerfile
+      target: ingestion-worker
     depends_on:
       - ingestion-api
 
@@ -75,4 +95,5 @@ services:
 
 volumes:
   rag-data:
+  runtime-data:
   tool-gateway-data:

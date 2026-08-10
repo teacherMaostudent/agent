@@ -1,18 +1,37 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS service-base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /service
 COPY platform-infra /platform-infra
+COPY platform-sdk /platform-sdk
 COPY rag-agent-service/pyproject.toml rag-agent-service/README.md ./
 COPY rag-agent-service/app ./app
 COPY rag-agent-service/apps ./apps
-RUN pip install --no-cache-dir /platform-infra .
+RUN pip install --no-cache-dir /platform-infra /platform-sdk .
 
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /service/data \
     && chown -R appuser:appuser /service
 USER appuser
 
-CMD ["uvicorn", "apps.rag_query_api.main:app", "--host", "0.0.0.0", "--port", "8003"]
+# Each target is an independently versioned deployment artifact.  They share
+# only the RAG application package and SDK, never the Runtime application.
+FROM service-base AS context-service
+ENV PLATFORM_ASGI_APP=apps.agent_context_service.main:app \
+    PLATFORM_ASGI_PORT=8002
+CMD ["python", "-m", "platform_infra.asgi_runner"]
+
+FROM service-base AS rag-query-api
+ENV PLATFORM_ASGI_APP=apps.rag_query_api.main:app \
+    PLATFORM_ASGI_PORT=8003
+CMD ["python", "-m", "platform_infra.asgi_runner"]
+
+FROM service-base AS ingestion-api
+ENV PLATFORM_ASGI_APP=apps.ingestion_api.main:app \
+    PLATFORM_ASGI_PORT=8004
+CMD ["python", "-m", "platform_infra.asgi_runner"]
+
+FROM service-base AS ingestion-worker
+CMD ["ingestion-temporal-worker"]

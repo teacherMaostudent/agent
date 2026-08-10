@@ -23,6 +23,7 @@ x-rag-service: &rag-service
   build:
     context: .
     dockerfile: rag-agent-service/Dockerfile
+    target: rag-query-api
   restart: unless-stopped
   environment: *rag-env
   volumes:
@@ -95,23 +96,31 @@ services:
 
   agent-context-service:
     <<: *rag-service
-    command: uvicorn apps.agent_context_service.main:app --host 0.0.0.0 --port 8002
+    build:
+      context: .
+      dockerfile: rag-agent-service/Dockerfile
+      target: context-service
     ports: ["8002:8002"]
     depends_on: [rag-query-api]
 
   rag-query-api:
     <<: *rag-service
-    command: uvicorn apps.rag_query_api.main:app --host 0.0.0.0 --port 8003
     ports: ["8003:8003"]
 
   ingestion-api:
     <<: *rag-service
-    command: uvicorn apps.ingestion_api.main:app --host 0.0.0.0 --port 8004
+    build:
+      context: .
+      dockerfile: rag-agent-service/Dockerfile
+      target: ingestion-api
     ports: ["8004:8004"]
 
   ingestion-worker:
     <<: *rag-service
-    command: python -m apps.ingestion_worker.main
+    build:
+      context: .
+      dockerfile: rag-agent-service/Dockerfile
+      target: ingestion-worker
     depends_on: [ingestion-api]
 
   tool-gateway:

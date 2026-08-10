@@ -2,18 +2,18 @@
 
 import sqlite3
 
-from app.context.client import HttpContextClient
-from app.core.config import get_settings
-from app.infrastructure.llm_gateway_client import LlmGatewayClient
-from app.rag.client import HttpRagQueryClient
-from app.tools.client import ToolGatewayClient
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from platform_infra.identity import build_workload_token_provider
 from platform_infra.mtls import mtls_httpx_options
+from platform_sdk.clients.context import HttpContextClient
+from platform_sdk.clients.llm_gateway import LlmGatewayClient
+from platform_sdk.clients.rag import HttpRagQueryClient
+from platform_sdk.clients.tool_gateway import ToolGatewayClient
 
 from agent_runtime_service.agent.decision_engine import GatewayDecisionEngine, OfflineDecisionEngine
 from agent_runtime_service.agent.graph import AgentGraph
+from agent_runtime_service.core.config import get_settings
 from agent_runtime_service.runtime.async_jobs import AsyncRunQueue
 from agent_runtime_service.runtime.budget import BudgetGuard
 from agent_runtime_service.runtime.harness import AgentHarness
@@ -62,12 +62,14 @@ class AgentRuntimeContainer:
             self.settings.internal_service_api_key,
             self.settings.service_http_timeout,
             self.workload_identity,
+            mtls=self._mtls_options(),
         )
         self.rag_client = HttpRagQueryClient(
             self.settings.rag_query_base_url,
             self.settings.internal_service_api_key,
             self.settings.service_http_timeout,
             self.workload_identity,
+            mtls=self._mtls_options(),
         )
         self.llm_gateway = LlmGatewayClient(
             base_url=self.settings.llm_gateway_base_url,
@@ -153,6 +155,8 @@ class AgentRuntimeContainer:
         if self.async_runs is not None:
             self.async_runs.close()
         self.tool_registry.close()
+        self.context_client.close()
+        self.rag_client.close()
         self.run_store.close()
         if self._checkpoint_context is not None:
             self._checkpoint_context.__exit__(None, None, None)
@@ -163,10 +167,19 @@ class AgentRuntimeContainer:
         run = self.run_store.get(tenant_id, run_id)
         return bool(run and run.cancel_requested)
 
+    def _mtls_options(self) -> dict:
+        """Use this Runtime identity for every internal HTTP client connection."""
+        return mtls_httpx_options(
+            enabled=self.settings.mtls_enabled,
+            ca_file=self.settings.mtls_ca_file,
+            cert_file=self.settings.mtls_cert_file,
+            key_file=self.settings.mtls_key_file,
+        )
+
     def _execute_submission(self, submission: dict) -> dict:
         from types import SimpleNamespace
 
-        from app.domain.schemas import AgentRunRequest
+        from platform_sdk.contracts.runtime_api import AgentRunRequest
 
         from agent_runtime_service.service_api.runtime_api import run_agent
 

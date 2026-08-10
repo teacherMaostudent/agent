@@ -4,13 +4,17 @@ version = "0.1.0"
 description = "Independently deployable execution plane for the agent platform."
 requires-python = ">=3.11"
 dependencies = [
+    "agent-platform-infra>=0.1.0",
+    "agent-platform-sdk>=0.1.0",
     "fastapi>=0.111.0",
     "httpx>=0.27.0",
     "langgraph>=1.0.0,<2.0.0",
     "langgraph-checkpoint-postgres>=3.0.0,<4.0.0",
     "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
     "opentelemetry-api>=1.30.0,<2.0.0",
+    "pydantic-settings>=2.3.0",
     "temporalio>=1.18,<2.0",
+    "uvicorn[standard]>=0.30.0",
 ]
 
 [project.scripts]
@@ -20,7 +24,7 @@ runtime-temporal-worker = "agent_runtime_service.runtime_worker:main"
 where = ["src"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "../rag-agent-service"]
+pythonpath = ["../platform-sdk", "../platform-infra", "src"]
 testpaths = ["tests"]
 
 [tool.ruff]

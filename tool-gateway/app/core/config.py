@@ -4,6 +4,10 @@ from pathlib import Path
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Configuration defaults must be independent of the shell's current directory:
+# CI runs from the monorepo root while the container starts in /service.
+_SERVICE_ROOT = Path(__file__).resolve().parents[2]
+
 
 class Settings(BaseSettings):
     app_name: str = "tool-gateway"
@@ -15,8 +19,8 @@ class Settings(BaseSettings):
     database_backend: str = "sqlite"
     database_url: str = Field(default="", repr=False)
     database_schema: str = "tool_gateway"
-    tools_config_path: Path = Path("config/tools.json")
-    contracts_schema_dir: Path = Path("../platform-contracts/schemas")
+    tools_config_path: Path = _SERVICE_ROOT / "config" / "tools.json"
+    contracts_schema_dir: Path = _SERVICE_ROOT.parent / "platform-contracts" / "schemas"
     require_service_auth: bool = True
     service_api_key: str = "local-tool-gateway-key"
     admin_api_key: str = "local-tool-gateway-admin-key"

@@ -5,20 +5,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /service
 
-# RAG contributes only shared contracts/context clients during this transition;
-# this image contains the actual Agent and Runtime execution implementation and
-# never starts RAG query or ingestion processes.
+# Runtime receives Context, RAG and Tool capabilities only over authenticated
+# network contracts.  It must not install another service's application code.
 COPY platform-infra /platform-infra
-COPY rag-agent-service/pyproject.toml rag-agent-service/README.md ./rag-agent-service/
-COPY rag-agent-service/app ./rag-agent-service/app
-COPY rag-agent-service/apps ./rag-agent-service/apps
+COPY platform-sdk /platform-sdk
 COPY agent-runtime/pyproject.toml ./
 COPY agent-runtime/src ./src
-RUN pip install --no-cache-dir /platform-infra ./rag-agent-service .
+RUN pip install --no-cache-dir /platform-infra /platform-sdk .
 
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /service/data \
     && chown -R appuser:appuser /service
 USER appuser
 
-CMD ["uvicorn", "agent_runtime_service.main:app", "--host", "0.0.0.0", "--port", "8001"]
+ENV PLATFORM_ASGI_APP=agent_runtime_service.main:app \
+    PLATFORM_ASGI_PORT=8001
+CMD ["python", "-m", "platform_infra.asgi_runner"]

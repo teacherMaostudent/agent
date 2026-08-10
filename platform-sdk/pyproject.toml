@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-platform-sdk"
+version = "0.1.0"
+description = "Shared contracts and secure service primitives for the Agent Platform."
+requires-python = ">=3.11"
+dependencies = [
+    "agent-platform-infra>=0.1.0",
+    "fastapi>=0.111.0",
+    "httpx>=0.27.0",
+    "opentelemetry-api>=1.30.0,<2.0.0",
+    "pydantic>=2.8.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["platform_sdk"]

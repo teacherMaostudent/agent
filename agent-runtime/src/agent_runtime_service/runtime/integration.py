@@ -16,8 +16,8 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from app.contracts.execution import ExecutionContext, RuntimeRun
 from platform_infra.identity import WorkloadTokenProvider
+from platform_sdk.contracts.execution import ExecutionContext, RuntimeRun
 
 
 class ControlPlaneClient:

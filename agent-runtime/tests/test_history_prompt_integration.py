@@ -1,6 +1,6 @@
 import json
 
-from app.tools.registry import ToolRegistry
+from platform_sdk.tools.registry import ToolRegistry
 
 from agent_runtime_service.agent.decision_engine import GatewayDecisionEngine
 from agent_runtime_service.agent.models import AgentAction

@@ -1,4 +1,5 @@
 from platform_infra.identity import build_workload_token_provider
+from platform_infra.mtls import mtls_httpx_options
 
 from app.context.service import AgentContextService
 from app.context.store import ConversationStore
@@ -27,6 +28,12 @@ class AgentContextContainer:
             self.settings.internal_service_api_key,
             self.settings.service_http_timeout,
             self.workload_identity,
+            mtls=mtls_httpx_options(
+                enabled=self.settings.mtls_enabled,
+                ca_file=self.settings.mtls_ca_file,
+                cert_file=self.settings.mtls_cert_file,
+                key_file=self.settings.mtls_key_file,
+            ),
         )
         self.context_service = AgentContextService(
             self.store,

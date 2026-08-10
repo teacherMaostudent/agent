@@ -2,10 +2,10 @@ from datetime import UTC, datetime
 from time import monotonic
 from uuid import uuid4
 
-from app.contracts.context import ConversationMessage
-from app.contracts.execution import ExecutionContext
-from app.domain.schemas import AgentResumeRequest, AgentRunRequest
 from fastapi import APIRouter, Header, HTTPException, Request, status
+from platform_sdk.contracts.context import ConversationMessage
+from platform_sdk.contracts.execution import ExecutionContext
+from platform_sdk.contracts.runtime_api import AgentResumeRequest, AgentRunRequest
 
 from agent_runtime_service.runtime.models import ApprovalResume, RuntimeBudget
 from agent_runtime_service.runtime.snapshot_compiler import SnapshotCompileError, compile_snapshot

@@ -12,16 +12,15 @@ from inspect import signature
 from typing import Any
 
 import httpx
-from app.contracts.context import ContextAssembleRequest
-from app.contracts.rag import RagSearchRequest
-from app.ingestion.chunker import TextChunker
-from app.retrieval.controlled_scan import bound_untrusted
-from app.tools.registry import ToolContext, ToolRegistry
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from opentelemetry import trace
+from platform_sdk.contracts.context import ContextAssembleRequest
+from platform_sdk.contracts.rag import RagSearchRequest
+from platform_sdk.security import bound_untrusted
+from platform_sdk.tools.registry import ToolContext, ToolRegistry
 
 from agent_runtime_service.agent.decision_engine import DecisionEngine
 from agent_runtime_service.agent.models import (
@@ -42,61 +41,6 @@ from agent_runtime_service.runtime.planner import HeuristicSemanticAnalyzer, Run
 from agent_runtime_service.runtime.snapshot_compiler import validate_final_output
 
 
-class _LegacyRetrievalContext:
-    """Temporary local adapter retained only for deterministic unit tests.
-
-    Production containers always pass HTTP Context and RAG clients; this path
-    is not reachable from the Runtime deployment composition root.
-    """
-
-    def __init__(self, retriever, repository) -> None:
-        self.retriever = retriever
-        self.repository = repository
-        self.chunker = TextChunker()
-
-    def assemble(
-        self,
-        request: ContextAssembleRequest,
-        *,
-        execution_headers: dict[str, str] | None = None,
-    ):
-        del execution_headers
-        from app.contracts.context import ContextPackage
-
-        if not request.include_rag:
-            return ContextPackage(
-                session_id=request.session_id,
-                user_context={
-                    "tenant_id": request.tenant_id,
-                    "user_id": request.user_id,
-                },
-                token_budget=12000,
-                estimated_tokens=0,
-            )
-        # Legacy local mode retrieves only documents supplied by the caller;
-        # production retrieval is delegated to the RAG service.
-        chunks = []
-        if request.document_id and self.repository.get_document(request.document_id):
-            chunks.extend(self.repository.document_chunks(request.document_id))
-        if request.content:
-            chunks.extend(
-                self.chunker.chunk(
-                    source_id=f"inline:{request.user_id}:{request.session_id}",
-                    source_type="enterprise_document",
-                    text=request.content,
-                    metadata={"temporary": True},
-                )
-            )
-        evidence = self.retriever.search(request.query, chunks, request.top_k)
-        return ContextPackage(
-            session_id=request.session_id,
-            knowledge_evidence=evidence,
-            user_context={"tenant_id": request.tenant_id, "user_id": request.user_id},
-            token_budget=12000,
-            estimated_tokens=sum(max(1, len(item.text) // 4) for item in evidence),
-        )
-
-
 class AgentGraph:
     """Bounded decide -> retrieve/tool -> observe loop with a deterministic safety exit.
 
@@ -108,11 +52,9 @@ class AgentGraph:
     def __init__(
         self,
         decision_engine: DecisionEngine,
-        retriever=None,
-        repository=None,
         tool_registry: ToolRegistry | None = None,
         *,
-        context_client=None,
+        context_client,
         rag_client=None,
         planner: RuntimePlanner | None = None,
         budget_guard: BudgetGuard | None = None,
@@ -120,14 +62,9 @@ class AgentGraph:
         cancellation_checker: Callable[[str, str], bool] | None = None,
     ) -> None:
         self.decision_engine = decision_engine
-        if context_client is None:
-            if retriever is None or repository is None:
-                raise ValueError("context_client or retriever/repository is required")
-            context_client = _LegacyRetrievalContext(retriever, repository)
         self.context_client = context_client
-        # Production Runtime reads evidence over the RAG HTTP contract.  The
-        # local Context-owned retrieval path remains only for legacy tests and
-        # rollback compatibility during the service split.
+        # Evidence is read only through the published RAG contract. Context
+        # owns conversation memory and its ACL boundary; Runtime owns neither.
         self.rag_client = rag_client
         self._context_accepts_execution_headers = (
             "execution_headers" in signature(context_client.assemble).parameters

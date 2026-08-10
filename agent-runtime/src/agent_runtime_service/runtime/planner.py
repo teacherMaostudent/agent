@@ -7,7 +7,7 @@ import re
 from typing import Any, Protocol
 from uuid import uuid4
 
-from app.infrastructure.llm_gateway_client import LlmGatewayClient
+from platform_sdk.clients.llm_gateway import LlmGatewayClient
 
 from agent_runtime_service.runtime.models import (
     ComplexityAssessment,

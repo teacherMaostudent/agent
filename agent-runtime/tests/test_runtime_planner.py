@@ -15,7 +15,7 @@ from agent_runtime_service.runtime.planner import HeuristicSemanticAnalyzer, Run
 class EmptyContext:
     def assemble(self, request, *, execution_headers=None):
         del execution_headers
-        from app.contracts.context import ContextPackage
+        from platform_sdk.contracts.context import ContextPackage
 
         return ContextPackage(
             session_id=request.session_id,

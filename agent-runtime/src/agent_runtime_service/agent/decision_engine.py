@@ -7,9 +7,9 @@ budgets and final-output validation remain deterministic Runtime controls.
 import json
 from typing import Protocol
 
-from app.infrastructure.llm_gateway_client import LlmGatewayClient
-from app.tools.registry import ToolRegistry
 from opentelemetry import trace
+from platform_sdk.clients.llm_gateway import LlmGatewayClient
+from platform_sdk.tools.registry import ToolRegistry
 
 from agent_runtime_service.agent.models import AgentAction, AgentDecision, AgentState
 from agent_runtime_service.runtime.planner import select_logical_model

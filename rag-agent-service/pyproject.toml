@@ -1,9 +1,11 @@
 [project]
 name = "rag-agent-service"
 version = "0.1.0"
-description = "General-purpose RAG and Agent Runtime service."
+description = "General-purpose RAG, Context and ingestion service."
 requires-python = ">=3.11"
 dependencies = [
+    "agent-platform-infra>=0.1.0",
+    "agent-platform-sdk>=0.1.0",
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.30.0",
     "pydantic-settings>=2.3.0",

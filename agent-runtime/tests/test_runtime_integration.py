@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.contracts.execution import ExecutionContext
+from platform_sdk.contracts.execution import ExecutionContext
 
 from agent_runtime_service.runtime.integration import GovernanceOutboxPublisher, RuntimeStore
 

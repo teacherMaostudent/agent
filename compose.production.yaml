@@ -36,15 +36,13 @@ x-rag-env: &rag-env
   RAG_INTERNAL_SERVICE_API_KEY: ${RAG_INTERNAL_SERVICE_API_KEY}
   RAG_MTLS_ENABLED: ${RAG_MTLS_ENABLED:-true}
   RAG_MTLS_CA_FILE: /run/secrets/agent_ca_pem
-  RAG_MTLS_CERT_FILE: /run/secrets/rag_runtime_cert
-  RAG_MTLS_KEY_FILE: /run/secrets/rag_runtime_key
   RAG_CONTROL_PLANE_BASE_URL: http://agent-control-plane:8080
   RAG_CONTROL_PLANE_RUNTIME_KEY: ${CONTROL_PLANE_RUNTIME_API_KEY}
   RAG_GOVERNANCE_BASE_URL: http://agent-governance:8081
   RAG_GOVERNANCE_EVENT_KEY: ${GOVERNANCE_EVENT_INGESTION_KEY}
   RAG_GOVERNANCE_DELIVERY_MODE: cdc
-  RAG_CONTEXT_SERVICE_BASE_URL: http://agent-context-service:8002
-  RAG_RAG_QUERY_BASE_URL: http://rag-query-api:8003
+  RAG_CONTEXT_SERVICE_BASE_URL: https://agent-context-service:8002
+  RAG_RAG_QUERY_BASE_URL: https://rag-query-api:8003
   RAG_TOOL_GATEWAY_BASE_URL: http://tool-gateway:8090
   RAG_TOOL_GATEWAY_API_KEY: ${TOOL_GATEWAY_SERVICE_API_KEY}
   RAG_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
@@ -58,12 +56,11 @@ x-rag-service: &rag-service
   build:
     <<: *python-build
     dockerfile: rag-agent-service/Dockerfile
+    target: rag-query-api
   restart: unless-stopped
   environment: *rag-env
   secrets:
     - agent_ca_pem
-    - rag_runtime_cert
-    - rag_runtime_key
 
 x-runtime-service: &runtime-service
   build:
@@ -73,16 +70,32 @@ x-runtime-service: &runtime-service
   environment: *rag-env
   secrets:
     - agent_ca_pem
-    - rag_runtime_cert
-    - rag_runtime_key
+    - runtime_cert
+    - runtime_key
 
 secrets:
   agent_ca_pem:
     file: ${AGENT_MTLS_CA_FILE:-deploy/tls/agent-ca.pem}
-  rag_runtime_cert:
-    file: ${RAG_MTLS_CERT_FILE:-deploy/tls/rag-runtime.crt}
-  rag_runtime_key:
-    file: ${RAG_MTLS_KEY_FILE:-deploy/tls/rag-runtime.key}
+  runtime_cert:
+    file: ${RUNTIME_MTLS_CERT_FILE:-deploy/tls/agent-runtime.crt}
+  runtime_key:
+    file: ${RUNTIME_MTLS_KEY_FILE:-deploy/tls/agent-runtime.key}
+  context_service_cert:
+    file: ${CONTEXT_SERVICE_MTLS_CERT_FILE:-deploy/tls/agent-context-service.crt}
+  context_service_key:
+    file: ${CONTEXT_SERVICE_MTLS_KEY_FILE:-deploy/tls/agent-context-service.key}
+  rag_query_cert:
+    file: ${RAG_QUERY_MTLS_CERT_FILE:-deploy/tls/rag-query-api.crt}
+  rag_query_key:
+    file: ${RAG_QUERY_MTLS_KEY_FILE:-deploy/tls/rag-query-api.key}
+  ingestion_api_cert:
+    file: ${INGESTION_API_MTLS_CERT_FILE:-deploy/tls/ingestion-api.crt}
+  ingestion_api_key:
+    file: ${INGESTION_API_MTLS_KEY_FILE:-deploy/tls/ingestion-api.key}
+  ingestion_worker_cert:
+    file: ${INGESTION_WORKER_MTLS_CERT_FILE:-deploy/tls/ingestion-worker.crt}
+  ingestion_worker_key:
+    file: ${INGESTION_WORKER_MTLS_KEY_FILE:-deploy/tls/ingestion-worker.key}
   control_plane_cert:
     file: ${CONTROL_PLANE_MTLS_CERT_FILE:-deploy/tls/control-plane.crt}
   control_plane_key:
@@ -302,6 +315,16 @@ services:
 
   agent-runtime:
     <<: *runtime-service
+    environment:
+      <<: *rag-env
+      RAG_WORKLOAD_CLIENT_ID: agent-runtime
+      RAG_WORKLOAD_CLIENT_SECRET: ${RUNTIME_WORKLOAD_CLIENT_SECRET}
+      RAG_MTLS_CERT_FILE: /run/secrets/runtime_cert
+      RAG_MTLS_KEY_FILE: /run/secrets/runtime_key
+      PLATFORM_MTLS_SERVER_ENABLED: ${RAG_MTLS_ENABLED:-true}
+      PLATFORM_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      PLATFORM_MTLS_CERT_FILE: /run/secrets/runtime_cert
+      PLATFORM_MTLS_KEY_FILE: /run/secrets/runtime_key
     depends_on: [postgres, temporal, redis, opa, otel-collector]
 
   runtime-worker:
@@ -311,20 +334,80 @@ services:
 
   agent-context-service:
     <<: *rag-service
-    command: uvicorn apps.agent_context_service.main:app --host 0.0.0.0 --port 8002
+    build:
+      <<: *python-build
+      dockerfile: rag-agent-service/Dockerfile
+      target: context-service
+    environment:
+      <<: *rag-env
+      RAG_WORKLOAD_CLIENT_ID: agent-context-service
+      RAG_WORKLOAD_CLIENT_SECRET: ${CONTEXT_SERVICE_WORKLOAD_CLIENT_SECRET}
+      RAG_MTLS_CERT_FILE: /run/secrets/context_service_cert
+      RAG_MTLS_KEY_FILE: /run/secrets/context_service_key
+      PLATFORM_MTLS_SERVER_ENABLED: ${RAG_MTLS_ENABLED:-true}
+      PLATFORM_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      PLATFORM_MTLS_CERT_FILE: /run/secrets/context_service_cert
+      PLATFORM_MTLS_KEY_FILE: /run/secrets/context_service_key
+    secrets:
+      - agent_ca_pem
+      - context_service_cert
+      - context_service_key
 
   rag-query-api:
     <<: *rag-service
-    command: uvicorn apps.rag_query_api.main:app --host 0.0.0.0 --port 8003
+    environment:
+      <<: *rag-env
+      RAG_WORKLOAD_CLIENT_ID: rag-query-api
+      RAG_WORKLOAD_CLIENT_SECRET: ${RAG_QUERY_WORKLOAD_CLIENT_SECRET}
+      RAG_MTLS_CERT_FILE: /run/secrets/rag_query_cert
+      RAG_MTLS_KEY_FILE: /run/secrets/rag_query_key
+      PLATFORM_MTLS_SERVER_ENABLED: ${RAG_MTLS_ENABLED:-true}
+      PLATFORM_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      PLATFORM_MTLS_CERT_FILE: /run/secrets/rag_query_cert
+      PLATFORM_MTLS_KEY_FILE: /run/secrets/rag_query_key
+    secrets:
+      - agent_ca_pem
+      - rag_query_cert
+      - rag_query_key
     depends_on: [opensearch]
 
   ingestion-api:
     <<: *rag-service
-    command: uvicorn apps.ingestion_api.main:app --host 0.0.0.0 --port 8004
+    build:
+      <<: *python-build
+      dockerfile: rag-agent-service/Dockerfile
+      target: ingestion-api
+    environment:
+      <<: *rag-env
+      RAG_WORKLOAD_CLIENT_ID: ingestion-api
+      RAG_WORKLOAD_CLIENT_SECRET: ${INGESTION_API_WORKLOAD_CLIENT_SECRET}
+      RAG_MTLS_CERT_FILE: /run/secrets/ingestion_api_cert
+      RAG_MTLS_KEY_FILE: /run/secrets/ingestion_api_key
+      PLATFORM_MTLS_SERVER_ENABLED: ${RAG_MTLS_ENABLED:-true}
+      PLATFORM_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      PLATFORM_MTLS_CERT_FILE: /run/secrets/ingestion_api_cert
+      PLATFORM_MTLS_KEY_FILE: /run/secrets/ingestion_api_key
+    secrets:
+      - agent_ca_pem
+      - ingestion_api_cert
+      - ingestion_api_key
 
   ingestion-worker:
     <<: *rag-service
-    command: ingestion-temporal-worker
+    build:
+      <<: *python-build
+      dockerfile: rag-agent-service/Dockerfile
+      target: ingestion-worker
+    environment:
+      <<: *rag-env
+      RAG_WORKLOAD_CLIENT_ID: ingestion-worker
+      RAG_WORKLOAD_CLIENT_SECRET: ${INGESTION_WORKER_WORKLOAD_CLIENT_SECRET}
+      RAG_MTLS_CERT_FILE: /run/secrets/ingestion_worker_cert
+      RAG_MTLS_KEY_FILE: /run/secrets/ingestion_worker_key
+    secrets:
+      - agent_ca_pem
+      - ingestion_worker_cert
+      - ingestion_worker_key
     depends_on: [temporal, opensearch]
 
   tool-gateway:
