@@ -12,6 +12,7 @@
 
 输出:每个 case 的召回/误报,以及 N 轮的均值±方差(看判定稳不稳)。
 """
+
 import json
 import sys
 from pathlib import Path
@@ -19,14 +20,15 @@ from pathlib import Path
 # 让脚本能 import app.*(脚本在 scripts/ 下,项目根是上一级)。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.knowledge.config_loader import load_numeric_topics, load_responsibility_topics
+from app.review.cross_document_reviewer import CrossDocumentReviewer
+from app.review.llm_judge import LlmJudge
+
 from app.core.config import get_settings
 from app.evaluation.cross_document_eval import aggregate, evaluate_suite
-from app.knowledge.config_loader import load_numeric_topics, load_responsibility_topics
 from app.retrieval.embedder import build_embedder
 from app.retrieval.embedding_store import EmbeddingStore
 from app.retrieval.semantic_retriever import SemanticRetriever
-from app.review.cross_document_reviewer import CrossDocumentReviewer
-from app.review.llm_judge import LlmJudge
 
 GOLDEN = Path(__file__).resolve().parent.parent / "tests" / "golden" / "cross_document"
 RUNS = 3  # temp=0 也可能有微小波动,跑多次看方差(Q4)
@@ -116,7 +118,9 @@ def main() -> None:
     agg = aggregate(round_reports)
     print("===== 汇总(均值±方差,方差大=判定不稳,该先改 prompt)=====")
     print(f"召回率:     {agg['recall_mean']:.0%} ± {agg['recall_stdev']:.0%}")
-    print(f"clean 误报: {agg['clean_false_positive_mean']:.1f} ± {agg['clean_false_positive_stdev']:.1f} 条/轮")
+    print(
+        f"clean 误报: {agg['clean_false_positive_mean']:.1f} ± {agg['clean_false_positive_stdev']:.1f} 条/轮"
+    )
     print(f"精确率:     {agg['precision_mean']:.0%} ± {agg['precision_stdev']:.0%}")
     print("\n验收线(建议):召回≥80%、clean 误报≤1/组、方差≤±10%。达不到先改 prompt 再往上盖。")
 

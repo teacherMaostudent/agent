@@ -15,6 +15,7 @@ from app.contracts.context import (
 
 class ContextClient(Protocol):
     """Assemble tenant-scoped prompt context from memory and optional evidence."""
+
     def assemble(
         self,
         request: ContextAssembleRequest,
@@ -33,6 +34,7 @@ class ContextClient(Protocol):
 
 class LocalContextClient:
     """In-process adapter retained for local deployment and deterministic tests."""
+
     def __init__(self, service) -> None:
         self.service = service
 
@@ -57,6 +59,7 @@ class LocalContextClient:
 
 class HttpContextClient:
     """Authenticated remote Context Service adapter for distributed Runtime workers."""
+
     def __init__(
         self,
         base_url: str,
@@ -85,9 +88,7 @@ class HttpContextClient:
         *,
         execution_headers: dict[str, str] | None = None,
     ) -> ContextPackage:
-        with trace.get_tracer(__name__).start_as_current_span(
-            "runtime.context_assemble"
-        ):
+        with trace.get_tracer(__name__).start_as_current_span("runtime.context_assemble"):
             response = httpx.post(
                 f"{self.base_url}/api/v1/context/assemble",
                 json=request.model_dump(mode="json"),

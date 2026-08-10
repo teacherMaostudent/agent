@@ -15,4 +15,4 @@ RUN useradd --create-home --uid 10001 appuser \
     && chown -R appuser:appuser /service
 USER appuser
 
-CMD ["uvicorn", "apps.agent_runtime.main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["uvicorn", "apps.rag_query_api.main:app", "--host", "0.0.0.0", "--port", "8003"]

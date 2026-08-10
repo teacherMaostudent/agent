@@ -28,6 +28,15 @@ x-rag-service: &rag-service
   volumes:
     - rag-data:/service/data
 
+x-runtime-service: &runtime-service
+  build:
+    context: .
+    dockerfile: agent-runtime/Dockerfile
+  restart: unless-stopped
+  environment: *rag-env
+  volumes:
+    - runtime-data:/service/data
+
 services:
   agent-control-plane:
     build:
@@ -80,8 +89,7 @@ services:
     depends_on: [postgres, redis]
 
   agent-runtime:
-    <<: *rag-service
-    command: uvicorn apps.agent_runtime.main:app --host 0.0.0.0 --port 8001
+    <<: *runtime-service
     ports: ["8001:8001"]
     depends_on: [agent-control-plane, agent-governance, agent-context-service, tool-gateway]
 
@@ -145,5 +153,6 @@ volumes:
   control-plane-data:
   governance-data:
   rag-data:
+  runtime-data:
   tool-gateway-data:
   postgres-data:

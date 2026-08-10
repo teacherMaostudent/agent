@@ -113,9 +113,7 @@ class ToolRegistry:
             if item.required_permissions.issubset(permissions)
         ]
 
-    def execute(
-        self, name: str, arguments: dict[str, Any], context: ToolContext
-    ) -> Any:
+    def execute(self, name: str, arguments: dict[str, Any], context: ToolContext) -> Any:
         started = datetime.now(UTC)
         error: Exception | None = None
         try:
@@ -128,14 +126,10 @@ class ToolRegistry:
                 validated = definition.args_model.model_validate(arguments)
             except ValidationError as exc:
                 raise ToolRegistryError(f"invalid arguments for {name}: {exc}") from exc
-            with trace.get_tracer(__name__).start_as_current_span(
-                f"tool.{name}"
-            ) as span:
+            with trace.get_tracer(__name__).start_as_current_span(f"tool.{name}") as span:
                 span.set_attribute("tool.name", name)
                 span.set_attribute("tenant.id", context.tenant_id)
-                pool = ThreadPoolExecutor(
-                    max_workers=1, thread_name_prefix=f"tool-{name}"
-                )
+                pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"tool-{name}")
                 future = pool.submit(definition.handler, validated, context)
                 try:
                     return future.result(timeout=definition.timeout_seconds)

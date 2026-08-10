@@ -30,9 +30,7 @@ def list_messages(
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
 ) -> list[ConversationMessage]:
-    return request.app.state.container.context_service.messages(
-        session_id, x_tenant_id, x_user_id
-    )
+    return request.app.state.container.context_service.messages(session_id, x_tenant_id, x_user_id)
 
 
 @router.delete("/sessions/{session_id}", status_code=204)

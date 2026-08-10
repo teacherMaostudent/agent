@@ -103,6 +103,11 @@ def test_model_lab_rejection_blocks_canary(client: TestClient, headers: dict[str
     response = client.post(
         "/v1/model-route-releases",
         headers=headers,
-        json={"routeName": "general", "canaryTarget": "provider:new", "judgeRunId": "judge-1", "modelLabExperimentId": "exp-rejected"},
+        json={
+            "routeName": "general",
+            "canaryTarget": "provider:new",
+            "judgeRunId": "judge-1",
+            "modelLabExperimentId": "exp-rejected",
+        },
     )
     assert response.status_code == 422

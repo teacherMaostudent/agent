@@ -43,6 +43,7 @@ class ToolExecutionService:
     adapter is called; approval consumption happens before the side effect;
     output validation and auditing happen for both success and failure paths.
     """
+
     def __init__(
         self,
         registry: ToolRegistry,
@@ -50,9 +51,7 @@ class ToolExecutionService:
         *,
         approval_ttl_seconds: int,
         idempotency_ttl_seconds: int,
-        event_publisher: Callable[
-            [InvocationResponse, InvocationContext, ToolSpec, bool], None
-        ]
+        event_publisher: Callable[[InvocationResponse, InvocationContext, ToolSpec, bool], None]
         | None = None,
         rate_limiter=None,
         policy_authorizer=None,

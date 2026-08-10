@@ -1,7 +1,7 @@
 from app.core.config import Settings
+from app.knowledge.postgres_repository import PostgresRepository
 from app.knowledge.repository import InMemoryRepository
 from app.knowledge.sqlite_repository import SqliteRepository
-from app.knowledge.postgres_repository import PostgresRepository
 
 
 def build_repository(settings: Settings):

@@ -65,6 +65,17 @@ x-rag-service: &rag-service
     - rag_runtime_cert
     - rag_runtime_key
 
+x-runtime-service: &runtime-service
+  build:
+    <<: *python-build
+    dockerfile: agent-runtime/Dockerfile
+  restart: unless-stopped
+  environment: *rag-env
+  secrets:
+    - agent_ca_pem
+    - rag_runtime_cert
+    - rag_runtime_key
+
 secrets:
   agent_ca_pem:
     file: ${AGENT_MTLS_CA_FILE:-deploy/tls/agent-ca.pem}
@@ -290,12 +301,11 @@ services:
         condition: service_completed_successfully
 
   agent-runtime:
-    <<: *rag-service
-    command: uvicorn apps.agent_runtime.main:app --host 0.0.0.0 --port 8001
+    <<: *runtime-service
     depends_on: [postgres, temporal, redis, opa, otel-collector]
 
   runtime-worker:
-    <<: *rag-service
+    <<: *runtime-service
     command: runtime-temporal-worker
     depends_on: [agent-runtime, temporal]
 

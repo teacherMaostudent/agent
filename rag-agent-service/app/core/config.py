@@ -142,9 +142,7 @@ class Settings(BaseSettings):
     # 业务前端跨域来源。默认 ["*"] 全放行(开发)；部署改为具体域名列表。
     cors_origins: list[str] = ["*"]
 
-    model_config = SettingsConfigDict(
-        env_file=".env", env_prefix="RAG_", extra="ignore"
-    )
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="RAG_", extra="ignore")
 
     @model_validator(mode="after")
     def validate_llm_gateway(self) -> "Settings":
@@ -162,19 +160,13 @@ class Settings(BaseSettings):
         if not self.generation_model.strip():
             raise ValueError("RAG_GENERATION_MODEL 不能为空")
         if self.rerank_provider not in {"none", "cross_encoder", "vendor"}:
-            raise ValueError(
-                "RAG_RERANK_PROVIDER must be none, cross_encoder, or vendor"
-            )
+            raise ValueError("RAG_RERANK_PROVIDER must be none, cross_encoder, or vendor")
         if self.rerank_provider == "vendor" and not self.rerank_base_url.startswith(
             ("http://", "https://")
         ):
-            raise ValueError(
-                "RAG_RERANK_BASE_URL must be an http(s) URL for vendor rerank"
-            )
+            raise ValueError("RAG_RERANK_BASE_URL must be an http(s) URL for vendor rerank")
         if self.require_service_auth and not self.service_api_key:
-            raise ValueError(
-                "RAG_SERVICE_API_KEY is required when service auth is enabled"
-            )
+            raise ValueError("RAG_SERVICE_API_KEY is required when service auth is enabled")
         if self.deployment_environment.lower() in {"production", "prod"}:
             unsafe: list[str] = []
             if not self.require_service_auth:
@@ -194,22 +186,20 @@ class Settings(BaseSettings):
             if self.search_backend != "opensearch" or not self.opensearch_url:
                 unsafe.append("RAG_SEARCH_BACKEND must be opensearch")
             if not self.oidc_enabled or not self.oidc_issuer or not self.oidc_jwks_url:
-                unsafe.append(
-                    "RAG_OIDC_ENABLED, OIDC_ISSUER and OIDC_JWKS_URL are required"
-                )
+                unsafe.append("RAG_OIDC_ENABLED, OIDC_ISSUER and OIDC_JWKS_URL are required")
             if not self.oidc_permissions_claim.strip():
                 unsafe.append("RAG_OIDC_PERMISSIONS_CLAIM is required")
             if not self.workload_token_url or not self.workload_client_secret:
-                unsafe.append(
-                    "RAG_WORKLOAD_TOKEN_URL and WORKLOAD_CLIENT_SECRET are required"
-                )
+                unsafe.append("RAG_WORKLOAD_TOKEN_URL and WORKLOAD_CLIENT_SECRET are required")
             if not self.opa_enabled:
                 unsafe.append("RAG_OPA_ENABLED must be true")
             if not self.redis_url:
                 unsafe.append("RAG_REDIS_URL is required")
             if self.governance_delivery_mode != "cdc":
                 unsafe.append("RAG_GOVERNANCE_DELIVERY_MODE must be cdc")
-            if self.mtls_enabled and not all((self.mtls_ca_file, self.mtls_cert_file, self.mtls_key_file)):
+            if self.mtls_enabled and not all(
+                (self.mtls_ca_file, self.mtls_cert_file, self.mtls_key_file)
+            ):
                 unsafe.append("RAG mTLS certificate paths are required")
             if unsafe:
                 raise ValueError("Unsafe production configuration: " + "; ".join(unsafe))

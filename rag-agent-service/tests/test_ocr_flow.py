@@ -5,6 +5,7 @@
 - 后台任务状态机（OCR_RUNNING → PARSED，进度落 metadata，标 source=ocr）
 - 重复触发保护
 """
+
 from app.ingestion import ocr_task
 
 

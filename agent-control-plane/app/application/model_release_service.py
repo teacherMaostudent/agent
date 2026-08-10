@@ -17,7 +17,11 @@ import httpx
 
 from app.application.exceptions import InvalidStateError, NotFoundError, PolicyViolationError
 from app.core.config import Settings
-from app.infrastructure.platform_clients import GatewayPolicyClient, GovernanceQualityClient, ModelLabClient
+from app.infrastructure.platform_clients import (
+    GatewayPolicyClient,
+    GovernanceQualityClient,
+    ModelLabClient,
+)
 from app.infrastructure.sqlite_repository import SqliteRepository
 
 logger = logging.getLogger(__name__)

@@ -11,6 +11,7 @@ import hashlib
 from typing import Any
 
 import httpx
+
 from app.contracts.rag import RagSearchRequest, RagSearchResponse
 from app.domain.models import Chunk, Document, Evidence
 from app.retrieval.vector_retriever import HashEmbeddingRetriever
@@ -93,8 +94,7 @@ class OpenSearchProjection:
         actions: list[dict[str, Any]] = []
         if current.status_code == 200:
             actions.extend(
-                {"remove": {"index": index, "alias": self.alias}}
-                for index in current.json()
+                {"remove": {"index": index, "alias": self.alias}} for index in current.json()
             )
         actions.append({"add": {"index": self.index, "alias": self.alias}})
         self._request("POST", "_aliases", json={"actions": actions})
@@ -106,9 +106,7 @@ class OpenSearchProjection:
             raise ValueError("indexed documents require tenant_id")
         allowed_users = document.metadata.get("allowed_users") or []
         for chunk in chunks:
-            identifier = hashlib.sha256(
-                f"{tenant_id}:{chunk.chunk_id}".encode()
-            ).hexdigest()
+            identifier = hashlib.sha256(f"{tenant_id}:{chunk.chunk_id}".encode()).hexdigest()
             self._request(
                 "PUT",
                 f"{self.index}/_doc/{identifier}",

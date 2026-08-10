@@ -6,6 +6,7 @@
 
 embedder 与建库同源,保证查询向量和库向量可比。查询只 embed 一次。
 """
+
 import re
 
 from app.domain.models import Chunk, Evidence
@@ -62,9 +63,7 @@ class SemanticRetriever:
 
     # Temporary multi-document index: used only for the current operation and never persisted.
 
-    def build_document_set_store(
-        self, files: list[tuple[str, str, str]]
-    ) -> EmbeddingStore:
+    def build_document_set_store(self, files: list[tuple[str, str, str]]) -> EmbeddingStore:
         """把多份企业文件切块建成同一个临时库(跨文档分析用)。
 
         files: [(document_id, filename, text), ...]。每片打 {document_id, filename}

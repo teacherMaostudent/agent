@@ -35,15 +35,11 @@ class ToolCatalogValidator:
             raise ValueError(f"Tool Catalog is unavailable: {self.path}")
         catalog = json.loads(self.path.read_text(encoding="utf-8"))
         self.registry.validate("tool-catalog.v1.json", catalog)
-        available = {
-            (str(item["name"]), str(item["version"])) for item in catalog["tools"]
-        }
+        available = {(str(item["name"]), str(item["version"])) for item in catalog["tools"]}
         missing = [
             f"{item.get('tool_name')}:{item.get('version')}"
             for item in bindings
             if (str(item.get("tool_name")), str(item.get("version"))) not in available
         ]
         if missing:
-            raise ValueError(
-                "published tools are absent from Tool Catalog: " + ", ".join(missing)
-            )
+            raise ValueError("published tools are absent from Tool Catalog: " + ", ".join(missing))

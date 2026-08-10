@@ -82,12 +82,8 @@ class ToolGatewayClient:
         headers.update(_execution_headers(context))
         headers["X-Idempotency-Key"] = idempotency_key
         with self._versions_lock:
-            version = context.tool_version or self._versions.get(
-                (context.tenant_id, name)
-            )
-        with trace.get_tracer(__name__).start_as_current_span(
-            "runtime.tool_execute"
-        ) as span:
+            version = context.tool_version or self._versions.get((context.tenant_id, name))
+        with trace.get_tracer(__name__).start_as_current_span("runtime.tool_execute") as span:
             span.set_attribute("tool.name", name)
             span.set_attribute("tenant.id", context.tenant_id)
             response = self.client.post(
@@ -96,11 +92,7 @@ class ToolGatewayClient:
                 json={
                     "arguments": arguments,
                     **({"version": version} if version else {}),
-                    **(
-                        {"approval_id": context.approval_id}
-                        if context.approval_id
-                        else {}
-                    ),
+                    **({"approval_id": context.approval_id} if context.approval_id else {}),
                 },
                 timeout=self.timeout,
             )

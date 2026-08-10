@@ -27,9 +27,7 @@ def test_controlled_scanner_supports_safe_regex(tmp_path: Path) -> None:
 
 
 def test_scan_redacts_secrets_before_returning_model_context(tmp_path: Path) -> None:
-    (tmp_path / "app.log").write_text(
-        "password=super-secret user@example.com\n", encoding="utf-8"
-    )
+    (tmp_path / "app.log").write_text("password=super-secret user@example.com\n", encoding="utf-8")
     result = ControlledFileScanner({"logs": tmp_path}).scan("logs", "password")
     assert "super-secret" not in result[0].line
     assert "[REDACTED_EMAIL]" in result[0].line

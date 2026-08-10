@@ -87,9 +87,9 @@ class AgentContextService:
         """Produce a deterministic, token-bounded prompt context package."""
         budget = request.token_budget or self.default_token_budget
         with trace.get_tracer(__name__).start_as_current_span("context.assemble") as span:
-            messages = self.messages(
-                request.session_id, request.tenant_id, request.user_id
-            )[-self.max_messages :]
+            messages = self.messages(request.session_id, request.tenant_id, request.user_id)[
+                -self.max_messages :
+            ]
             evidence: list[Evidence] = []
             rag_status = "not_requested"
             degraded = False
@@ -145,9 +145,7 @@ class AgentContextService:
                     "user_id": request.user_id,
                 },
                 token_budget=budget,
-                estimated_tokens=(
-                    report.used_message_tokens + report.used_evidence_tokens
-                ),
+                estimated_tokens=(report.used_message_tokens + report.used_evidence_tokens),
                 truncated=truncated,
                 rag_status=rag_status,
                 degraded=degraded,

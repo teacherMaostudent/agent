@@ -22,6 +22,29 @@ class RagSearchResponse(BaseModel):
     index_version: str = "local"
 
 
+class RagIndexVersionResponse(BaseModel):
+    """Immutable retrieval-index identity exposed to Runtime and release checks."""
+
+    index_version: str
+    backend: str
+    api_version: str = "v1"
+
+
+class RagCapabilitiesResponse(BaseModel):
+    """Stable discovery contract; callers must not inspect RAG implementation details."""
+
+    api_version: str = "v1"
+    operations: list[str] = Field(
+        default_factory=lambda: [
+            "search",
+            "controlled_scan",
+            "ingestion",
+            "index_version",
+            "health",
+        ]
+    )
+
+
 class ControlledScanRequest(BaseModel):
     scope: str = Field(min_length=1, max_length=80)
     pattern: str = Field(min_length=1, max_length=500)

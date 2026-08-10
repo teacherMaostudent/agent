@@ -28,11 +28,13 @@ from app.infrastructure.sqlite_repository import SqliteRepository
 
 class GovernanceService:
     """Ingest idempotent events and expose tenant-scoped audit decisions."""
+
     """Persists immutable audit events before exposing derived findings.
 
     Evaluation is deterministic at ingestion time.  A duplicate event does
     not create findings again, preserving idempotency across outbox retries.
     """
+
     def __init__(self, repository: SqliteRepository) -> None:
         """Initialize GovernanceService dependencies and local state."""
         self._repository = repository

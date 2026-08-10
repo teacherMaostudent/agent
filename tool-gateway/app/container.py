@@ -20,6 +20,7 @@ from app.resilience import RedisFixedWindowRateLimiter
 
 class Container:
     """Own shared HTTP/database resources and validate readiness dependencies."""
+
     def __init__(
         self,
         settings: Settings | None = None,

@@ -5,6 +5,7 @@
 - 检索时只 embed 查询本身，再和库里预存向量算余弦，避免"每次查询重算全库"。
 - 支持按 metadata 过滤(如 standard/module)后再算相似度，减轻跨语言召回折损。
 """
+
 import json
 import math
 from pathlib import Path

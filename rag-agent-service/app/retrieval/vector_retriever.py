@@ -19,7 +19,13 @@ class HashEmbeddingRetriever:
             if score > 0:
                 scored.append((score, chunk))
         return [
-            Evidence(source_id=chunk.source_id, source_type=chunk.source_type, text=chunk.text, score=score, metadata=chunk.metadata)
+            Evidence(
+                source_id=chunk.source_id,
+                source_type=chunk.source_type,
+                text=chunk.text,
+                score=score,
+                metadata=chunk.metadata,
+            )
             for score, chunk in sorted(scored, reverse=True, key=lambda item: item[0])[:top_k]
         ]
 
@@ -40,4 +46,3 @@ class HashEmbeddingRetriever:
         if norm_a == 0 or norm_b == 0:
             return 0.0
         return dot / (norm_a * norm_b)
-

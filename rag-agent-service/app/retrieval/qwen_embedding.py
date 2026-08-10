@@ -7,6 +7,7 @@
 - 中英文都支持,适配中英混合法规。
 - 需要 DASHSCOPE_API_KEY(sk- 开头),聊天和 embedding 共用。
 """
+
 import httpx
 
 

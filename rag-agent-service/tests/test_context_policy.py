@@ -70,9 +70,7 @@ def test_required_rag_failure_is_not_silently_degraded() -> None:
     service = AgentContextService(ConversationStore(), FailingRag(), 10, 1_000)
 
     with pytest.raises(RuntimeError, match="rag unavailable"):
-        service.assemble(
-            ContextAssembleRequest(session_id="session-a", query="audit scope")
-        )
+        service.assemble(ContextAssembleRequest(session_id="session-a", query="audit scope"))
 
 
 def test_context_combines_role_time_relevance_and_source_trust() -> None:
@@ -81,9 +79,7 @@ def test_context_combines_role_time_relevance_and_source_trust() -> None:
     old = datetime.now(UTC) - timedelta(days=20)
     service.append_message(
         "session-a",
-        ConversationMessage(
-            role="assistant", content="unrelated answer", created_at=old
-        ),
+        ConversationMessage(role="assistant", content="unrelated answer", created_at=old),
         "tenant-a",
         "user-a",
     )
@@ -105,15 +101,14 @@ def test_context_combines_role_time_relevance_and_source_trust() -> None:
 
     system = next(item for item in package.recent_messages if item.role == "system")
     assistant = next(item for item in package.recent_messages if item.role == "assistant")
-    assert system.metadata["context_ranking"]["score"] > assistant.metadata["context_ranking"]["score"]
-    assert package.knowledge_evidence[0].source_id == "regulation"
-    untrusted = next(
-        item for item in package.knowledge_evidence if item.source_id == "untrusted"
+    assert (
+        system.metadata["context_ranking"]["score"] > assistant.metadata["context_ranking"]["score"]
     )
+    assert package.knowledge_evidence[0].source_id == "regulation"
+    untrusted = next(item for item in package.knowledge_evidence if item.source_id == "untrusted")
     assert untrusted.metadata["context_ranking"]["source_trust"] == 0.6
     assert package.budget_report.message_budget == 204
     assert package.budget_report.evidence_budget == 308
     assert package.estimated_tokens == (
-        package.budget_report.used_message_tokens
-        + package.budget_report.used_evidence_tokens
+        package.budget_report.used_message_tokens + package.budget_report.used_evidence_tokens
     )

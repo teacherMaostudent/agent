@@ -61,9 +61,7 @@ async def ingest_event(
 ) -> IngestionResult:
     # Pydantic validates the service model; the shared JSON Schema additionally
     # protects cross-language publishers from contract drift at this boundary.
-    container.schema_registry.validate(
-        "governance-event.v1.json", event.model_dump(mode="json")
-    )
+    container.schema_registry.validate("governance-event.v1.json", event.model_dump(mode="json"))
     return await service(container).ingest(event)
 
 

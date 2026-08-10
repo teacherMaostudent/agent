@@ -5,6 +5,7 @@ from app.contracts.ingestion import IngestionJob
 
 class IngestionJobProcessor:
     """Keep source persistence authoritative while publishing a rebuildable index."""
+
     def __init__(self, container) -> None:
         self.container = container
 

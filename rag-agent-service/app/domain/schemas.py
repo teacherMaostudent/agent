@@ -31,9 +31,7 @@ class ExportDocxRequest(BaseModel):
     markdown: str
     title: str = ""  # 文档首行大标题,空则不加
     filename: str = ""  # 下载文件名(不含扩展名也行),空则用默认
-    highlight: list[str] = Field(
-        default_factory=list
-    )  # 正文中加粗+黄底标出的词(问题点)
+    highlight: list[str] = Field(default_factory=list)  # 正文中加粗+黄底标出的词(问题点)
 
 
 class CrossDocumentReviewRequest(BaseModel):

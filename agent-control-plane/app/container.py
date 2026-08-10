@@ -10,7 +10,11 @@ from contextlib import suppress
 from app.application.control_plane_service import ControlPlaneService
 from app.application.model_release_service import ModelReleaseService
 from app.core.config import Settings
-from app.infrastructure.platform_clients import GatewayPolicyClient, GovernanceQualityClient, ModelLabClient
+from app.infrastructure.platform_clients import (
+    GatewayPolicyClient,
+    GovernanceQualityClient,
+    ModelLabClient,
+)
 from app.infrastructure.postgres_repository import PostgresRepository
 from app.infrastructure.sqlite_repository import SqliteRepository
 from app.infrastructure.temporal_release import TemporalReleaseOrchestrator
@@ -19,6 +23,7 @@ from app.infrastructure.tool_catalog import ToolCatalogValidator
 
 class AppContainer:
     """Build adapters once and close them in reverse dependency order."""
+
     def __init__(self, settings: Settings, *, build_orchestrator: bool = True) -> None:
         self.settings = settings
         self.repository = (

@@ -1,16 +1,15 @@
-from threading import RLock
 from datetime import UTC, datetime, timedelta
+from threading import RLock
 
 from app.contracts.context import ConversationMessage
+
 _KIND_SESSION = "agent_context_session"
 
 
 class ConversationStore:
     """Small persistence adapter; replace with PostgreSQL for multi-node production."""
 
-    def __init__(
-        self, backend=None, *, retention_days: int = 30, max_messages: int = 500
-    ) -> None:
+    def __init__(self, backend=None, *, retention_days: int = 30, max_messages: int = 500) -> None:
         self._db = backend
         self._memory: dict[str, list[ConversationMessage]] = {}
         self._lock = RLock()
@@ -21,7 +20,9 @@ class ConversationStore:
         with self._lock:
             if self._db is not None:
                 payload = self._db.get(_KIND_SESSION, session_id) or {"messages": []}
-                messages = [ConversationMessage.model_validate(item) for item in payload["messages"]]
+                messages = [
+                    ConversationMessage.model_validate(item) for item in payload["messages"]
+                ]
             else:
                 messages = list(self._memory.get(session_id, []))
             cutoff = datetime.now(UTC) - self._retention
@@ -31,9 +32,7 @@ class ConversationStore:
         with self._lock:
             if self._db is not None:
                 for _ in range(8):
-                    payload, version = self._db.get_with_version(
-                        _KIND_SESSION, session_id
-                    )
+                    payload, version = self._db.get_with_version(_KIND_SESSION, session_id)
                     messages = [
                         ConversationMessage.model_validate(item)
                         for item in (payload or {"messages": []})["messages"]
@@ -43,11 +42,7 @@ class ConversationStore:
                     if self._db.put_if_version(
                         _KIND_SESSION,
                         session_id,
-                        {
-                            "messages": [
-                                item.model_dump(mode="json") for item in messages
-                            ]
-                        },
+                        {"messages": [item.model_dump(mode="json") for item in messages]},
                         version,
                     ):
                         return

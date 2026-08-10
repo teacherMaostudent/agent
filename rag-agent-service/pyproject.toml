@@ -40,7 +40,6 @@ rerank-local = [
 
 [project.scripts]
 ingestion-worker = "apps.ingestion_worker.main:main"
-runtime-temporal-worker = "apps.runtime_worker.main:main"
 ingestion-temporal-worker = "apps.ingestion_temporal_worker.main:main"
 
 [tool.pytest.ini_options]
@@ -56,6 +55,12 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# 中文注释与面向中文业务人员的提示文本是产品文档的一部分；不将全角标点
+# 误报为代码质量问题，其他 Ruff 规则仍保持严格执行。
+# E501 is intentionally delegated to Ruff formatter; SQL/OpenSearch DSL and
+# FastAPI signatures are less readable when manually wrapped. B008 is the
+# framework-required FastAPI dependency declaration pattern.
+ignore = ["B008", "E501", "RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.format]
 quote-style = "double"

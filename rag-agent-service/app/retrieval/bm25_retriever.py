@@ -27,9 +27,17 @@ class BM25Retriever:
                 score += idf * numerator / denominator
             if score > 0:
                 scores.append((score, chunk))
-        return [_to_evidence(chunk, score) for score, chunk in sorted(scores, reverse=True, key=lambda item: item[0])[:top_k]]
+        return [
+            _to_evidence(chunk, score)
+            for score, chunk in sorted(scores, reverse=True, key=lambda item: item[0])[:top_k]
+        ]
 
 
 def _to_evidence(chunk: Chunk, score: float) -> Evidence:
-    return Evidence(source_id=chunk.source_id, source_type=chunk.source_type, text=chunk.text, score=score, metadata=chunk.metadata)
-
+    return Evidence(
+        source_id=chunk.source_id,
+        source_type=chunk.source_type,
+        text=chunk.text,
+        score=score,
+        metadata=chunk.metadata,
+    )

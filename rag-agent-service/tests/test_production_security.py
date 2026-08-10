@@ -18,8 +18,6 @@ def test_rag_acl_denies_missing_owner_by_default() -> None:
 
 
 def test_legacy_public_access_requires_explicit_migration_switch() -> None:
-    service = RagQueryService(
-        object(), object(), allow_legacy_public_documents=True
-    )
+    service = RagQueryService(object(), object(), allow_legacy_public_documents=True)
 
     assert service._authorized({}, "tenant-a", "user-a") is True

@@ -125,7 +125,9 @@ class ModelLabClient:
         self._settings = settings
 
     async def approved_artifact(self, experiment_id: str) -> dict[str, Any]:
-        async with httpx.AsyncClient(base_url=self._settings.model_lab_base_url, timeout=30) as client:
+        async with httpx.AsyncClient(
+            base_url=self._settings.model_lab_base_url, timeout=30
+        ) as client:
             response = await client.get(f"/v1/experiments/{experiment_id}")
             response.raise_for_status()
             record = response.json()

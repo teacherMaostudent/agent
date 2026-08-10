@@ -9,12 +9,14 @@ from pathlib import Path
 from threading import Lock
 from typing import BinaryIO
 
-from app.core.config import Settings
 from platform_infra.object_storage import S3ObjectStorage
+
+from app.core.config import Settings
 
 
 class S3FileStorage:
     """Keep raw file bytes outside the RAG index and retrieve them on ingestion."""
+
     """S3 source-of-truth with a disposable local parser cache."""
 
     def __init__(self, settings: Settings) -> None:
@@ -30,9 +32,7 @@ class S3FileStorage:
         self._lock = Lock()
 
     def save_upload(self, filename: str, stream: BinaryIO) -> tuple[Path, str]:
-        with tempfile.SpooledTemporaryFile(
-            max_size=8 * 1024 * 1024, mode="w+b"
-        ) as buffered:
+        with tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b") as buffered:
             shutil.copyfileobj(stream, buffered, length=1024 * 1024)
             buffered.seek(0)
             key, sha256 = self.objects.put_stream("documents", filename, buffered)

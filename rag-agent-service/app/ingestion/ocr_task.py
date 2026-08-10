@@ -4,6 +4,7 @@
 (不占 FastAPI web 线程),进度写进 document.metadata 并落库,前端轮询 status 端点
 看"已识别 N/总页"。纯本地识别,不外传(保密件)。
 """
+
 import logging
 import threading
 
@@ -25,9 +26,7 @@ def start_ocr(document_id: str, container) -> bool:
         if document_id in _running:
             return False
         _running.add(document_id)
-    thread = threading.Thread(
-        target=_run, args=(document_id, container), daemon=True
-    )
+    thread = threading.Thread(target=_run, args=(document_id, container), daemon=True)
     thread.start()
     return True
 

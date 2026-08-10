@@ -21,6 +21,7 @@ RISK_LEVELS = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 
 class ComplianceService:
     """Persist compliance cases; it never synchronously controls business execution."""
+
     """Governance-owned AI review plus explicit human confirmation."""
 
     def __init__(

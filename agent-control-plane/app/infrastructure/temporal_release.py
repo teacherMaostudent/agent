@@ -102,9 +102,7 @@ async def run_worker() -> None:
     container = AppContainer(settings, build_orchestrator=False)
     await container.start()
     bind_monitor(container.model_releases.monitor)
-    client = await Client.connect(
-        settings.temporal_target, namespace=settings.temporal_namespace
-    )
+    client = await Client.connect(settings.temporal_target, namespace=settings.temporal_namespace)
     worker = Worker(
         client,
         task_queue=settings.temporal_task_queue,

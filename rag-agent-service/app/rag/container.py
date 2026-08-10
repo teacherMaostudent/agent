@@ -32,6 +32,8 @@ class RagQueryContainer:
             allow_legacy_public_documents=self.settings.allow_legacy_public_documents,
             search_projection=self.search_projection,
             scanner=self.scanner,
+            index_version=self.settings.opensearch_index_version,
+            backend=self.settings.search_backend,
         )
 
     def close(self) -> None:

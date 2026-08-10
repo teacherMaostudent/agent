@@ -12,6 +12,7 @@ reviewer 一做完,接上就能量,而尺子本身可以先立住、先自测。
 - Q4 随机性:本模块只负责"给定预测→算指标";多次采样(temp=0 跑 N 次)
   由调用方做,再把每次指标传进 aggregate() 看均值±方差。
 """
+
 from dataclasses import dataclass, field
 
 
@@ -40,13 +41,13 @@ class CaseMetrics:
     """单个 case 的评估结果。"""
 
     case_name: str
-    has_expected_conflict: bool          # 这组是"有矛盾"还是"clean 反例"
-    expected_count: int                  # 标注的矛盾数
-    predicted_count: int                 # 预测报出的矛盾数
-    hit_count: int                       # 命中(topic+文件对 对上)的数
-    false_positive_count: int            # 报了但标注里没有的(误报)
-    recall: float                        # 召回率 = hit / expected(有矛盾组才有意义)
-    precision: float                     # 精确率 = hit / predicted
+    has_expected_conflict: bool  # 这组是"有矛盾"还是"clean 反例"
+    expected_count: int  # 标注的矛盾数
+    predicted_count: int  # 预测报出的矛盾数
+    hit_count: int  # 命中(topic+文件对 对上)的数
+    false_positive_count: int  # 报了但标注里没有的(误报)
+    recall: float  # 召回率 = hit / expected(有矛盾组才有意义)
+    precision: float  # 精确率 = hit / predicted
 
 
 def evaluate_case(expected: dict, prediction: dict) -> CaseMetrics:
@@ -86,11 +87,11 @@ def evaluate_case(expected: dict, prediction: dict) -> CaseMetrics:
 class SuiteReport:
     """一整轮(一次采样)在所有 case 上的汇总。分开报,不合成单一准确率。"""
 
-    conflict_case_recall: float          # 有矛盾组的平均召回率(该抓的抓到没)
+    conflict_case_recall: float  # 有矛盾组的平均召回率(该抓的抓到没)
     conflict_case_count: int
-    clean_case_false_positives: int      # clean 组的总误报数(对抗告警疲劳的硬指标)
+    clean_case_false_positives: int  # clean 组的总误报数(对抗告警疲劳的硬指标)
     clean_case_count: int
-    overall_precision: float             # 所有报出矛盾里对的比例
+    overall_precision: float  # 所有报出矛盾里对的比例
     cases: list[CaseMetrics] = field(default_factory=list)
 
 
@@ -101,8 +102,7 @@ def evaluate_suite(pairs: list[tuple[dict, dict]]) -> SuiteReport:
     clean_cases = [m for m in metrics if not m.has_expected_conflict]
 
     conflict_recall = (
-        sum(m.recall for m in conflict_cases) / len(conflict_cases)
-        if conflict_cases else 1.0
+        sum(m.recall for m in conflict_cases) / len(conflict_cases) if conflict_cases else 1.0
     )
     clean_fp = sum(m.false_positive_count for m in clean_cases)
     total_hit = sum(m.hit_count for m in metrics)

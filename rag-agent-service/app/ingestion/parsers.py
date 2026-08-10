@@ -34,7 +34,9 @@ class DocumentParser:
         try:
             import fitz  # type: ignore
         except ImportError as exc:
-            raise RuntimeError("PDF parsing requires pymupdf. Install project dependencies first.") from exc
+            raise RuntimeError(
+                "PDF parsing requires pymupdf. Install project dependencies first."
+            ) from exc
         with fitz.open(path) as doc:
             text = "\n".join(page.get_text("text") for page in doc)
             page_count = doc.page_count
@@ -63,7 +65,9 @@ class DocumentParser:
             for i, page in enumerate(doc):
                 # 渲染成图(放大 2x 提升小字识别率),转 numpy 喂 RapidOCR。
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+                img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                    pix.height, pix.width, pix.n
+                )
                 # RapidOCR 要 3 通道 BGR;若含 alpha 通道(n==4)则丢弃。
                 if pix.n == 4:
                     img = img[:, :, :3]
@@ -80,8 +84,8 @@ class DocumentParser:
         pixel-perfect transcription without visual review.
         """
         try:
-            from PIL import Image  # type: ignore
             import numpy as np  # type: ignore
+            from PIL import Image  # type: ignore
         except ImportError as exc:
             raise RuntimeError("image OCR requires Pillow and numpy") from exc
         from app.ingestion.ocr_engine import OcrEngine
@@ -96,7 +100,9 @@ class DocumentParser:
         try:
             from docx import Document as WordDocument  # type: ignore
         except ImportError as exc:
-            raise RuntimeError("Word parsing requires python-docx. Install project dependencies first.") from exc
+            raise RuntimeError(
+                "Word parsing requires python-docx. Install project dependencies first."
+            ) from exc
         doc = WordDocument(path)
         return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
@@ -104,11 +110,16 @@ class DocumentParser:
         try:
             import pandas as pd  # type: ignore
         except ImportError as exc:
-            raise RuntimeError("Excel parsing requires pandas/openpyxl. Install project dependencies first.") from exc
-        frames = pd.read_excel(path, sheet_name=None) if path.suffix.lower() != ".csv" else {"sheet1": pd.read_csv(path)}
+            raise RuntimeError(
+                "Excel parsing requires pandas/openpyxl. Install project dependencies first."
+            ) from exc
+        frames = (
+            pd.read_excel(path, sheet_name=None)
+            if path.suffix.lower() != ".csv"
+            else {"sheet1": pd.read_csv(path)}
+        )
         lines: list[str] = []
         for sheet, frame in frames.items():
             lines.append(f"# Sheet: {sheet}")
             lines.append(frame.fillna("").to_markdown(index=False))
         return "\n\n".join(lines)
-

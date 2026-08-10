@@ -14,7 +14,9 @@ def test_cross_encoder_changes_hybrid_order() -> None:
     retriever = HybridRetriever(0.5, 0.5, 32, reranker=reranker, candidate_k=4)
     chunks = [
         Chunk(source_id="bad", source_type="regulation", text="audit audit irrelevant"),
-        Chunk(source_id="good", source_type="regulation", text="audit record retention requirement"),
+        Chunk(
+            source_id="good", source_type="regulation", text="audit record retention requirement"
+        ),
     ]
 
     hits = retriever.search("audit", chunks, top_k=2)

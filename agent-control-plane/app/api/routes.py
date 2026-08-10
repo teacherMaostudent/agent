@@ -305,10 +305,10 @@ async def start_model_route_release(
     container: Container,
 ) -> dict[str, Any]:
     release = await container.model_releases.start(identity.tenant_id, request)
-    if (
-        container.release_orchestrator is not None
-        and release.get("status") in {"CANARY_ACTIVE", "MONITORING"}
-    ):
+    if container.release_orchestrator is not None and release.get("status") in {
+        "CANARY_ACTIVE",
+        "MONITORING",
+    }:
         container.release_orchestrator.start(
             identity.tenant_id,
             str(release["id"]),

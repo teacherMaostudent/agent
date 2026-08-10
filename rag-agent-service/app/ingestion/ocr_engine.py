@@ -9,6 +9,7 @@
 - 已知限制:RapidOCR 只出"文字+坐标",不重建表格结构——表格页文字准但行列会乱序。
   SOP 正文(条款段落)识别质量优秀,表格页作为已知限制,由调用方在报告中标注。
 """
+
 from __future__ import annotations
 
 import threading
@@ -37,6 +38,7 @@ class OcrEngine:
             with self._init_lock:
                 if self._ocr is None:
                     from rapidocr_onnxruntime import RapidOCR
+
                     self._ocr = RapidOCR()
         return self._ocr
 

@@ -7,13 +7,13 @@
 表格 |、引用 >、分隔线 ---)，不追求完整 Markdown 规范，够用且好维护。
 用已安装的 python-docx，无需额外依赖。
 """
+
 import io
 import re
 
 from docx import Document
 from docx.enum.text import WD_COLOR_INDEX
 from docx.shared import Pt, RGBColor
-
 
 # 合规免责声明：所有导出文件开头必须加,明确 AI 结果仅供参考、不构成最终合规结论。
 DISCLAIMER = (
@@ -85,7 +85,9 @@ def _split_row(line: str) -> list[str]:
     return [c.strip() for c in line.strip().strip("|").split("|")]
 
 
-def markdown_to_docx_bytes(markdown: str, title: str = "", highlight: list[str] | None = None) -> bytes:
+def markdown_to_docx_bytes(
+    markdown: str, title: str = "", highlight: list[str] | None = None
+) -> bytes:
     """把 Markdown 文本转成 .docx 的字节流，可直接作为下载响应体。
 
     highlight：正文中需要加粗+黄底标出的词（待人工确认的问题点）。
@@ -137,7 +139,11 @@ def markdown_to_docx_bytes(markdown: str, title: str = "", highlight: list[str] 
         # 引用 >
         if stripped.startswith(">"):
             quote = stripped.lstrip(">").strip()
-            p = doc.add_paragraph(style="Intense Quote") if _has_style(doc, "Intense Quote") else doc.add_paragraph()
+            p = (
+                doc.add_paragraph(style="Intense Quote")
+                if _has_style(doc, "Intense Quote")
+                else doc.add_paragraph()
+            )
             _add_runs(p, quote, highlight)
             i += 1
             continue
@@ -145,7 +151,11 @@ def markdown_to_docx_bytes(markdown: str, title: str = "", highlight: list[str] 
         # 有序列表 1. 2. 3.
         ordered = re.match(r"\d+\.\s+(.*)", stripped)
         if ordered:
-            p = doc.add_paragraph(style="List Number") if _has_style(doc, "List Number") else doc.add_paragraph()
+            p = (
+                doc.add_paragraph(style="List Number")
+                if _has_style(doc, "List Number")
+                else doc.add_paragraph()
+            )
             _add_runs(p, ordered.group(1), highlight)
             i += 1
             continue
@@ -153,7 +163,11 @@ def markdown_to_docx_bytes(markdown: str, title: str = "", highlight: list[str] 
         # 无序列表 - / * / +（带缩进的也归为列表项）
         bullet = re.match(r"[-*+]\s+(.*)", stripped)
         if bullet:
-            p = doc.add_paragraph(style="List Bullet") if _has_style(doc, "List Bullet") else doc.add_paragraph()
+            p = (
+                doc.add_paragraph(style="List Bullet")
+                if _has_style(doc, "List Bullet")
+                else doc.add_paragraph()
+            )
             _add_runs(p, bullet.group(1), highlight)
             i += 1
             continue

@@ -26,11 +26,11 @@ def main() -> None:
 
         # Imports intentionally happen after environment setup because each module
         # constructs its own process-level composition root.
+        from app.ingestion.worker import IngestionWorker
         from apps.agent_context_service.main import app as context_app
-        from apps.agent_runtime.main import app as runtime_app
+        from agent_runtime_service.main import app as runtime_app
         from apps.ingestion_api.main import app as ingestion_app
         from apps.rag_query_api.main import app as query_app
-        from app.ingestion.worker import IngestionWorker
 
         services = [
             _Server(query_app, 18003),
@@ -70,7 +70,9 @@ def main() -> None:
             upload = httpx.post(
                 "http://127.0.0.1:18004/api/v1/ingestion/documents",
                 headers={"X-Tenant-Id": "tenant-a", "X-User-Id": "user-a"},
-                files={"file": ("smoke.md", b"# Smoke\nAudit records are retained.", "text/markdown")},
+                files={
+                    "file": ("smoke.md", b"# Smoke\nAudit records are retained.", "text/markdown")
+                },
                 timeout=10,
             )
             upload.raise_for_status()

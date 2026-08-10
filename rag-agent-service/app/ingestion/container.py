@@ -22,9 +22,7 @@ class IngestionContainer:
         self.parser = DocumentParser()
         self.embedder = build_embedder(self.settings)
         backing_job_store = (
-            PostgresIngestionJobStore(
-                self.settings.database_url, self.settings.database_schema
-            )
+            PostgresIngestionJobStore(self.settings.database_url, self.settings.database_schema)
             if self.settings.persistence == "postgres"
             else IngestionJobStore(self.settings.ingestion_jobs_path)
         )

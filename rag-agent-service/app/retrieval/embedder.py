@@ -6,6 +6,7 @@
 
 法规库建库和检索用同一个 embedder,保证查询向量和库向量同源可比。
 """
+
 import hashlib
 import logging
 

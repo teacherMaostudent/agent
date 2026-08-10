@@ -1,6 +1,5 @@
-import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 
@@ -47,7 +46,7 @@ class IngestionJobStore:
         return job
 
     def claim_next(self) -> IngestionJob | None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
             row = self._conn.execute(
@@ -80,21 +79,19 @@ class IngestionJobStore:
         job.error = ""
         job.lease_expires_at = None
         job.next_attempt_at = None
-        job.updated_at = datetime.now(timezone.utc)
+        job.updated_at = datetime.now(UTC)
         with self._lock:
             self._write(job)
         return job
 
     def fail(self, job: IngestionJob, error: str) -> IngestionJob:
-        now = datetime.now(timezone.utc)
-        job.status = (
-            JobStatus.QUEUED if job.attempts < job.max_attempts else JobStatus.FAILED
-        )
+        now = datetime.now(UTC)
+        job.status = JobStatus.QUEUED if job.attempts < job.max_attempts else JobStatus.FAILED
         job.error = error[:4000]
         job.updated_at = now
         job.lease_expires_at = None
         job.next_attempt_at = (
-            now + timedelta(seconds=min(300, 2 ** job.attempts))
+            now + timedelta(seconds=min(300, 2**job.attempts))
             if job.status == JobStatus.QUEUED
             else None
         )

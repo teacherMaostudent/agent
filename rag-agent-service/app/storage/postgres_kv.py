@@ -52,9 +52,7 @@ class PostgresKv:
             ).fetchone()
         return (json.loads(row["payload"]), int(row["version"])) if row else (None, 0)
 
-    def put_if_version(
-        self, kind: str, id: str, payload: dict, expected_version: int
-    ) -> bool:
+    def put_if_version(self, kind: str, id: str, payload: dict, expected_version: int) -> bool:
         encoded = json.dumps(payload, ensure_ascii=False)
         with connect_postgres(self._dsn, self._schema) as connection:
             if expected_version == 0:

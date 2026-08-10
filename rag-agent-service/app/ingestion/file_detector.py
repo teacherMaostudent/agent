@@ -16,4 +16,3 @@ def detect_file_type(path: Path) -> str:
     if suffix in {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}:
         return "image"
     return "unknown"
-

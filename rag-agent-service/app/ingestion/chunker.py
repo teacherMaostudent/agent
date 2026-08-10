@@ -6,7 +6,9 @@ class TextChunker:
         self.chunk_size = chunk_size
         self.overlap = overlap
 
-    def chunk(self, source_id: str, source_type: str, text: str, metadata: dict | None = None) -> list[Chunk]:
+    def chunk(
+        self, source_id: str, source_type: str, text: str, metadata: dict | None = None
+    ) -> list[Chunk]:
         clean = "\n".join(line.strip() for line in text.splitlines() if line.strip())
         if not clean:
             return []
@@ -26,4 +28,3 @@ class TextChunker:
                 break
             start = max(0, end - self.overlap)
         return chunks
-

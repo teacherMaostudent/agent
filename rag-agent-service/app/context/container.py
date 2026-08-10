@@ -16,9 +16,7 @@ class AgentContextContainer:
         if self.settings.persistence == "sqlite":
             backend = SqliteKv(self.settings.sqlite_path)
         elif self.settings.persistence == "postgres":
-            backend = PostgresKv(
-                self.settings.database_url, self.settings.database_schema
-            )
+            backend = PostgresKv(self.settings.database_url, self.settings.database_schema)
         self.store = ConversationStore(
             backend,
             retention_days=self.settings.context_retention_days,

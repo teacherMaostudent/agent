@@ -43,10 +43,7 @@ class SqliteRepository:
             """Perform operation within the module ownership boundary."""
             with self._connect() as connection:
                 connection.executescript(schema)
-                columns = {
-                    row["name"]
-                    for row in connection.execute("PRAGMA table_info(releases)")
-                }
+                columns = {row["name"] for row in connection.execute("PRAGMA table_info(releases)")}
                 if "quality_gate_id" not in columns:
                     connection.execute("ALTER TABLE releases ADD COLUMN quality_gate_id TEXT")
                 if "quality_gate_metrics_json" not in columns:
@@ -59,6 +56,7 @@ class SqliteRepository:
 
     async def healthcheck(self) -> bool:
         """Perform healthcheck within the SqliteRepository ownership boundary."""
+
         def operation() -> bool:
             """Perform operation within the module ownership boundary."""
             with self._connect() as connection:
@@ -98,6 +96,7 @@ class SqliteRepository:
 
     async def create_agent(self, agent: AgentDefinition, event: OutboxEvent) -> None:
         """Persist state while preserving the transaction and audit boundary."""
+
         def operation(connection: sqlite3.Connection) -> None:
             """Perform operation within the module ownership boundary."""
             connection.execute(
@@ -129,6 +128,7 @@ class SqliteRepository:
         event: OutboxEvent,
     ) -> bool:
         """Apply the requested state transition with configured consistency checks."""
+
         def operation(connection: sqlite3.Connection) -> bool:
             """Perform operation within the module ownership boundary."""
             cursor = connection.execute(
@@ -156,6 +156,7 @@ class SqliteRepository:
 
     async def get_agent(self, tenant_id: str, agent_id: str) -> AgentDefinition | None:
         """Return the requested value through the established ownership boundary."""
+
         def operation(connection: sqlite3.Connection) -> AgentDefinition | None:
             """Perform operation within the module ownership boundary."""
             row = connection.execute(
@@ -168,6 +169,7 @@ class SqliteRepository:
 
     async def list_agents(self, tenant_id: str) -> list[AgentDefinition]:
         """List only values visible within the caller's tenant and lifecycle scope."""
+
         def operation(connection: sqlite3.Connection) -> list[AgentDefinition]:
             """Perform operation within the module ownership boundary."""
             rows = connection.execute(
@@ -180,6 +182,7 @@ class SqliteRepository:
 
     async def create_version(self, version: AgentVersion, event: OutboxEvent) -> None:
         """Persist state while preserving the transaction and audit boundary."""
+
         def operation(connection: sqlite3.Connection) -> None:
             """Perform operation within the module ownership boundary."""
             connection.execute(
@@ -213,6 +216,7 @@ class SqliteRepository:
         version_id: str,
     ) -> AgentVersion | None:
         """Return the requested value through the established ownership boundary."""
+
         def operation(connection: sqlite3.Connection) -> AgentVersion | None:
             """Perform operation within the module ownership boundary."""
             row = connection.execute(
@@ -228,6 +232,7 @@ class SqliteRepository:
 
     async def list_versions(self, tenant_id: str, agent_id: str) -> list[AgentVersion]:
         """List only values visible within the caller's tenant and lifecycle scope."""
+
         def operation(connection: sqlite3.Connection) -> list[AgentVersion]:
             """Perform operation within the module ownership boundary."""
             rows = connection.execute(
@@ -249,6 +254,7 @@ class SqliteRepository:
         retire_release_id: str | None = None,
     ) -> None:
         """Persist state while preserving the transaction and audit boundary."""
+
         def operation(connection: sqlite3.Connection) -> None:
             """Perform operation within the module ownership boundary."""
             connection.execute(
@@ -304,6 +310,7 @@ class SqliteRepository:
         expected_updated_at: str | None = None,
     ) -> bool:
         """Apply the requested state transition with configured consistency checks."""
+
         def operation(connection: sqlite3.Connection) -> bool:
             """Perform operation within the module ownership boundary."""
             cursor = connection.execute(
@@ -346,6 +353,7 @@ class SqliteRepository:
 
     async def get_release(self, tenant_id: str, release_id: str) -> ReleaseManifest | None:
         """Return the requested value through the established ownership boundary."""
+
         def operation(connection: sqlite3.Connection) -> ReleaseManifest | None:
             """Perform operation within the module ownership boundary."""
             row = connection.execute(
@@ -363,6 +371,7 @@ class SqliteRepository:
         environment: str | None = None,
     ) -> list[ReleaseManifest]:
         """List only values visible within the caller's tenant and lifecycle scope."""
+
         def operation(connection: sqlite3.Connection) -> list[ReleaseManifest]:
             """Perform operation within the module ownership boundary."""
             if environment:
@@ -395,6 +404,7 @@ class SqliteRepository:
         session_id: str,
     ) -> dict[str, str] | None:
         """Return the requested value through the established ownership boundary."""
+
         def operation(connection: sqlite3.Connection) -> dict[str, str] | None:
             """Perform operation within the module ownership boundary."""
             row = connection.execute(
@@ -419,6 +429,7 @@ class SqliteRepository:
         timestamp: str,
     ) -> None:
         """Persist state while preserving the transaction and audit boundary."""
+
         def operation(connection: sqlite3.Connection) -> None:
             """Perform operation within the module ownership boundary."""
             connection.execute(
@@ -448,6 +459,7 @@ class SqliteRepository:
 
     async def get_tenant_policy(self, tenant_id: str) -> TenantPolicy | None:
         """Return the requested value through the established ownership boundary."""
+
         def operation(connection: sqlite3.Connection) -> TenantPolicy | None:
             """Perform operation within the module ownership boundary."""
             row = connection.execute(
@@ -460,6 +472,7 @@ class SqliteRepository:
 
     async def upsert_tenant_policy(self, policy: TenantPolicy, event: OutboxEvent) -> None:
         """Persist state while preserving the transaction and audit boundary."""
+
         def operation(connection: sqlite3.Connection) -> None:
             """Perform operation within the module ownership boundary."""
             connection.execute(
@@ -489,6 +502,7 @@ class SqliteRepository:
         limit: int,
     ) -> tuple[list[OutboxEvent], int | None]:
         """List only values visible within the caller's tenant and lifecycle scope."""
+
         def operation(connection: sqlite3.Connection) -> tuple[list[OutboxEvent], int | None]:
             """Perform operation within the module ownership boundary."""
             rows = connection.execute(
@@ -532,6 +546,7 @@ class SqliteRepository:
 
     async def get_model_release(self, tenant_id: str, release_id: str) -> dict[str, Any] | None:
         """Return the requested value through the established ownership boundary."""
+
         def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
             """Perform operation within the module ownership boundary."""
             row = connection.execute(
@@ -547,6 +562,7 @@ class SqliteRepository:
 
     async def list_model_releases(self, tenant_id: str) -> list[dict[str, Any]]:
         """List only values visible within the caller's tenant and lifecycle scope."""
+
         def operation(connection: sqlite3.Connection) -> list[dict[str, Any]]:
             """Perform operation within the module ownership boundary."""
             rows = connection.execute(
@@ -562,6 +578,7 @@ class SqliteRepository:
 
     async def list_active_model_releases(self) -> list[tuple[str, dict[str, Any]]]:
         """List only values visible within the caller's tenant and lifecycle scope."""
+
         def operation(
             connection: sqlite3.Connection,
         ) -> list[tuple[str, dict[str, Any]]]:
@@ -583,6 +600,7 @@ class SqliteRepository:
 
     async def _read(self, operation: Callable[[sqlite3.Connection], T]) -> T:
         """Internal helper for SqliteRepository; preserve its caller-facing invariant."""
+
         def run() -> T:
             """Perform run within the module ownership boundary."""
             with self._connect() as connection:

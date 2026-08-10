@@ -15,6 +15,7 @@ from app.infrastructure.sqlite_repository import SqliteRepository
 
 class AppContainer:
     """Construct Governance services with one shared persistence boundary."""
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.schema_registry = SchemaRegistry(settings.contracts_schema_dir)

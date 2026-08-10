@@ -6,6 +6,7 @@
   用 EmbeddingStore 的 JSON 缓存,混进 SQLite 会毁掉检索性能(设计红线)。
 - 用 Python 内置 sqlite3,零额外依赖;单机自查场景够用,不上 MySQL。
 """
+
 import json
 import sqlite3
 import threading
@@ -25,9 +26,7 @@ class SqliteKv:
         )
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(kv)")}
         if "version" not in columns:
-            self._conn.execute(
-                "ALTER TABLE kv ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
-            )
+            self._conn.execute("ALTER TABLE kv ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
         self._conn.commit()
 
     def put(self, kind: str, id: str, payload: dict) -> None:
@@ -54,9 +53,7 @@ class SqliteKv:
             ).fetchone()
         return (json.loads(row[0]), int(row[1])) if row else (None, 0)
 
-    def put_if_version(
-        self, kind: str, id: str, payload: dict, expected_version: int
-    ) -> bool:
+    def put_if_version(self, kind: str, id: str, payload: dict, expected_version: int) -> bool:
         encoded = json.dumps(payload, ensure_ascii=False)
         with self._lock:
             if expected_version == 0:
@@ -82,8 +79,7 @@ class SqliteKv:
         if not items:
             return
         rows = [
-            (kind, item_id, json.dumps(payload, ensure_ascii=False))
-            for item_id, payload in items
+            (kind, item_id, json.dumps(payload, ensure_ascii=False)) for item_id, payload in items
         ]
         with self._lock:
             self._conn.executemany(
@@ -95,16 +91,12 @@ class SqliteKv:
 
     def all(self, kind: str) -> list[dict]:
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT payload FROM kv WHERE kind = ?", (kind,)
-            ).fetchall()
+            rows = self._conn.execute("SELECT payload FROM kv WHERE kind = ?", (kind,)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
     def delete(self, kind: str, id: str) -> bool:
         with self._lock:
-            cursor = self._conn.execute(
-                "DELETE FROM kv WHERE kind = ? AND id = ?", (kind, id)
-            )
+            cursor = self._conn.execute("DELETE FROM kv WHERE kind = ? AND id = ?", (kind, id))
             self._conn.commit()
             return cursor.rowcount == 1
 

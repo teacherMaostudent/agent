@@ -7,6 +7,7 @@ hash embedding、不开 LLM、清空密钥，保证:
 
 必须在 import app.* 之前设好环境变量(container 是模块级单例，import 即初始化)。
 """
+
 import os
 
 os.environ["RAG_EMBEDDING_PROVIDER"] = "hash"

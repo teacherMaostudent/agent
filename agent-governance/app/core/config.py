@@ -99,9 +99,7 @@ class Settings(BaseSettings):
             if self.database_backend != "postgres" or not self.database_url:
                 unsafe.append("GOVERNANCE_DATABASE_BACKEND must be postgres")
             if not self.oidc_enabled or not self.oidc_issuer or not self.oidc_jwks_url:
-                unsafe.append(
-                    "GOVERNANCE_OIDC_ENABLED, OIDC_ISSUER and OIDC_JWKS_URL are required"
-                )
+                unsafe.append("GOVERNANCE_OIDC_ENABLED, OIDC_ISSUER and OIDC_JWKS_URL are required")
             if not self.workload_token_url or not self.workload_client_secret:
                 unsafe.append(
                     "GOVERNANCE_WORKLOAD_TOKEN_URL and WORKLOAD_CLIENT_SECRET are required"

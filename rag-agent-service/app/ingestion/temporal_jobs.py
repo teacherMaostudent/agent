@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from collections.abc import Callable
 from concurrent.futures import Future
 from datetime import timedelta
@@ -31,6 +32,7 @@ async def execute_ingestion_job(job_id: str) -> dict:
 @workflow.defn(name="KnowledgeIngestionWorkflow")
 class KnowledgeIngestionWorkflow:
     """Retry idempotent ingestion activities without duplicating source documents."""
+
     @workflow.run
     async def run(self, job_id: str, max_attempts: int) -> dict:
         return await workflow.execute_activity(
@@ -49,6 +51,7 @@ class KnowledgeIngestionWorkflow:
 
 class TemporalIngestionJobStore:
     """Submit durable ingestion jobs using deterministic workflow identifiers."""
+
     def __init__(self, backing, target: str, namespace: str, task_queue: str) -> None:
         self.backing = backing
         self.task_queue = task_queue
@@ -59,7 +62,9 @@ class TemporalIngestionJobStore:
 
     def create(self, job):
         stored = self.backing.create(job)
-        try:
+        # Workflow id is deterministic. A duplicate start means another API
+        # retry already owns the same durable job, so it is safely idempotent.
+        with suppress(WorkflowAlreadyStartedError):
             self._call(
                 self._client.start_workflow(
                     KnowledgeIngestionWorkflow.run,
@@ -68,8 +73,6 @@ class TemporalIngestionJobStore:
                     task_queue=self.task_queue,
                 )
             )
-        except WorkflowAlreadyStartedError:
-            pass
         return stored
 
     def get(self, job_id: str, tenant_id: str | None = None):

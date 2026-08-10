@@ -51,6 +51,7 @@ class ControlPlaneService:
     is made visible.  Repository writes and outbox events stay in the same
     transaction, which makes downstream governance delivery retryable.
     """
+
     def __init__(
         self,
         repository: SqliteRepository,

@@ -4,11 +4,18 @@ import httpx
 from opentelemetry import trace
 from platform_infra.identity import WorkloadTokenProvider
 
-from app.contracts.rag import RagSearchRequest, RagSearchResponse
+from app.contracts.rag import (
+    RagCapabilitiesResponse,
+    RagIndexVersionResponse,
+    RagSearchRequest,
+    RagSearchResponse,
+)
 
 
 class RagQueryClient(Protocol):
     def search(self, request: RagSearchRequest) -> RagSearchResponse: ...
+
+    def index_version(self) -> RagIndexVersionResponse: ...
 
 
 class LocalRagQueryClient:
@@ -17,6 +24,12 @@ class LocalRagQueryClient:
 
     def search(self, request: RagSearchRequest) -> RagSearchResponse:
         return self.service.search(request)
+
+    def index_version(self) -> RagIndexVersionResponse:
+        return RagIndexVersionResponse(
+            index_version=self.service.index_version,
+            backend=self.service.backend,
+        )
 
 
 class HttpRagQueryClient:
@@ -33,15 +46,36 @@ class HttpRagQueryClient:
         self.workload_identity = workload_identity
 
     def search(self, request: RagSearchRequest) -> RagSearchResponse:
-        headers = {"X-Rag-Agent-Key": self.service_api_key} if self.service_api_key else {}
-        if self.workload_identity is not None:
-            headers.update(self.workload_identity.authorization_header())
         with trace.get_tracer(__name__).start_as_current_span("context.rag_query"):
             response = httpx.post(
                 f"{self.base_url}/api/v1/query/search",
                 json=request.model_dump(mode="json"),
-                headers=headers,
+                headers=self._headers(),
                 timeout=self.timeout,
             )
             response.raise_for_status()
             return RagSearchResponse.model_validate(response.json())
+
+    def index_version(self) -> RagIndexVersionResponse:
+        response = httpx.get(
+            f"{self.base_url}/api/v1/query/index-version",
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return RagIndexVersionResponse.model_validate(response.json())
+
+    def capabilities(self) -> RagCapabilitiesResponse:
+        response = httpx.get(
+            f"{self.base_url}/api/v1/query/capabilities",
+            headers=self._headers(),
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return RagCapabilitiesResponse.model_validate(response.json())
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"X-Rag-Agent-Key": self.service_api_key} if self.service_api_key else {}
+        if self.workload_identity is not None:
+            headers.update(self.workload_identity.authorization_header())
+        return headers

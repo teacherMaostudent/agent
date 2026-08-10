@@ -45,9 +45,7 @@ async def export_tenant(settings: Settings, tenant_id: str) -> dict:
     cursor = 0
     events = []
     while True:
-        page, next_cursor = await container.repository.list_audit_events(
-            tenant_id, cursor, 1000
-        )
+        page, next_cursor = await container.repository.list_audit_events(tenant_id, cursor, 1000)
         events.extend(item.model_dump(mode="json") for item in page)
         if next_cursor is None or len(page) < 1000:
             break
@@ -64,12 +62,16 @@ async def export_tenant(settings: Settings, tenant_id: str) -> dict:
     }
     encoded = json.dumps(export, ensure_ascii=False, sort_keys=True).encode()
     digest = hashlib.sha256(encoded).hexdigest()
-    signature = boto3.client("kms", region_name=settings.worm_region or None).sign(
-        KeyId=settings.worm_kms_key_id,
-        Message=bytes.fromhex(digest),
-        MessageType="DIGEST",
-        SigningAlgorithm="RSASSA_PSS_SHA_256",
-    )["Signature"].hex()
+    signature = (
+        boto3.client("kms", region_name=settings.worm_region or None)
+        .sign(
+            KeyId=settings.worm_kms_key_id,
+            Message=bytes.fromhex(digest),
+            MessageType="DIGEST",
+            SigningAlgorithm="RSASSA_PSS_SHA_256",
+        )["Signature"]
+        .hex()
+    )
     envelope = {
         "export": export,
         "sha256": digest,
