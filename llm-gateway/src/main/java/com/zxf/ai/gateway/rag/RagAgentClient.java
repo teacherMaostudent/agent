@@ -19,6 +19,7 @@ public class RagAgentClient {
     private final WebClient client;
     private final RagAgentProperties properties;
 
+    /** 按受控配置创建 RAG 服务客户端，并集中挂载迁移期服务凭据。 */
     public RagAgentClient(WebClient.Builder webClientBuilder, RagAgentProperties properties) {
         this.properties = properties;
         this.client = webClientBuilder
@@ -27,6 +28,7 @@ public class RagAgentClient {
                 .build();
     }
 
+    /** 上传文档及其业务元数据到 RAG 摄取 API，并将远程错误规范化为网关异常。 */
     public Mono<JsonNode> uploadDocument(FilePart file, String businessId, String documentType) {
         ensureEnabled();
         MultipartBodyBuilder builder = new MultipartBodyBuilder();
@@ -44,6 +46,7 @@ public class RagAgentClient {
                 .onErrorMap(this::toGatewayException);
     }
 
+    /** 转发受租户和用户边界约束的 Agent 请求，不允许客户端指定内部服务权限。 */
     public Mono<JsonNode> runAgent(JsonNode request, String tenantId, String userId, String requestId) {
         ensureEnabled();
         return client.post()
@@ -60,18 +63,21 @@ public class RagAgentClient {
                 .onErrorMap(this::toGatewayException);
     }
 
+    /** 仅在元数据有实际值时添加 multipart 文本字段，避免发送无意义空部件。 */
     private void addTextPart(MultipartBodyBuilder builder, String name, String value) {
         if (value != null && !value.isBlank()) {
             builder.part(name, value);
         }
     }
 
+    /** 在调用网络前校验集成开关，禁用时返回明确的服务不可用错误。 */
     private void ensureEnabled() {
         if (!properties.isEnabled()) {
             throw new GatewayException(HttpStatus.SERVICE_UNAVAILABLE, "rag-agent-service integration is disabled.");
         }
     }
 
+    /** 将 RAG 网络或响应异常映射为不泄露上游实现细节的网关错误。 */
     private Throwable toGatewayException(Throwable throwable) {
         if (throwable instanceof GatewayException) {
             return throwable;

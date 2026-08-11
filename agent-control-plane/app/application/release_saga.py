@@ -20,11 +20,13 @@ class SagaState:
 
 class ReleaseSaga:
     def __init__(self, saga_id: str, state: SagaState | None = None) -> None:
+        """恢复既有 Saga 状态或为一次发布创建新的幂等步骤记录。"""
         self.state = state or SagaState(saga_id)
 
     def step(
         self, name: str, action: Callable[[], None], compensate: Callable[[], None] | None = None
     ) -> None:
+        """只执行未完成步骤；失败时运行局部补偿并保留记录以便对账重试。"""
         if name in self.state.completed:
             return
         try:
@@ -48,6 +50,7 @@ class ReconciliationResult:
 def reconcile_release(
     desired_release_id: str, observed_release_id: str | None
 ) -> ReconciliationResult:
+    """比较期望与外部观测发布，返回运维可执行的修复或暂停建议。"""
     consistent = desired_release_id == observed_release_id
     return ReconciliationResult(
         desired_release_id=desired_release_id,

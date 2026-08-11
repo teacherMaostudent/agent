@@ -20,11 +20,13 @@ import java.util.Map;
 @Component
 @ConditionalOnProperty(prefix = "enhancement.langchain4j", name = "enabled", havingValue = "true")
 public class GatewayTools {
+    /** 返回网关当前时间；该工具没有外部副作用。 */
     @Tool("获取当前网关服务器时间，用于回答和时间相关的问题")
     public String currentGatewayTime() {
         return Instant.now().toString();
     }
 
+    /** 依据调用方提供的单价和 Token 数量进行确定性成本估算，不写入计费账本。 */
     @Tool("估算一次大模型调用成本，输入输出单价均按每 1000 token 计算")
     public BigDecimal estimateLlmCost(
             @P("输入 token 数") long promptTokens,
@@ -39,6 +41,7 @@ public class GatewayTools {
         return input.add(output);
     }
 
+    /** 返回当前增强层公开能力的静态声明，供模型决定是否请求后续工具。 */
     @Tool("查询当前 LLM Gateway 演示环境支持的能力清单")
     public Map<String, Object> gatewayCapabilities() {
         return Map.of(

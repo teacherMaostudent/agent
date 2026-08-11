@@ -5,7 +5,7 @@ from app.knowledge.sqlite_repository import SqliteRepository
 
 
 def build_repository(settings: Settings):
-    """Build the metadata repository without coupling a service to AppContainer."""
+    """按持久化配置创建文档事实仓储，令查询/摄取服务不依赖具体数据库实现。"""
     if settings.persistence == "sqlite":
         return SqliteRepository(settings.sqlite_path)
     if settings.persistence == "postgres":

@@ -18,11 +18,17 @@ import java.util.stream.Collectors;
 public class LlmClientRegistry {
     private final Map<String, LlmProviderClient> clients;
 
+    /**
+     * 初始化 llm client registry 所需的依赖与运行期状态。
+    */
     public LlmClientRegistry(List<LlmProviderClient> clients) {
         this.clients = clients.stream()
                 .collect(Collectors.toMap(client -> normalize(client.protocol()), Function.identity()));
     }
 
+    /**
+     * 构建或解析 resolve 所需的受控对象，避免调用方依赖内部实现细节。
+    */
     public LlmProviderClient resolve(ModelEndpoint endpoint) {
         String protocol = normalize(endpoint.provider().getProtocol());
         LlmProviderClient client = clients.get(protocol);
@@ -33,6 +39,9 @@ public class LlmClientRegistry {
         return client;
     }
 
+    /**
+     * 执行 normalize 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private String normalize(String protocol) {
         return protocol == null || protocol.isBlank()
                 ? "openai-compatible"

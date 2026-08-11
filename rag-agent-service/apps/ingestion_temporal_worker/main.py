@@ -14,6 +14,7 @@ from app.ingestion.temporal_jobs import (
 
 
 async def run_worker() -> None:
+    """注册摄取 Workflow/Activity 并消费指定任务队列；容器退出时关闭依赖。"""
     container = IngestionContainer(enable_temporal_dispatch=False)
     bind_ingestion_executor(container.execute_job)
     client = await Client.connect(
@@ -33,6 +34,7 @@ async def run_worker() -> None:
 
 
 def main() -> None:
+    """提供 Temporal Worker 的同步命令行入口。"""
     asyncio.run(run_worker())
 
 

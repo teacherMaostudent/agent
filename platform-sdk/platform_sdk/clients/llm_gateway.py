@@ -25,6 +25,11 @@ class LlmGatewayClient:
         timeout: float = 60.0,
         workload_identity: WorkloadTokenProvider | None = None,
     ) -> None:
+        """保存网关地址、服务身份与每次上下文独立的最近用量。
+
+        SDK 只传逻辑模型名；供应商密钥、路由、限流及 fallback 必须留在 LLM Gateway，
+        从而避免业务服务与模型厂商耦合。
+        """
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key.strip()
         self.user_id = user_id.strip() or "rag-agent-service"
@@ -38,6 +43,11 @@ class LlmGatewayClient:
     def chat_completion(
         self, payload: dict, *, execution_headers: dict[str, str] | None = None
     ) -> dict:
+        """发送 OpenAI 兼容请求并记录 Gateway 返回的用量。
+
+        ``execution_headers`` 只能由 Runtime 构造，用于追踪、预算和发布版本审计；
+        调用者的任意外部 Header 不应直接透传。
+        """
         headers = {
             "Content-Type": "application/json",
             "X-User-Id": self.user_id,
@@ -66,6 +76,7 @@ class LlmGatewayClient:
                 return data
 
     def last_cost_usd(self) -> float | None:
+        """读取当前上下文最后一次调用的 USD 费用，拒绝未统一币种的账单。"""
         usage = self._last_usage.get() or {}
         gateway = usage.get("gateway", {})
         if gateway and gateway.get("costCurrency") != "USD":
@@ -82,6 +93,7 @@ class LlmGatewayClient:
         json_response: bool = False,
         execution_headers: dict[str, str] | None = None,
     ) -> str:
+        """执行单轮聊天补全；JSON 模式仅请求网关约束，不替代后续语义验证。"""
         payload: dict = {
             "model": model,
             "temperature": temperature,
@@ -103,6 +115,7 @@ class LlmGatewayClient:
         *,
         execution_headers: dict[str, str] | None = None,
     ) -> dict:
+        """解析模型 JSON 输出并兼容常见 Markdown 代码围栏，非法 JSON 应向上失败。"""
         raw = self.complete(
             model,
             system_prompt,
@@ -117,6 +130,7 @@ class LlmGatewayClient:
         return json.loads(text)
 
     def healthcheck(self) -> None:
+        """探测网关健康状态，不消耗模型额度或创建审计运行。"""
         with httpx.Client(timeout=min(self.timeout, 5.0)) as client:
             response = client.get(f"{self.base_url}/actuator/health")
             response.raise_for_status()

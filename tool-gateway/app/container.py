@@ -28,6 +28,7 @@ class Container:
         registry: ToolRegistry | None = None,
         repository: SqliteRepository | None = None,
     ) -> None:
+        """按部署配置选择仓储、目录、治理事件与可选策略/限流适配器。"""
         self.settings = settings or get_settings()
         self.settings.ensure_directories()
         self.repository = repository or (
@@ -74,6 +75,11 @@ class Container:
         )
 
     def ready(self) -> dict:
+        """处理 ready 对应的当前组件内部业务步骤。
+
+
+        Probe only owned dependencies so readiness never executes a business tool.
+        """
         self.repository.ping()
         return {
             "registered_tools": self.registry.count,
@@ -81,6 +87,11 @@ class Container:
         }
 
     def close(self) -> None:
+        """处理 close 对应的当前组件内部业务步骤。
+
+
+        Close adapters before persistence to avoid abandoning in-flight transport resources.
+        """
         adapters = list(self.registry.adapters())
         if adapters:
             with suppress(RuntimeError):
@@ -89,4 +100,9 @@ class Container:
 
 
 async def _close_all(adapters) -> None:
+    """管理生命周期 _close_all 对应的受控业务步骤。
+
+
+    Release independent adapter sessions concurrently during a controlled shutdown.
+    """
     await asyncio.gather(*(adapter.close() for adapter in adapters))

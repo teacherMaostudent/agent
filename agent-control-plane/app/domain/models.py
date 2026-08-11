@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def utc_now() -> datetime:
+    """返回统一 UTC 时间，确保版本、发布和 Outbox 事件可跨区域正确排序。"""
     return datetime.now(UTC)
 
 
@@ -277,6 +278,7 @@ class Identity(StrictModel):
     @field_validator("roles", mode="before")
     @classmethod
     def normalize_roles(cls, value: Any) -> frozenset[str]:
+        """兼容 OIDC 声明与旧 Header 字符串，并归一为不可变权限集合。"""
         if value is None:
             return frozenset()
         if isinstance(value, str):

@@ -20,6 +20,7 @@ class OcrEngine:
     _lock = threading.Lock()
 
     def __init__(self) -> None:
+        """创建惰性 OCR 包装器，不在 API 进程构造阶段加载重型模型。"""
         # 懒加载:构造时不初始化 RapidOCR(它有几秒开销),首次 recognize 时才建。
         self._ocr = None
         self._init_lock = threading.Lock()
@@ -34,6 +35,7 @@ class OcrEngine:
         return cls._instance
 
     def _ensure_loaded(self):
+        """在线程安全临界区内按需初始化 OCR 引擎，并复用进程级实例。"""
         if self._ocr is None:
             with self._init_lock:
                 if self._ocr is None:

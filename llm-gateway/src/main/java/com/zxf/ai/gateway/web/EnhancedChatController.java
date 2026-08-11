@@ -24,11 +24,17 @@ import reactor.core.publisher.Mono;
 public class EnhancedChatController {
     private final EnhancedChatService enhancedChatService;
 
+    /**
+     * 初始化 enhanced chat controller 所需的依赖与运行期状态。
+    */
     public EnhancedChatController(EnhancedChatService enhancedChatService) {
         this.enhancedChatService = enhancedChatService;
     }
 
     @PostMapping(path = "/chat", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    /**
+     * 执行 chat 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public Mono<EnhancedChatResponse> chat(@Valid @RequestBody EnhancedChatRequest request) {
         return enhancedChatService.chat(request);
     }

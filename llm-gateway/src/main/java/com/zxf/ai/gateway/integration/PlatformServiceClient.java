@@ -29,6 +29,7 @@ public class PlatformServiceClient {
     private final String controlPlaneAdminKey;
     private final WorkloadIdentityService workloadIdentity;
 
+    /** 创建通往 Governance 与 Control Plane 的独立客户端，并集中保存工作负载身份配置。 */
     public PlatformServiceClient(
             WebClient.Builder builder,
             ObjectMapper objectMapper,
@@ -50,23 +51,27 @@ public class PlatformServiceClient {
         this.workloadIdentity = workloadIdentity;
     }
 
+    /** 将规范化事件投递给 Governance 事件入口，身份由服务工作负载凭据证明。 */
     public Mono<JsonNode> governanceEvent(JsonNode body, String tenantId, String userId) {
         return exchange(governance, "POST", "/v1/governance/events", body, tenantId, userId,
                 "event-producer", "X-Governance-Event-Key", governanceEventKey);
     }
 
+    /** 以审计角色调用 Governance API，不允许业务服务自行拼装认证头。 */
     public Mono<JsonNode> governance(String method, String path, JsonNode body,
                                      String tenantId, String userId) {
         return exchange(governance, method, path, body, tenantId, userId,
                 "governance-auditor", "X-Governance-Auditor-Key", governanceAuditorKey);
     }
 
+    /** 以受限管理员角色调用 Control Plane API，用于受治理的发布查询和校验。 */
     public Mono<JsonNode> controlPlane(String method, String path, JsonNode body,
                                       String tenantId, String userId) {
         return exchange(controlPlane, method, path, body, tenantId, userId,
                 "agent-admin", "X-Control-Plane-Admin-Key", controlPlaneAdminKey);
     }
 
+    /** 统一添加工作负载令牌、租户关联与过渡凭据，并把非成功状态转换为平台异常。 */
     private Mono<JsonNode> exchange(WebClient client, String method, String path, JsonNode body,
                                     String tenantId, String userId, String role,
                                     String credentialHeader, String credential) {
@@ -97,6 +102,7 @@ public class PlatformServiceClient {
         });
     }
 
+    /** 在调用方未提供可用值时选择配置默认值，避免空身份头传递到下游。 */
     private String value(String candidate, String fallback) {
         return candidate == null || candidate.isBlank() ? fallback : candidate;
     }
@@ -105,16 +111,19 @@ public class PlatformServiceClient {
         private final int status;
         private final JsonNode body;
 
+        /** 保存下游 HTTP 状态与已解析错误体，便于上层按状态实施重试或降级。 */
         public PlatformServiceException(int status, JsonNode body) {
             super("Platform service returned HTTP " + status);
             this.status = status;
             this.body = body;
         }
 
+        /** 返回下游服务返回的 HTTP 状态码。 */
         public int status() {
             return status;
         }
 
+        /** 返回下游服务错误响应的结构化内容。 */
         public JsonNode body() {
             return body;
         }

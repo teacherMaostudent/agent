@@ -61,6 +61,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_auth(self) -> "Settings":
+        """校验 validate_auth 对应的受控业务步骤。
+
+
+        Fail startup for production configurations that would weaken identity or durability.
+        """
         if self.require_service_auth and not self.service_api_key:
             raise ValueError("TOOL_GATEWAY_SERVICE_API_KEY is required")
         if not self.admin_api_key:
@@ -100,11 +105,21 @@ class Settings(BaseSettings):
         return self
 
     def ensure_directories(self) -> None:
+        """处理 ensure_directories 对应的当前组件内部业务步骤。
+
+
+        Create only the local SQLite parent path; managed backends own their storage.
+        """
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache
 def get_settings() -> Settings:
+    """读取或查询 get_settings 对应的受控业务步骤。
+
+
+    Build one immutable settings object per process after validating deployment invariants.
+    """
     settings = Settings()
     settings.ensure_directories()
     return settings

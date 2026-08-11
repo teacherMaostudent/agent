@@ -18,6 +18,9 @@ public class ComplianceReviewController {
     private final PlatformServiceClient platform;
     private final ApiKeyService apiKeyService;
 
+    /**
+     * 初始化 compliance review controller 所需的依赖与运行期状态。
+    */
     public ComplianceReviewController(PlatformServiceClient platform, ApiKeyService apiKeyService) {
         this.platform = platform;
         this.apiKeyService = apiKeyService;
@@ -25,6 +28,9 @@ public class ComplianceReviewController {
 
     @PostMapping(path = "/v1/compliance/reviews",
             consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    /**
+     * 执行 create review 的创建或更新，并保持运行期配置与持久化状态一致。
+    */
     public Mono<JsonNode> createReview(
             @RequestHeader(value = "X-User-Id", required = false) String userId,
             @RequestHeader(value = "X-Api-Key", required = false) String xApiKey,
@@ -39,6 +45,9 @@ public class ComplianceReviewController {
     }
 
     @GetMapping("/admin/compliance")
+    /**
+     * 执行 snapshot 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public Mono<JsonNode> snapshot(
             @RequestHeader(value = "X-Tenant-Id", required = false) String tenant,
             @RequestHeader(value = "X-User-Id", required = false) String user
@@ -48,6 +57,9 @@ public class ComplianceReviewController {
     }
 
     @GetMapping("/admin/compliance/reviews")
+    /**
+     * 执行 reviews 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public Mono<JsonNode> reviews(
             @RequestHeader(value = "X-Tenant-Id", required = false) String tenant,
             @RequestHeader(value = "X-User-Id", required = false) String user
@@ -57,6 +69,9 @@ public class ComplianceReviewController {
     }
 
     @GetMapping("/admin/compliance/reviews/{reviewId}")
+    /**
+     * 执行 review 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public Mono<JsonNode> review(
             @PathVariable String reviewId,
             @RequestHeader(value = "X-Tenant-Id", required = false) String tenant,
@@ -68,6 +83,9 @@ public class ComplianceReviewController {
     }
 
     @PostMapping("/admin/compliance/reviews/{reviewId}/confirm")
+    /**
+     * 执行 confirm 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public Mono<JsonNode> confirm(
             @PathVariable String reviewId,
             @RequestBody JsonNode request,
@@ -80,6 +98,9 @@ public class ComplianceReviewController {
     }
 
     @GetMapping("/admin/compliance/audit-logs")
+    /**
+     * 执行 audit logs 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public Mono<JsonNode> auditLogs(
             @RequestHeader(value = "X-Tenant-Id", required = false) String tenant,
             @RequestHeader(value = "X-User-Id", required = false) String user

@@ -15,10 +15,12 @@ class OpaAuthorizer:
     """Fail-closed client for a locally replicated OPA policy decision."""
 
     def __init__(self, base_url: str, decision_path: str, timeout: float = 2.0) -> None:
+        """固定 OPA 决策 URL 与短超时；调用方不能在请求中选择策略路径。"""
         self.url = f"{base_url.rstrip('/')}/v1/data/{decision_path.strip('/')}"
         self.timeout = timeout
 
     def authorize(self, input_document: dict[str, Any]) -> dict[str, Any]:
+        """同步请求 OPA 并只接受显式 ``allow=true``；拒绝由 ``PermissionError`` 表示。"""
         response = httpx.post(
             self.url,
             json={"input": input_document},
@@ -49,6 +51,7 @@ class OpaAuthorizationMiddleware:
         public_paths: tuple[str, ...] = (),
         timeout: float = 2.0,
     ) -> None:
+        """配置 OPA ASGI 授权层；其位置必须位于已验证身份层之后。"""
         self.app = app
         self.enabled = enabled
         self.url = f"{base_url.rstrip('/')}/v1/data/{decision_path.strip('/')}"
@@ -56,6 +59,7 @@ class OpaAuthorizationMiddleware:
         self.timeout = timeout
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """将经身份层重建的主体与请求元数据交给 OPA，网络故障按拒绝处理。"""
         if (
             not self.enabled
             or scope["type"] != "http"

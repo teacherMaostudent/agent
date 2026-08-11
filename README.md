@@ -1,4 +1,4 @@
-# Agent Platform
+·   # Agent Platform
 
 ## Model lifecycle extension
 

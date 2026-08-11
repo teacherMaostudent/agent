@@ -20,25 +20,25 @@ class ExecutorAdapter:
     """Common adapter contract for LangGraph, callable and future executors."""
 
     def run(self, initial: AgentState, thread_id: str) -> AgentRunResult:
-        """Perform run within the ExecutorAdapter ownership boundary."""
+        """定义新运行的统一执行契约；具体执行器不得改变 Runtime 结果模型。"""
         raise NotImplementedError
 
     def resume(self, thread_id: str, approval: ApprovalResume, *, max_steps: int) -> AgentRunResult:
-        """Perform resume within the ExecutorAdapter ownership boundary."""
+        """定义审批恢复契约；不支持恢复的执行器必须显式拒绝。"""
         raise NotImplementedError
 
 
 class GraphExecutor(ExecutorAdapter):
     def __init__(self, graph: AgentGraph) -> None:
-        """Initialize GraphExecutor dependencies and local state."""
+        """包装现有 LangGraph，使 Harness 不依赖其具体实现。"""
         self.graph = graph
 
     def run(self, initial: AgentState, thread_id: str) -> AgentRunResult:
-        """Perform run within the GraphExecutor ownership boundary."""
+        """委派新运行，保留图的检查点线程标识。"""
         return self.graph.run(initial, thread_id)
 
     def resume(self, thread_id: str, approval: ApprovalResume, *, max_steps: int) -> AgentRunResult:
-        """Perform resume within the GraphExecutor ownership boundary."""
+        """委派已持久化图的审批恢复。"""
         return self.graph.resume(thread_id, approval, max_steps=max_steps)
 
 
@@ -50,16 +50,16 @@ class CallableExecutor(ExecutorAdapter):
         run: Callable[[AgentState, str], AgentRunResult],
         resume: Callable[..., AgentRunResult] | None = None,
     ) -> None:
-        """Initialize CallableExecutor dependencies and local state."""
+        """适配外部 Harness；其生命周期结果仍需符合 Runtime 契约。"""
         self._run = run
         self._resume = resume
 
     def run(self, initial: AgentState, thread_id: str) -> AgentRunResult:
-        """Perform run within the CallableExecutor ownership boundary."""
+        """调用注入的外部执行器，不在此层添加业务路由。"""
         return self._run(initial, thread_id)
 
     def resume(self, thread_id: str, approval: ApprovalResume, *, max_steps: int) -> AgentRunResult:
-        """Perform resume within the CallableExecutor ownership boundary."""
+        """仅在外部执行器声明恢复能力时转发审批决定。"""
         if self._resume is None:
             raise RuntimeError("executor does not support approval resume")
         return self._resume(thread_id, approval, max_steps=max_steps)
@@ -80,7 +80,7 @@ class AgentHarness:
         *,
         registry: Mapping[str, AgentGraph | ExecutorAdapter] | None = None,
     ) -> None:
-        """Initialize AgentHarness dependencies and local state."""
+        """建立默认图与进程启动期白名单 Registry，保持单 Agent 向后兼容。"""
         self.graph = graph
         self._default_executor = GraphExecutor(graph)
         # The default graph preserves the current single-Agent behavior.  A
@@ -89,12 +89,10 @@ class AgentHarness:
         self._registry: dict[str, Any] = {key: value for key, value in (registry or {}).items()}
 
     def register(self, agent_id: str, graph: AgentGraph | ExecutorAdapter) -> None:
-        """Register a business graph during process startup.
+        """在进程启动时注册业务图。
 
-        Registration is intentionally code-owned, not dynamically loaded from
-        a request.  The Control Plane chooses an ``agent_id`` in a signed,
-        immutable snapshot; the Runtime only resolves it against this
-        allow-listed registry.
+        注册权归代码所有，不能由请求动态加载。Control Plane 仅在已签名、不可变快照中选择
+        ``agent_id``；Runtime 只会从该白名单 Registry 解析它。
         """
         normalized = agent_id.strip()
         if not normalized:
@@ -104,7 +102,7 @@ class AgentHarness:
         self._registry[normalized] = graph
 
     def register_executor(self, agent_id: str, executor: ExecutorAdapter) -> None:
-        """Register a non-LangGraph executor (e.g. LangChain or Deep Agent)."""
+        """注册非 LangGraph 执行器；动态请求不能自行注册 Agent。"""
         normalized = agent_id.strip()
         if not normalized:
             raise ValueError("agent_id must not be empty")
@@ -113,16 +111,16 @@ class AgentHarness:
         self._registry[normalized] = executor
 
     def register_from_catalog(self, agent_id: str, snapshot: dict[str, Any], catalog) -> None:
-        """Materialize an executor from the deployed, allow-listed catalog."""
+        """仅从本集群部署的白名单 Catalog 实例化快照对应执行器。"""
         self.register_executor(agent_id, catalog.build(agent_id, snapshot))
 
     @property
     def registered_agents(self) -> tuple[str, ...]:
-        """Perform registered agents within the AgentHarness ownership boundary."""
+        """返回稳定排序的已部署 Agent 标识，用于诊断而非授权。"""
         return tuple(sorted(self._registry))
 
     def run(self, initial: AgentState, thread_id: str) -> AgentRunResult:
-        """Execute a new Agent run through the configured business graph."""
+        """通过已配置的业务图执行一次新的 Agent 运行，并保持统一结果契约。"""
         return self._resolve(initial).run(initial, thread_id)
 
     def resume(
@@ -133,25 +131,23 @@ class AgentHarness:
         max_steps: int,
         agent_id: str | None = None,
     ) -> AgentRunResult:
-        """Resume a suspended run without exposing the graph to callers."""
+        """恢复被审批挂起的运行，对调用方隐藏具体业务图和执行器实现。"""
         return self._as_executor(
             self._registry.get(str(agent_id or "").strip(), self._default_executor)
         ).resume(thread_id, approval, max_steps=max_steps)
 
     def _resolve(self, initial: AgentState) -> ExecutorAdapter:
-        """Internal helper for AgentHarness; preserve its caller-facing invariant."""
+        """按状态中的发布 Agent ID 查白名单；未知 ID 回退默认图保持旧入口兼容。"""
         agent_id = str(initial.get("agent_id") or "").strip()
         return self._registry.get(agent_id, self.graph)
 
     def _as_executor(self, value: Any) -> ExecutorAdapter:
-        """Internal helper for AgentHarness; preserve its caller-facing invariant."""
+        """将旧图对象归一为执行器适配器，避免调用方感知框架类型。"""
         return value if isinstance(value, ExecutorAdapter) else GraphExecutor(value)
 
     def __getattr__(self, name: str) -> Any:
-        """Keep graph-specific helpers available during the migration.
+        """在迁移期保留图专属辅助能力。
 
-        Public execution should use ``run`` and ``resume``.  Delegation keeps
-        existing integrations compatible while the harness becomes the stable
-        runtime boundary.
+        对外执行应使用 ``run`` 与 ``resume``；此委托仅保持既有集成兼容，Harness 仍是稳定运行边界。
         """
         return getattr(self.graph, name)

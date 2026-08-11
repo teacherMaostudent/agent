@@ -29,18 +29,26 @@ T = TypeVar("T")
 
 class SqliteRepository:
     def __init__(self, database_path: Path, schema_path: Path) -> None:
-        """Initialize SqliteRepository dependencies and local state."""
+        """初始化该组件的依赖、配置与内部状态。
+
+
+        Initialize SqliteRepository dependencies and local state.
+        """
         self._database_path = database_path
         self._schema_path = schema_path
         self._write_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
-        """Perform initialize within the SqliteRepository ownership boundary."""
+        """处理 initialize 对应的当前组件内部业务步骤。
+
+
+        Perform initialize within the SqliteRepository ownership boundary.
+        """
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         schema = self._schema_path.read_text(encoding="utf-8")
 
         def operation() -> None:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             with self._connect() as connection:
                 connection.executescript(schema)
                 columns = {row["name"] for row in connection.execute("PRAGMA table_info(releases)")}
@@ -55,10 +63,14 @@ class SqliteRepository:
         await asyncio.to_thread(operation)
 
     async def healthcheck(self) -> bool:
-        """Perform healthcheck within the SqliteRepository ownership boundary."""
+        """处理 healthcheck 对应的当前组件内部业务步骤。
+
+
+        Perform healthcheck within the SqliteRepository ownership boundary.
+        """
 
         def operation() -> bool:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             with self._connect() as connection:
                 row = connection.execute("SELECT 1 AS ok").fetchone()
                 return bool(row and row["ok"] == 1)
@@ -66,12 +78,16 @@ class SqliteRepository:
         return await asyncio.to_thread(operation)
 
     async def acquire_lease(self, lease_name: str, owner_id: str, ttl_seconds: float) -> bool:
-        """Acquire or renew only an expired/self-owned lease using one write transaction."""
+        """处理 acquire_lease 对应的当前组件内部业务步骤。
+
+
+        Acquire or renew only an expired/self-owned lease using one write transaction.
+        """
         now = datetime.now(UTC)
         expires_at = now + timedelta(seconds=ttl_seconds)
 
         def operation(connection: sqlite3.Connection) -> bool:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             cursor = connection.execute(
                 """
                 INSERT INTO controller_leases(lease_name, owner_id, expires_at, updated_at)
@@ -95,10 +111,14 @@ class SqliteRepository:
         return await self._write(operation)
 
     async def create_agent(self, agent: AgentDefinition, event: OutboxEvent) -> None:
-        """Persist state while preserving the transaction and audit boundary."""
+        """创建或构建 create_agent 对应的受控业务步骤。
+
+
+        Persist state while preserving the transaction and audit boundary.
+        """
 
         def operation(connection: sqlite3.Connection) -> None:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             connection.execute(
                 """
                 INSERT INTO agents (
@@ -127,10 +147,14 @@ class SqliteRepository:
         expected_revision: int,
         event: OutboxEvent,
     ) -> bool:
-        """Apply the requested state transition with configured consistency checks."""
+        """更新 update_agent 对应的受控业务步骤。
+
+
+        Apply the requested state transition with configured consistency checks.
+        """
 
         def operation(connection: sqlite3.Connection) -> bool:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             cursor = connection.execute(
                 """
                 UPDATE agents
@@ -155,10 +179,14 @@ class SqliteRepository:
         return await self._write(operation)
 
     async def get_agent(self, tenant_id: str, agent_id: str) -> AgentDefinition | None:
-        """Return the requested value through the established ownership boundary."""
+        """读取或查询 get_agent 对应的受控业务步骤。
+
+
+        Return the requested value through the established ownership boundary.
+        """
 
         def operation(connection: sqlite3.Connection) -> AgentDefinition | None:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             row = connection.execute(
                 "SELECT * FROM agents WHERE tenant_id = ? AND agent_id = ?",
                 (tenant_id, agent_id),
@@ -168,10 +196,14 @@ class SqliteRepository:
         return await self._read(operation)
 
     async def list_agents(self, tenant_id: str) -> list[AgentDefinition]:
-        """List only values visible within the caller's tenant and lifecycle scope."""
+        """读取或查询 list_agents 对应的受控业务步骤。
+
+
+        List only values visible within the caller's tenant and lifecycle scope.
+        """
 
         def operation(connection: sqlite3.Connection) -> list[AgentDefinition]:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             rows = connection.execute(
                 "SELECT * FROM agents WHERE tenant_id = ? ORDER BY updated_at DESC",
                 (tenant_id,),
@@ -181,10 +213,14 @@ class SqliteRepository:
         return await self._read(operation)
 
     async def create_version(self, version: AgentVersion, event: OutboxEvent) -> None:
-        """Persist state while preserving the transaction and audit boundary."""
+        """创建或构建 create_version 对应的受控业务步骤。
+
+
+        Persist state while preserving the transaction and audit boundary.
+        """
 
         def operation(connection: sqlite3.Connection) -> None:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             connection.execute(
                 """
                 INSERT INTO agent_versions (
@@ -215,10 +251,14 @@ class SqliteRepository:
         agent_id: str,
         version_id: str,
     ) -> AgentVersion | None:
-        """Return the requested value through the established ownership boundary."""
+        """读取或查询 get_version 对应的受控业务步骤。
+
+
+        Return the requested value through the established ownership boundary.
+        """
 
         def operation(connection: sqlite3.Connection) -> AgentVersion | None:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             row = connection.execute(
                 """
                 SELECT * FROM agent_versions
@@ -231,10 +271,14 @@ class SqliteRepository:
         return await self._read(operation)
 
     async def list_versions(self, tenant_id: str, agent_id: str) -> list[AgentVersion]:
-        """List only values visible within the caller's tenant and lifecycle scope."""
+        """读取或查询 list_versions 对应的受控业务步骤。
+
+
+        List only values visible within the caller's tenant and lifecycle scope.
+        """
 
         def operation(connection: sqlite3.Connection) -> list[AgentVersion]:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             rows = connection.execute(
                 """
                 SELECT * FROM agent_versions
@@ -253,10 +297,14 @@ class SqliteRepository:
         event: OutboxEvent,
         retire_release_id: str | None = None,
     ) -> None:
-        """Persist state while preserving the transaction and audit boundary."""
+        """创建或构建 create_release 对应的受控业务步骤。
+
+
+        Persist state while preserving the transaction and audit boundary.
+        """
 
         def operation(connection: sqlite3.Connection) -> None:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             connection.execute(
                 """
                 INSERT INTO releases (
@@ -309,10 +357,14 @@ class SqliteRepository:
         related_status: ReleaseStatus | None = None,
         expected_updated_at: str | None = None,
     ) -> bool:
-        """Apply the requested state transition with configured consistency checks."""
+        """更新 update_release 对应的受控业务步骤。
+
+
+        Apply the requested state transition with configured consistency checks.
+        """
 
         def operation(connection: sqlite3.Connection) -> bool:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             cursor = connection.execute(
                 """
                 UPDATE releases
@@ -352,10 +404,14 @@ class SqliteRepository:
         return await self._write(operation)
 
     async def get_release(self, tenant_id: str, release_id: str) -> ReleaseManifest | None:
-        """Return the requested value through the established ownership boundary."""
+        """读取或查询 get_release 对应的受控业务步骤。
+
+
+        Return the requested value through the established ownership boundary.
+        """
 
         def operation(connection: sqlite3.Connection) -> ReleaseManifest | None:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             row = connection.execute(
                 "SELECT * FROM releases WHERE tenant_id = ? AND release_id = ?",
                 (tenant_id, release_id),
@@ -370,10 +426,14 @@ class SqliteRepository:
         agent_id: str,
         environment: str | None = None,
     ) -> list[ReleaseManifest]:
-        """List only values visible within the caller's tenant and lifecycle scope."""
+        """读取或查询 list_releases 对应的受控业务步骤。
+
+
+        List only values visible within the caller's tenant and lifecycle scope.
+        """
 
         def operation(connection: sqlite3.Connection) -> list[ReleaseManifest]:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             if environment:
                 rows = connection.execute(
                     """
@@ -403,10 +463,14 @@ class SqliteRepository:
         environment: str,
         session_id: str,
     ) -> dict[str, str] | None:
-        """Return the requested value through the established ownership boundary."""
+        """读取或查询 get_session_binding 对应的受控业务步骤。
+
+
+        Return the requested value through the established ownership boundary.
+        """
 
         def operation(connection: sqlite3.Connection) -> dict[str, str] | None:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             row = connection.execute(
                 """
                 SELECT release_id, assignment FROM session_bindings
@@ -428,10 +492,14 @@ class SqliteRepository:
         assignment: str,
         timestamp: str,
     ) -> None:
-        """Persist state while preserving the transaction and audit boundary."""
+        """处理 bind_session 对应的当前组件内部业务步骤。
+
+
+        Persist state while preserving the transaction and audit boundary.
+        """
 
         def operation(connection: sqlite3.Connection) -> None:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             connection.execute(
                 """
                 INSERT INTO session_bindings (
@@ -458,10 +526,14 @@ class SqliteRepository:
         await self._write(operation)
 
     async def get_tenant_policy(self, tenant_id: str) -> TenantPolicy | None:
-        """Return the requested value through the established ownership boundary."""
+        """读取或查询 get_tenant_policy 对应的受控业务步骤。
+
+
+        Return the requested value through the established ownership boundary.
+        """
 
         def operation(connection: sqlite3.Connection) -> TenantPolicy | None:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             row = connection.execute(
                 "SELECT policy_json FROM tenant_policies WHERE tenant_id = ?",
                 (tenant_id,),
@@ -471,10 +543,14 @@ class SqliteRepository:
         return await self._read(operation)
 
     async def upsert_tenant_policy(self, policy: TenantPolicy, event: OutboxEvent) -> None:
-        """Persist state while preserving the transaction and audit boundary."""
+        """处理 upsert_tenant_policy 对应的当前组件内部业务步骤。
+
+
+        Persist state while preserving the transaction and audit boundary.
+        """
 
         def operation(connection: sqlite3.Connection) -> None:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             connection.execute(
                 """
                 INSERT INTO tenant_policies (tenant_id, policy_json, updated_by, updated_at)
@@ -501,10 +577,14 @@ class SqliteRepository:
         after_sequence: int,
         limit: int,
     ) -> tuple[list[OutboxEvent], int | None]:
-        """List only values visible within the caller's tenant and lifecycle scope."""
+        """读取或查询 list_outbox 对应的受控业务步骤。
+
+
+        List only values visible within the caller's tenant and lifecycle scope.
+        """
 
         def operation(connection: sqlite3.Connection) -> tuple[list[OutboxEvent], int | None]:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             rows = connection.execute(
                 """
                 SELECT * FROM outbox_events
@@ -523,12 +603,16 @@ class SqliteRepository:
     async def save_model_release(
         self, tenant_id: str, release_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        """Persist state while preserving the transaction and audit boundary."""
+        """持久化 save_model_release 对应的受控业务步骤。
+
+
+        Persist state while preserving the transaction and audit boundary.
+        """
         created = str(payload["startedAt"])
         updated = str(payload["updatedAt"])
 
         def operation(connection: sqlite3.Connection) -> dict[str, Any]:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             connection.execute(
                 """
                 INSERT INTO model_route_releases (
@@ -545,10 +629,14 @@ class SqliteRepository:
         return await self._write(operation)
 
     async def get_model_release(self, tenant_id: str, release_id: str) -> dict[str, Any] | None:
-        """Return the requested value through the established ownership boundary."""
+        """读取或查询 get_model_release 对应的受控业务步骤。
+
+
+        Return the requested value through the established ownership boundary.
+        """
 
         def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             row = connection.execute(
                 """
                 SELECT payload_json FROM model_route_releases
@@ -561,10 +649,14 @@ class SqliteRepository:
         return await self._read(operation)
 
     async def list_model_releases(self, tenant_id: str) -> list[dict[str, Any]]:
-        """List only values visible within the caller's tenant and lifecycle scope."""
+        """读取或查询 list_model_releases 对应的受控业务步骤。
+
+
+        List only values visible within the caller's tenant and lifecycle scope.
+        """
 
         def operation(connection: sqlite3.Connection) -> list[dict[str, Any]]:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             rows = connection.execute(
                 """
                 SELECT payload_json FROM model_route_releases
@@ -577,12 +669,16 @@ class SqliteRepository:
         return await self._read(operation)
 
     async def list_active_model_releases(self) -> list[tuple[str, dict[str, Any]]]:
-        """List only values visible within the caller's tenant and lifecycle scope."""
+        """读取或查询 list_active_model_releases 对应的受控业务步骤。
+
+
+        List only values visible within the caller's tenant and lifecycle scope.
+        """
 
         def operation(
             connection: sqlite3.Connection,
         ) -> list[tuple[str, dict[str, Any]]]:
-            """Perform operation within the module ownership boundary."""
+            """在独立数据库线程中执行本次受控操作，连接与事务边界由外层读写助手统一管理。"""
             rows = connection.execute(
                 """
                 SELECT tenant_id, payload_json FROM model_route_releases
@@ -599,21 +695,37 @@ class SqliteRepository:
         return await self._read(operation)
 
     async def _read(self, operation: Callable[[sqlite3.Connection], T]) -> T:
-        """Internal helper for SqliteRepository; preserve its caller-facing invariant."""
+        """处理 _read 对应的当前组件内部业务步骤。
+
+
+        Internal helper for SqliteRepository; preserve its caller-facing invariant.
+        """
 
         def run() -> T:
-            """Perform run within the module ownership boundary."""
+            """处理 run 对应的当前组件内部业务步骤。
+
+
+            Perform run within the module ownership boundary.
+            """
             with self._connect() as connection:
                 return operation(connection)
 
         return await asyncio.to_thread(run)
 
     async def _write(self, operation: Callable[[sqlite3.Connection], T]) -> T:
-        """Internal helper for SqliteRepository; preserve its caller-facing invariant."""
+        """处理 _write 对应的当前组件内部业务步骤。
+
+
+        Internal helper for SqliteRepository; preserve its caller-facing invariant.
+        """
         async with self._write_lock:
 
             def run() -> T:
-                """Perform run within the module ownership boundary."""
+                """处理 run 对应的当前组件内部业务步骤。
+
+
+                Perform run within the module ownership boundary.
+                """
                 with self._connect() as connection:
                     connection.execute("BEGIN IMMEDIATE")
                     try:
@@ -627,7 +739,11 @@ class SqliteRepository:
             return await asyncio.to_thread(run)
 
     def _connect(self) -> sqlite3.Connection:
-        """Internal helper for SqliteRepository; preserve its caller-facing invariant."""
+        """处理 _connect 对应的当前组件内部业务步骤。
+
+
+        Internal helper for SqliteRepository; preserve its caller-facing invariant.
+        """
         connection = sqlite3.connect(self._database_path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
@@ -635,7 +751,11 @@ class SqliteRepository:
 
     @staticmethod
     def _insert_event(connection: sqlite3.Connection, event: OutboxEvent) -> None:
-        """Internal helper for SqliteRepository; preserve its caller-facing invariant."""
+        """处理 _insert_event 对应的当前组件内部业务步骤。
+
+
+        Internal helper for SqliteRepository; preserve its caller-facing invariant.
+        """
         connection.execute(
             """
             INSERT INTO outbox_events (
@@ -659,12 +779,20 @@ class SqliteRepository:
 
 
 def _json(value: Any) -> str:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _json 对应的当前组件内部业务步骤。
+
+
+    Internal helper for module; preserve its caller-facing invariant.
+    """
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
 def _agent_from_row(row: sqlite3.Row) -> AgentDefinition:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _agent_from_row 对应的当前组件内部业务步骤。
+
+
+    Internal helper for module; preserve its caller-facing invariant.
+    """
     return AgentDefinition.model_validate(
         {
             "tenant_id": row["tenant_id"],
@@ -680,7 +808,11 @@ def _agent_from_row(row: sqlite3.Row) -> AgentDefinition:
 
 
 def _version_from_row(row: sqlite3.Row) -> AgentVersion:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _version_from_row 对应的当前组件内部业务步骤。
+
+
+    Internal helper for module; preserve its caller-facing invariant.
+    """
     return AgentVersion.model_validate(
         {
             "tenant_id": row["tenant_id"],
@@ -698,7 +830,11 @@ def _version_from_row(row: sqlite3.Row) -> AgentVersion:
 
 
 def _release_from_row(row: sqlite3.Row) -> ReleaseManifest:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _release_from_row 对应的当前组件内部业务步骤。
+
+
+    Internal helper for module; preserve its caller-facing invariant.
+    """
     return ReleaseManifest.model_validate(
         {
             "tenant_id": row["tenant_id"],
@@ -721,7 +857,11 @@ def _release_from_row(row: sqlite3.Row) -> ReleaseManifest:
 
 
 def _event_from_row(row: sqlite3.Row) -> OutboxEvent:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _event_from_row 对应的当前组件内部业务步骤。
+
+
+    Internal helper for module; preserve its caller-facing invariant.
+    """
     return OutboxEvent.model_validate(
         {
             "event_id": row["event_id"],

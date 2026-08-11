@@ -20,25 +20,40 @@ import java.util.Map;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
     @ExceptionHandler(PlatformServiceClient.PlatformServiceException.class)
+    /**
+     * 执行 platform service 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public ResponseEntity<JsonNode> platformService(PlatformServiceClient.PlatformServiceException error) {
         return ResponseEntity.status(error.status()).body(error.body());
     }
     @ExceptionHandler(GatewayException.class)
+    /**
+     * 执行 gateway exception 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public ResponseEntity<Map<String, Object>> gatewayException(GatewayException exception) {
         return ResponseEntity.status(exception.status()).body(error(exception.status(), exception.getMessage()));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
+    /**
+     * 执行 illegal argument 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public ResponseEntity<Map<String, Object>> illegalArgument(IllegalArgumentException exception) {
         return ResponseEntity.badRequest().body(error(HttpStatus.BAD_REQUEST, exception.getMessage()));
     }
 
     @ExceptionHandler(Exception.class)
+    /**
+     * 执行 unknown 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public ResponseEntity<Map<String, Object>> unknown(Exception exception) {
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(error(HttpStatus.INTERNAL_SERVER_ERROR, exception.getMessage()));
     }
 
+    /**
+     * 执行 error 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private Map<String, Object> error(HttpStatus status, String message) {
         return Map.of(
                 "timestamp", Instant.now().toString(),

@@ -56,6 +56,7 @@ public class ChatGatewayService {
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher eventPublisher;
 
+    /** 装配路由、模型客户端、额度、缓存、策略、报表和审计事件等网关协作组件。 */
     public ChatGatewayService(
             ModelRouter modelRouter,
             LlmClientRegistry clientRegistry,
@@ -86,6 +87,7 @@ public class ChatGatewayService {
         this.eventPublisher = eventPublisher;
     }
 
+    /** 执行非流式补全：渲染 Prompt、固定路由版本、命中安全缓存并发布最终 Trace。 */
     public Mono<JsonNode> complete(GatewayRequestContext context, JsonNode request) {
         // 非流式请求可以安全缓存：同一租户、同一请求体命中时直接返回深拷贝结果，
         // 避免重复消耗上游 token。流式请求在 RequestCacheService 中会被跳过。
@@ -107,6 +109,7 @@ public class ChatGatewayService {
                 .doOnError(error -> publishTrace(context, preparedRequest, null, false, error));
     }
 
+    /** 为未命中缓存的补全请求建立冻结路由、预算预占和故障回退链路。 */
     private Mono<JsonNode> completeUncached(GatewayRequestContext context, JsonNode request,
             String routeVersion, String modelRevision) {
         // 先按 prompt 预估 token 并预留额度，避免请求已经打到上游后才发现用户超额。
@@ -129,6 +132,7 @@ public class ChatGatewayService {
         return tryComplete(context, request, endpoints, 0, plan, null);
     }
 
+    /** 执行不可整体缓存的流式补全，并在流结束后结算用量和发布审计 Trace。 */
     public Flux<String> stream(GatewayRequestContext context, JsonNode request) {
         /*
          * 流式请求同样先渲染 Prompt 模板。
@@ -146,6 +150,7 @@ public class ChatGatewayService {
         return tryStream(context, preparedRequest, endpoints, 0, plan);
     }
 
+    /** 按调用计划尝试非流式上游端点；仅在失败前未输出时进入下一个回退端点。 */
     private Mono<JsonNode> tryComplete(
             GatewayRequestContext context,
             JsonNode request,
@@ -201,6 +206,7 @@ public class ChatGatewayService {
                 });
     }
 
+    /** 按调用计划尝试流式上游端点；响应首块后失败不得切换端点以免混合输出。 */
     private Flux<String> tryStream(
             GatewayRequestContext context,
             JsonNode request,
@@ -290,6 +296,7 @@ public class ChatGatewayService {
                 });
     }
 
+    /** 在兼容上游响应中附加可审计的路由、用量、成本与输出长度预测元数据。 */
     private JsonNode enrich(JsonNode response, ModelEndpoint endpoint, GatewayUsage usage,
                             OutputTokenPrediction prediction) {
         if (response instanceof ObjectNode objectNode) {
@@ -318,6 +325,7 @@ public class ChatGatewayService {
         return response;
     }
 
+    /** 优先读取供应商输出 Token；缺失时根据返回内容按端点分词策略补算。 */
     private long completionTokens(JsonNode response, ModelEndpoint endpoint) {
         JsonNode usage = response.path("usage");
         if (usage.has("completion_tokens")) {
@@ -333,10 +341,12 @@ public class ChatGatewayService {
         return tokenEstimator.estimateCompletionTokens(endpoint, builder.toString());
     }
 
+    /** 从完整响应的 Usage 中读取提示词 Token，缺失时使用预先估算值。 */
     private long promptTokens(JsonNode response, long fallback) {
         return promptTokensFromUsage(response.path("usage"), fallback);
     }
 
+    /** 兼容 OpenAI 与 Anthropic 输入字段，并将缓存读写 Token 纳入实际提示词用量。 */
     private long promptTokensFromUsage(JsonNode usage, long fallback) {
         if (usage.has("prompt_tokens")) {
             return usage.path("prompt_tokens").asLong();
@@ -350,18 +360,21 @@ public class ChatGatewayService {
         return fallback;
     }
 
+    /** 兼容不同供应商的输出 Token 字段，缺失遥测时回退到局部估算。 */
     private long completionTokensFromUsage(JsonNode usage, long fallback) {
         if (usage.has("completion_tokens")) return usage.path("completion_tokens").asLong();
         if (usage.has("output_tokens")) return usage.path("output_tokens").asLong();
         return fallback;
     }
 
+    /** 判断响应是否携带可用于正式结算的任一供应商 Usage 字段。 */
     private boolean hasProviderUsage(JsonNode response) {
         JsonNode usage = response.path("usage");
         return usage.has("prompt_tokens") || usage.has("input_tokens")
                 || usage.has("completion_tokens") || usage.has("output_tokens");
     }
 
+    /** 解析 OpenAI 或 Anthropic 流事件中的文本增量和可选 Usage；无法解析时保留原始文本。 */
     private StreamChunk parseStreamChunk(String chunk) {
         if (chunk == null || chunk.isBlank() || "[DONE]".equals(chunk.trim())) {
             return new StreamChunk("", null);
@@ -387,9 +400,11 @@ public class ChatGatewayService {
         }
     }
 
+    /** 表示单个上游流事件解析出的文本增量及可选供应商用量。 */
     private record StreamChunk(String text, JsonNode usage) {
     }
 
+    /** 取所有候选端点中最大的提示词估算，保证故障回退不会突破已预占额度。 */
     private long reservePromptTokens(List<ModelEndpoint> endpoints, JsonNode request) {
         return endpoints.stream()
                 .mapToLong(endpoint -> tokenEstimator.estimatePromptTokens(endpoint, request))
@@ -397,6 +412,7 @@ public class ChatGatewayService {
                 .orElseGet(() -> tokenEstimator.estimatePromptTokens(request));
     }
 
+    /** 以最坏候选端点成本预占配额，并先拒绝超过调用方成本预算的请求。 */
     private ReservationPlan reserveUsage(GatewayRequestContext context, List<ModelEndpoint> endpoints, JsonNode request) {
         long promptTokens = reservePromptTokens(endpoints, request);
         OutputTokenPrediction prediction = endpoints.stream()
@@ -417,6 +433,7 @@ public class ChatGatewayService {
         return new ReservationPlan(reservation, prediction);
     }
 
+    /** 将额度预占凭证与本次选择的输出预测绑定，防止结算口径漂移。 */
     private record ReservationPlan(UsageReservation reservation, OutputTokenPrediction prediction) {
     }
 
@@ -437,6 +454,7 @@ public class ChatGatewayService {
                 error == null || error.getMessage() == null ? "" : error.getMessage(), cost, currency));
     }
 
+    /** 将网关响应中的成本字段安全转为小数，非法或缺失值视为零。 */
     private BigDecimal decimal(JsonNode node) {
         try {
             return node.isNumber() ? node.decimalValue() : new BigDecimal(node.asText("0"));
@@ -445,12 +463,14 @@ public class ChatGatewayService {
         }
     }
 
+    /** 为非流式调用记录完整成功指标，并以总延迟近似首 Token 时间。 */
     private void logSuccess(GatewayRequestContext context, ModelEndpoint endpoint, GatewayUsage usage,
                             OutputTokenPrediction prediction, Instant started) {
         logSuccess(context, endpoint, usage, prediction, started,
                 Duration.between(started, Instant.now()).toMillis());
     }
 
+    /** 记录成功调用的审计日志、用量报表和性能指标，流式场景保留真实 TTFT。 */
     private void logSuccess(GatewayRequestContext context, ModelEndpoint endpoint, GatewayUsage usage,
                             OutputTokenPrediction prediction, Instant started, Long ttftMs) {
         long latencyMs = Duration.between(started, Instant.now()).toMillis();

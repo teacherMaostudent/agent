@@ -13,6 +13,7 @@ class LlmGatewayClient:
     """The sole model adapter used by Governance workflows."""
 
     def __init__(self, settings: Settings) -> None:
+        """保存冻结的网关配置，并构建随请求签发的工作负载身份提供器。"""
         self._settings = settings
         self._workload_identity = build_workload_token_provider(settings)
 
@@ -32,6 +33,7 @@ class LlmGatewayClient:
         model_revision: str = "",
         route_version: str = "",
     ) -> dict[str, Any]:
+        """通过受控 Gateway 调用冻结模型路由，携带工作负载身份与可审计版本字段。"""
         headers = {
             "X-Api-Key": self._settings.llm_gateway_api_key,
             "X-Tenant-Id": tenant_id,

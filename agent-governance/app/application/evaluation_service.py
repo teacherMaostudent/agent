@@ -62,12 +62,12 @@ DEFAULT_JUDGE_PROMPT = (
 
 
 def _now() -> str:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _now 对应的当前组件内部业务步骤。"""
     return datetime.now(UTC).isoformat()
 
 
 def _id(value: object | None = None) -> str:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _id 对应的当前组件内部业务步骤。"""
     return str(value).strip() if value is not None and str(value).strip() else uuid4().hex
 
 
@@ -80,13 +80,13 @@ class EvaluationService:
         settings: Settings,
         gateway: LlmGatewayClient,
     ) -> None:
-        """Initialize EvaluationService dependencies and local state."""
+        """初始化该组件的依赖、配置与内部状态。"""
         self._repository = repository
         self._settings = settings
         self._gateway = gateway
 
     async def snapshot(self, tenant_id: str) -> dict[str, Any]:
-        """Perform snapshot within the EvaluationService ownership boundary."""
+        """处理 snapshot 对应的当前组件内部业务步骤。"""
         return {
             "store": "governance",
             "promptVersions": await self._repository.list_documents(tenant_id, PROMPT_VERSION),
@@ -108,7 +108,7 @@ class EvaluationService:
     async def upsert_asset(
         self, tenant_id: str, kind: str, request: dict[str, Any]
     ) -> dict[str, Any]:
-        """Persist state while preserving the transaction and audit boundary."""
+        """处理 upsert_asset 对应的当前组件内部业务步骤。"""
         saved = dict(request)
         saved["id"] = _id(saved.get("id"))
         saved["createdAt"] = _now()
@@ -118,7 +118,7 @@ class EvaluationService:
         return await self._repository.upsert_document(tenant_id, kind, saved["id"], saved)
 
     async def record_trace(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
-        """Run the bounded record trace operation and surface failures."""
+        """处理 record_trace 对应的当前组件内部业务步骤。"""
         saved = dict(request)
         saved["traceId"] = _id(saved.get("traceId"))
         saved["timestamp"] = _now()
@@ -127,7 +127,7 @@ class EvaluationService:
         )
 
     async def record_gateway_trace(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
-        """Persist an eligible trace only after applying capture and retention policy."""
+        """处理 record_gateway_trace 对应的当前组件内部业务步骤。"""
         request_id = _id(request.get("requestId"))
         success = bool(request.get("success"))
         if success and not sampled(request_id, self._settings.online_trace_sample_rate):
@@ -198,7 +198,7 @@ class EvaluationService:
     async def record_feedback(
         self, tenant_id: str, user_id: str, request: dict[str, Any]
     ) -> dict[str, Any]:
-        """Run the bounded record feedback operation and surface failures."""
+        """处理 record_feedback 对应的当前组件内部业务步骤。"""
         sample_id = _id(request.get("requestId"))
         sample = await self._repository.get_document(tenant_id, ONLINE_SAMPLE, sample_id) or {
             "id": sample_id,
@@ -224,7 +224,7 @@ class EvaluationService:
         return await self._repository.upsert_document(tenant_id, ONLINE_SAMPLE, sample_id, sample)
 
     async def online_snapshot(self, tenant_id: str) -> dict[str, Any]:
-        """Perform online snapshot within the EvaluationService ownership boundary."""
+        """处理 online_snapshot 对应的当前组件内部业务步骤。"""
         samples = await self._repository.list_documents(tenant_id, ONLINE_SAMPLE)
         candidates = await self._repository.list_documents(tenant_id, GOLDEN_CANDIDATE)
         return {
@@ -238,7 +238,7 @@ class EvaluationService:
         }
 
     async def judge_online(self, tenant_id: str, user_id: str, sample_id: str) -> dict[str, Any]:
-        """Perform judge online within the EvaluationService ownership boundary."""
+        """处理 judge_online 对应的当前组件内部业务步骤。"""
         sample = await self._repository.get_document(tenant_id, ONLINE_SAMPLE, sample_id)
         if not sample:
             raise NotFoundError(f"Unknown online sample: {sample_id}")
@@ -292,7 +292,7 @@ class EvaluationService:
         sample_id: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
-        """Perform review online sample within the EvaluationService ownership boundary."""
+        """处理 review_online_sample 对应的当前组件内部业务步骤。"""
         sample = await self._repository.get_document(tenant_id, ONLINE_SAMPLE, sample_id)
         if not sample:
             raise NotFoundError(f"Unknown online sample: {sample_id}")
@@ -330,7 +330,7 @@ class EvaluationService:
         candidate_id: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
-        """Perform review golden candidate within the EvaluationService ownership boundary."""
+        """处理 review_golden_candidate 对应的当前组件内部业务步骤。"""
         candidate = await self._repository.get_document(tenant_id, GOLDEN_CANDIDATE, candidate_id)
         if not candidate:
             raise NotFoundError(f"Unknown Golden candidate: {candidate_id}")
@@ -361,7 +361,7 @@ class EvaluationService:
         )
 
     async def run_regression(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
-        """Run the bounded run regression operation and surface failures."""
+        """执行 run_regression 对应的受控业务步骤。"""
         answers = request.get("answerByQuestion") or {}
         cases = await self._repository.list_documents(tenant_id, GOLDEN_CASE)
         execution_snapshot = await self._compile_snapshot(
@@ -403,7 +403,7 @@ class EvaluationService:
         user_id: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
-        """Perform judge within the EvaluationService ownership boundary."""
+        """处理 judge 对应的当前组件内部业务步骤。"""
         rubric = await self._rubric(tenant_id, request.get("rubricId"))
         all_cases = await self._repository.list_documents(tenant_id, GOLDEN_CASE)
         selected = set(request.get("caseIds") or [])
@@ -506,7 +506,7 @@ class EvaluationService:
         return await self._repository.upsert_document(tenant_id, JUDGE_RUN, run["id"], run)
 
     async def calibrate(self, tenant_id: str, judge_run_id: str) -> dict[str, Any]:
-        """Compare frozen Judge verdicts with expert labels, not raw LLM output."""
+        """处理 calibrate 对应的当前组件内部业务步骤。"""
         run = await self._repository.get_document(tenant_id, JUDGE_RUN, judge_run_id)
         if not run:
             raise NotFoundError(f"Unknown judge run: {judge_run_id}")
@@ -569,7 +569,11 @@ class EvaluationService:
         )
 
     async def weekly_calibration_report(self, tenant_id: str) -> dict[str, Any]:
-        """Produce the weekly drift signal and a stratified human-review queue."""
+        """处理 weekly_calibration_report 对应的当前组件内部业务步骤。
+
+
+        Produce the weekly drift signal and a stratified human-review queue.
+        """
         calibrations = await self._repository.list_documents(tenant_id, CALIBRATION_RUN, 200)
         samples = await self._repository.list_documents(tenant_id, ONLINE_SAMPLE, 2_000)
         newest = calibrations[0] if calibrations else {"metrics": {}}
@@ -602,7 +606,7 @@ class EvaluationService:
         cases: list[dict[str, Any]],
         rubric: dict[str, Any],
     ) -> dict[str, Any]:
-        """Freeze every variable that can change an evaluation result before execution."""
+        """创建或构建 _compile_snapshot 对应的受控业务步骤。"""
         prompt = await self._prompt(tenant_id, request.get("promptVersionId"))
         snapshot = {
             "id": f"evalsnap_{uuid4().hex}",
@@ -641,7 +645,7 @@ class EvaluationService:
         )
 
     async def _prompt(self, tenant_id: str, prompt_id: object) -> dict[str, Any]:
-        """Resolve a versioned prompt; never silently read a mutable prompt at run time."""
+        """处理 _prompt 对应的当前组件内部业务步骤。"""
         if prompt_id:
             prompt = await self._repository.get_document(tenant_id, PROMPT_VERSION, str(prompt_id))
             if not prompt:
@@ -652,7 +656,7 @@ class EvaluationService:
         return {"id": "governance-judge-v1", "version": "1.0.0", "system": DEFAULT_JUDGE_PROMPT}
 
     def _model_spec(self, role: str) -> dict[str, str]:
-        """Bind an evaluator role to a configured model revision and route release."""
+        """处理 _model_spec 对应的当前组件内部业务步骤。"""
         return {
             "model": str(getattr(self._settings, f"judge_{role}_model")),
             "revision": str(getattr(self._settings, f"judge_{role}_model_revision")),
@@ -661,7 +665,7 @@ class EvaluationService:
     async def quality_gate(
         self, tenant_id: str, run_id: str, request: dict[str, Any] | None
     ) -> dict[str, Any]:
-        """Perform quality gate within the EvaluationService ownership boundary."""
+        """处理 quality_gate 对应的当前组件内部业务步骤。"""
         run = await self._repository.get_document(tenant_id, JUDGE_RUN, run_id)
         if not run:
             raise NotFoundError(f"Unknown judge run: {run_id}")
@@ -721,7 +725,7 @@ class EvaluationService:
         return await self._repository.upsert_document(tenant_id, QUALITY_GATE, result["id"], result)
 
     async def _rubric(self, tenant_id: str, rubric_id: object) -> dict[str, Any]:
-        """Internal helper for EvaluationService; preserve its caller-facing invariant."""
+        """处理 _rubric 对应的当前组件内部业务步骤。"""
         resolved = str(rubric_id or "default")
         rubric = await self._repository.get_document(tenant_id, JUDGE_RUBRIC, resolved)
         if rubric:
@@ -774,7 +778,7 @@ class EvaluationService:
         prompt: dict[str, Any],
         case: dict[str, Any],
     ) -> str:
-        """Internal helper for EvaluationService; preserve its caller-facing invariant."""
+        """处理 _candidate_answer 对应的当前组件内部业务步骤。"""
         response = await self._gateway.complete(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -802,7 +806,7 @@ class EvaluationService:
         prompt: dict[str, Any] | None = None,
         prior: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Internal helper for EvaluationService; preserve its caller-facing invariant."""
+        """处理 _judge_once 对应的当前组件内部业务步骤。"""
         payload = {
             "question": case.get("question"),
             "groundTruth": case.get("groundTruth"),
@@ -856,13 +860,17 @@ class EvaluationService:
 
 
 def _hash(value: object) -> str:
-    """Hash canonical JSON so a run can prove precisely which inputs it consumed."""
+    """处理 _hash 对应的当前组件内部业务步骤。"""
     serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return sha256(serialized.encode()).hexdigest()
 
 
 def _validated_judge_output(text: str) -> dict[str, Any]:
-    """Fail closed when a provider ignores the requested strict JSON schema."""
+    """处理 _validated_judge_output 对应的当前组件内部业务步骤。
+
+
+    Fail closed when a provider ignores the requested strict JSON schema.
+    """
     try:
         value = json.loads(text)
     except json.JSONDecodeError:
@@ -886,12 +894,12 @@ def _validated_judge_output(text: str) -> dict[str, Any]:
 
 
 def _tokens(value: str) -> set[str]:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _tokens 对应的当前组件内部业务步骤。"""
     return {item for item in re.split(r"[\W_]+", value.lower()) if item}
 
 
 def _similarity(left: str, right: str) -> float:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _similarity 对应的当前组件内部业务步骤。"""
     left_tokens = _tokens(left)
     if not left_tokens or not right:
         return 0.0
@@ -900,13 +908,13 @@ def _similarity(left: str, right: str) -> float:
 
 
 def _average(values: Any) -> float:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _average 对应的当前组件内部业务步骤。"""
     items = [float(item) for item in values]
     return round(sum(items) / len(items), 4) if items else 0.0
 
 
 def _retrieval_metrics(case: dict[str, Any], retrieved: list[dict[str, Any]]) -> dict[str, float]:
-    """Compute retrieval metrics from immutable evidence IDs, never answer-text similarity."""
+    """处理 _retrieval_metrics 对应的当前组件内部业务步骤。"""
     expected = set(case.get("expectedEvidenceIds") or [])
     ids = [
         str(item.get("id") or item.get("chunkId") or item.get("documentId") or "")
@@ -927,7 +935,7 @@ def _retrieval_metrics(case: dict[str, Any], retrieved: list[dict[str, Any]]) ->
 
 
 def _average_retrieval(results: list[dict[str, Any]]) -> dict[str, float]:
-    """Aggregate only deterministic evidence-level metrics across the frozen run."""
+    """处理 _average_retrieval 对应的当前组件内部业务步骤。"""
     return {
         key: _average(item["retrieval"][key] for item in results)
         for key in ("recallAtK", "precisionAtK", "mrr", "ndcg")
@@ -937,7 +945,7 @@ def _average_retrieval(results: list[dict[str, Any]]) -> dict[str, float]:
 def _group_metrics(
     results: list[dict[str, Any]], cases: list[dict[str, Any]]
 ) -> dict[str, dict[str, int]]:
-    """Expose risk-group failures so averages cannot hide a critical regression."""
+    """处理 _group_metrics 对应的当前组件内部业务步骤。"""
     criticality = {item["id"]: str(item.get("criticality") or "normal").lower() for item in cases}
     groups: dict[str, dict[str, int]] = {}
     for result in results:
@@ -948,7 +956,7 @@ def _group_metrics(
 
 
 def _kappa(pairs: list[tuple[bool, bool, dict[str, Any]]]) -> float:
-    """Cohen's kappa for expert-versus-Judge binary labels."""
+    """处理 _kappa 对应的当前组件内部业务步骤。"""
     total = len(pairs)
     observed = sum(expected == actual for expected, actual, _ in pairs) / total
     expected_positive = sum(expected for expected, _, _ in pairs) / total
@@ -958,7 +966,7 @@ def _kappa(pairs: list[tuple[bool, bool, dict[str, Any]]]) -> float:
 
 
 def _weighted_score(scores: dict[str, int], rubric: dict[str, Any]) -> int:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _weighted_score 对应的当前组件内部业务步骤。"""
     dimensions = rubric.get("dimensions") or []
     total = sum(Decimal(str(item.get("weight", 0))) for item in dimensions)
     if not total:
@@ -973,7 +981,7 @@ def _weighted_score(scores: dict[str, int], rubric: dict[str, Any]) -> int:
 def _consensus(
     left: dict[str, Any], right: dict[str, Any], rubric: dict[str, Any]
 ) -> dict[str, Any]:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _consensus 对应的当前组件内部业务步骤。"""
     scores = {
         item["name"]: round(
             (
@@ -1002,7 +1010,7 @@ def _consensus(
 
 
 def _question(request: dict[str, Any]) -> str:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _question 对应的当前组件内部业务步骤。"""
     messages = request.get("messages") or []
     for item in reversed(messages):
         if item.get("role") == "user":
@@ -1011,7 +1019,7 @@ def _question(request: dict[str, Any]) -> str:
 
 
 def _answer(response: dict[str, Any]) -> str:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _answer 对应的当前组件内部业务步骤。"""
     choices = response.get("choices") or []
     if choices:
         return str((choices[0].get("message") or {}).get("content") or "")

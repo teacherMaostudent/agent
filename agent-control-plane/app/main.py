@@ -23,11 +23,13 @@ from app.core.config import Settings
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    """组装 HTTP 服务及其安全中间件；身份认证先于所有发布管理路由执行。"""
     resolved_settings = settings or Settings()
     container = AppContainer(resolved_settings)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
+        """在开始接流量前初始化存储，并保证关闭时停止后台协调器。"""
         await container.start()
         application.state.container = container
         try:
@@ -64,6 +66,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.middleware("http")
     async def trace_context(request: Request, call_next):
+        """沿用可信 Trace ID 或生成新 ID，并将其回写到响应便于跨服务关联。"""
         request.state.trace_id = request.headers.get("X-Trace-Id") or f"trace_{uuid4().hex}"
         response = await call_next(request)
         response.headers["X-Trace-Id"] = request.state.trace_id
@@ -74,6 +77,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: Request,
         error: ControlPlaneError,
     ) -> JSONResponse:
+        """将受控领域错误映射为稳定 HTTP 语义，避免泄漏底层存储异常。"""
         del request
         status_code = 400
         if isinstance(error, NotFoundError):

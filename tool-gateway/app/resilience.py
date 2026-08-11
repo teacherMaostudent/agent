@@ -18,12 +18,20 @@ from app.domain.errors import CircuitOpenError, RateLimitError
 
 class FixedWindowRateLimiter:
     def __init__(self) -> None:
-        """Initialize FixedWindowRateLimiter dependencies and local state."""
+        """初始化该组件的依赖、配置与内部状态。
+
+
+        Initialize FixedWindowRateLimiter dependencies and local state.
+        """
         self._events: dict[str, deque[float]] = defaultdict(deque)
         self._lock = Lock()
 
     def acquire(self, key: str, limit_per_minute: int) -> None:
-        """Reject above-limit work before any external side effect begins."""
+        """处理 acquire 对应的当前组件内部业务步骤。
+
+
+        Reject above-limit work before any external side effect begins.
+        """
         now = monotonic()
         cutoff = now - 60
         with self._lock:
@@ -44,11 +52,19 @@ class RedisFixedWindowRateLimiter:
     """
 
     def __init__(self, redis_url: str) -> None:
-        """Initialize RedisFixedWindowRateLimiter dependencies and local state."""
+        """初始化该组件的依赖、配置与内部状态。
+
+
+        Initialize RedisFixedWindowRateLimiter dependencies and local state.
+        """
         self._client = redis.Redis.from_url(redis_url, decode_responses=True)
 
     def acquire(self, key: str, limit_per_minute: int) -> None:
-        """Perform acquire within the RedisFixedWindowRateLimiter ownership boundary."""
+        """处理 acquire 对应的当前组件内部业务步骤。
+
+
+        Perform acquire within the RedisFixedWindowRateLimiter ownership boundary.
+        """
         window = int(time() // 60)
         allowed = self._client.eval(
             self._SCRIPT,
@@ -61,7 +77,11 @@ class RedisFixedWindowRateLimiter:
             raise RateLimitError("tool rate limit exceeded")
 
     def ping(self) -> bool:
-        """Perform ping within the RedisFixedWindowRateLimiter ownership boundary."""
+        """处理 ping 对应的当前组件内部业务步骤。
+
+
+        Perform ping within the RedisFixedWindowRateLimiter ownership boundary.
+        """
         return bool(self._client.ping())
 
 
@@ -73,12 +93,20 @@ class _CircuitState:
 
 class CircuitBreaker:
     def __init__(self) -> None:
-        """Initialize CircuitBreaker dependencies and local state."""
+        """初始化该组件的依赖、配置与内部状态。
+
+
+        Initialize CircuitBreaker dependencies and local state.
+        """
         self._states: dict[str, _CircuitState] = defaultdict(_CircuitState)
         self._lock = Lock()
 
     def allow(self, key: str, reset_seconds: float) -> None:
-        """Fail fast while an unhealthy upstream circuit is open."""
+        """处理 allow 对应的当前组件内部业务步骤。
+
+
+        Fail fast while an unhealthy upstream circuit is open.
+        """
         now = monotonic()
         with self._lock:
             state = self._states[key]
@@ -91,12 +119,20 @@ class CircuitBreaker:
             raise CircuitOpenError("tool circuit breaker is open")
 
     def record_success(self, key: str) -> None:
-        """Run the bounded record success operation and surface failures."""
+        """处理 record_success 对应的当前组件内部业务步骤。
+
+
+        Run the bounded record success operation and surface failures.
+        """
         with self._lock:
             self._states[key] = _CircuitState()
 
     def record_failure(self, key: str, threshold: int) -> None:
-        """Open a circuit only after the catalogued failure threshold is reached."""
+        """处理 record_failure 对应的当前组件内部业务步骤。
+
+
+        Open a circuit only after the catalogued failure threshold is reached.
+        """
         with self._lock:
             state = self._states[key]
             state.consecutive_failures += 1

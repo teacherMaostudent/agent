@@ -67,6 +67,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_security(self) -> Settings:
+        """在生产启动前拒绝缺失身份、持久化、门禁或目录校验的危险配置。"""
         if self.environment.lower() in {"production", "prod"}:
             unsafe: list[str] = []
             if not self.enforce_admin_role:

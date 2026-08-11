@@ -17,6 +17,7 @@ class AppContainer:
     """Construct Governance services with one shared persistence boundary."""
 
     def __init__(self, settings: Settings) -> None:
+        """装配审计、评测、合规服务及其共享持久化和模型调用边界。"""
         self.settings = settings
         self.schema_registry = SchemaRegistry(settings.contracts_schema_dir)
         self.repository = (
@@ -36,4 +37,5 @@ class AppContainer:
         )
 
     async def start(self) -> None:
+        """在接收审计或评测请求前初始化唯一持久化边界。"""
         await self.repository.initialize()

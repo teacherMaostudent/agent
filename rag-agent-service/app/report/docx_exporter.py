@@ -71,6 +71,7 @@ def _add_runs(paragraph, text: str, highlight: list[str] | None = None) -> None:
 
 
 def _is_table_row(line: str) -> bool:
+    """判断 Markdown 行是否具有最小表格行结构，供导出器切换渲染模式。"""
     s = line.strip()
     return s.startswith("|") and s.endswith("|") and s.count("|") >= 2
 
@@ -82,6 +83,7 @@ def _is_separator_row(line: str) -> bool:
 
 
 def _split_row(line: str) -> list[str]:
+    """去除 Markdown 表格边界并拆分单元格，同时清理单元格两端空白。"""
     return [c.strip() for c in line.strip().strip("|").split("|")]
 
 
@@ -204,6 +206,7 @@ def _render_table(doc: Document, block: list[str], highlight: list[str] | None =
 
 
 def _has_style(doc: Document, name: str) -> bool:
+    """安全探测 Word 文档是否包含命名样式，避免缺失样式导致导出失败。"""
     try:
         _ = doc.styles[name]
         return True

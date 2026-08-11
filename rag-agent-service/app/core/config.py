@@ -146,6 +146,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_llm_gateway(self) -> "Settings":
+        """拒绝不满足生产边界的组合配置，避免服务以不安全的隐式降级方式启动。"""
         if self.temporal_enabled and self.persistence != "postgres":
             raise ValueError(
                 "RAG_TEMPORAL_ENABLED requires RAG_PERSISTENCE=postgres so workflow "
@@ -216,18 +217,22 @@ class Settings(BaseSettings):
 
     @property
     def upload_dir(self) -> Path:
+        """返回上传原件的本地暂存目录；生产权威副本位于对象存储。"""
         return self.data_dir / "uploads"
 
     @property
     def report_dir(self) -> Path:
+        """返回报告缓存目录；不可变归档由对象存储或 WORM 存储负责。"""
         return self.data_dir / "reports"
 
     @property
     def regulation_dir(self) -> Path:
+        """返回本地检索素材目录，仅供开发或可重建缓存使用。"""
         return self.data_dir / "regulations"
 
     @property
     def checklist_dir(self) -> Path:
+        """返回检查清单的本地目录；业务发布不应依赖未版本化的本地文件。"""
         return self.data_dir / "checklists"
 
     @property
@@ -247,23 +252,28 @@ class Settings(BaseSettings):
 
     @property
     def ingestion_jobs_path(self) -> Path:
+        """返回 SQLite 开发队列路径；生产任务状态必须使用 PostgreSQL/Temporal。"""
         return self.data_dir / "ingestion_jobs.db"
 
     @property
     def runtime_store_path(self) -> Path:
+        """保留迁移兼容的 Runtime 状态路径；独立 Runtime 服务不应写入此路径。"""
         return self.data_dir / "runtime_runs.db"
 
     @property
     def runtime_checkpoint_path(self) -> Path:
+        """保留迁移兼容的检查点路径；生产执行检查点属于 Runtime 自身存储。"""
         return self.data_dir / "runtime_checkpoints.db"
 
     @property
     def runtime_jobs_path(self) -> Path:
+        """保留迁移兼容的任务路径；RAG 摄取流程不使用 Runtime 队列。"""
         return self.data_dir / "runtime_jobs.db"
 
 
 @lru_cache
 def get_settings() -> Settings:
+    """缓存并初始化目录配置；只在进程启动阶段调用，避免运行中读取环境漂移。"""
     settings = Settings()
     for path in [
         settings.data_dir,

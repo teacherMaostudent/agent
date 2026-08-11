@@ -11,6 +11,7 @@ from app.storage.sqlite_kv import SqliteKv
 
 class AgentContextContainer:
     def __init__(self) -> None:
+        """构建 Context 依赖：会话存储、工作负载身份及可选 RAG HTTPS 客户端。"""
         self.settings = get_settings()
         self.workload_identity = build_workload_token_provider(self.settings)
         backend = None
@@ -44,4 +45,5 @@ class AgentContextContainer:
         )
 
     def close(self) -> None:
+        """关闭会话存储；HTTP 客户端为短生命周期请求客户端，无独立连接池待释放。"""
         self.store.close()

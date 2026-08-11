@@ -21,6 +21,9 @@ public class BadCaseService {
     private final RuntimeStateRepository stateRepository;
     private final List<BadCaseRecord> memory = new ArrayList<>();
 
+    /**
+     * 初始化 bad case service 所需的依赖与运行期状态。
+    */
     public BadCaseService(ObjectProvider<RuntimeStateRepository> stateRepository) {
         this.stateRepository = stateRepository.getIfAvailable();
     }
@@ -127,6 +130,9 @@ public class BadCaseService {
         return first == null || first.isBlank() ? fallback : first;
     }
 
+    /**
+     * 执行 bad case request 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public record BadCaseRequest(
             String title,
             String model,
@@ -143,9 +149,15 @@ public class BadCaseService {
     ) {
     }
 
+    /**
+     * 执行 resolve bad case request 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public record ResolveBadCaseRequest(String rootCause, String fixStrategy, String evaluationEvidence, String owner) {
     }
 
+    /**
+     * 执行 bad case record 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public record BadCaseRecord(
             String id,
             Instant createdAt,

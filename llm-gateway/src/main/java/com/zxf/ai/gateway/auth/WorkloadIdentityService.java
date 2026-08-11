@@ -24,6 +24,9 @@ public class WorkloadIdentityService {
     private volatile String accessToken = "";
     private volatile Instant expiresAt = Instant.EPOCH;
 
+    /**
+     * 初始化 workload identity service 所需的依赖与运行期状态。
+    */
     public WorkloadIdentityService(
             WebClient.Builder builder,
             @Value("${workload-identity.token-url:}") String tokenUrl,
@@ -40,10 +43,16 @@ public class WorkloadIdentityService {
         this.scope = scope;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 is enabled 的值，供调用方进行受控决策。
+    */
     public boolean isEnabled() {
         return !tokenUrl.isBlank() && !clientId.isBlank() && !clientSecret.isBlank();
     }
 
+    /**
+     * 执行 authorization header 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public Mono<String> authorizationHeader() {
         if (!isEnabled()) {
             return Mono.just("");

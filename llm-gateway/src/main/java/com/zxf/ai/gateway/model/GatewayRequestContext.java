@@ -28,10 +28,12 @@ public record GatewayRequestContext(
         boolean stream,
         Instant startedAt
 ) {
+    /** 为直连兼容客户端创建最小执行上下文，并使用公共租户默认值。 */
     public static GatewayRequestContext create(String requestId, String userId, String requestedModel, boolean stream) {
         return create(requestId, "public", userId, requestedModel, stream);
     }
 
+    /** 为指定租户的直连客户端创建上下文，并补全 Trace 与运行标识。 */
     public static GatewayRequestContext create(String requestId, String tenantId, String userId, String requestedModel, boolean stream) {
         return create(requestId, requestId, tenantId, userId, null, null, null,
                 requestId, null, null, "unspecified", requestedModel, stream);
@@ -41,6 +43,7 @@ public record GatewayRequestContext(
      * Creates a fully correlated context while applying stable defaults for
      * direct, non-Agent OpenAI-compatible clients.
      */
+    /** 为 Agent 调用创建完整关联上下文，同时为缺失的稳定字段应用明确默认值。 */
     public static GatewayRequestContext create(
             String requestId,
             String traceId,
@@ -59,6 +62,7 @@ public record GatewayRequestContext(
                 sessionId, runId, purpose, costBudget, "unspecified", requestedModel, stream);
     }
 
+    /** 创建带数据区域约束的完整上下文，所有默认值均在入口处固定以便审计。 */
     public static GatewayRequestContext create(
             String requestId,
             String traceId,
@@ -98,6 +102,7 @@ public record GatewayRequestContext(
         );
     }
 
+    /** 返回非空白输入的去空格值，否则返回不可为空的业务默认值。 */
     private static String valueOrDefault(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value.trim();
     }

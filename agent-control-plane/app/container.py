@@ -25,6 +25,7 @@ class AppContainer:
     """Build adapters once and close them in reverse dependency order."""
 
     def __init__(self, settings: Settings, *, build_orchestrator: bool = True) -> None:
+        """按配置装配仓储、外部治理客户端与发布编排器，集中管理其生命周期。"""
         self.settings = settings
         self.repository = (
             PostgresRepository(
@@ -64,13 +65,21 @@ class AppContainer:
         )
 
     async def start(self) -> None:
-        """Initialize persistence before serving release-management requests."""
+        """处理 start 对应的当前组件内部业务步骤。
+
+
+        Initialize persistence before serving release-management requests.
+        """
         await self.repository.initialize()
         if not self.settings.temporal_enabled:
             self._monitor_task = asyncio.create_task(self._monitor_model_releases())
 
     async def stop(self) -> None:
-        """Release workflow and repository resources during process shutdown."""
+        """处理 stop 对应的当前组件内部业务步骤。
+
+
+        Release workflow and repository resources during process shutdown.
+        """
         if self._monitor_task:
             self._monitor_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -79,6 +88,7 @@ class AppContainer:
             self.release_orchestrator.close()
 
     async def _monitor_model_releases(self) -> None:
+        """非 Temporal 模式下由持久化租约选主监控，避免多副本重复推进灰度。"""
         while True:
             await asyncio.sleep(self.settings.model_release_monitor_interval_seconds)
             acquired = await self.repository.acquire_lease(

@@ -13,18 +13,17 @@ _SECRET_PATTERNS = (
 
 
 def redact_text(value: str) -> str:
-    """Remove common credentials and direct identifiers from untrusted text."""
+    """移除常见凭据和邮箱标识；这是提示前防线，不替代数据分类或 DLP。"""
     for pattern, replacement in _SECRET_PATTERNS:
         value = pattern.sub(replacement, value)
     return value
 
 
 def bound_untrusted(value: Any, max_chars: int = 12_000) -> Any:
-    """Apply deterministic size and collection limits before prompting a model.
+    """在进入模型提示词前施加确定的文本和集合上限。
 
-    Tool, retrieval and scan results are observations rather than instructions;
-    limiting them here prevents a large or hostile payload from dominating a
-    subsequent planning or decision prompt.
+    工具、检索与扫描结果都是观察数据而非指令；在此限制它们可防止大体积或恶意负载主导后续规划
+    或决策提示词。
     """
     if isinstance(value, str):
         return redact_text(value[:max_chars])

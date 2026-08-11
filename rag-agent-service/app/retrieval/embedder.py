@@ -23,15 +23,19 @@ class HashEmbedder:
     name = "hash"
 
     def __init__(self, dim: int = 384) -> None:
+        """设置稳定哈希向量维度，索引与查询必须使用同一维度。"""
         self.dim = dim
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """批量生成本地确定性向量，不产生网络调用或供应商费用。"""
         return [self._embed(t) for t in texts]
 
     def embed(self, text: str) -> list[float]:
+        """生成单条查询/片段向量，复用与批量路径一致的算法。"""
         return self._embed(text)
 
     def _embed(self, text: str) -> list[float]:
+        """将 token 映射到哈希桶；该回退仅保障可用性，不提供深层语义理解。"""
         vector = [0.0] * self.dim
         for token in tokenize(text):
             digest = hashlib.sha256(token.encode("utf-8")).digest()
@@ -47,12 +51,15 @@ class QwenEmbedder:
     name = "qwen"
 
     def __init__(self, client: QwenEmbeddingClient) -> None:
+        """注入受网关/密钥配置保护的供应商客户端。"""
         self.client = client
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """委托远端批量嵌入；传输或配额错误应由上层摄取任务记录并重试。"""
         return self.client.embed_batch(texts)
 
     def embed(self, text: str) -> list[float]:
+        """委托远端单条嵌入，用于查询时与同版本索引比较。"""
         return self.client.embed(text)
 
 

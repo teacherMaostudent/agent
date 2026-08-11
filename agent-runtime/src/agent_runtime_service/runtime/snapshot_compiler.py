@@ -43,12 +43,12 @@ class CompiledAgentPlan(BaseModel):
 
     @property
     def retrieval_top_k(self) -> int:
-        """Perform retrieval top k within the CompiledAgentPlan ownership boundary."""
+        """返回发布知识绑定中最大的候选数，用于兼容未提供有效策略的旧快照。"""
         return max((int(item.get("top_k", 8)) for item in self.knowledge), default=8)
 
     @property
     def knowledge_filters(self) -> dict[str, Any]:
-        """Perform knowledge filters within the CompiledAgentPlan ownership boundary."""
+        """按知识库汇总发布过滤条件；过滤条件属于快照契约而非模型建议。"""
         return {str(item["knowledge_base"]): item.get("filters", {}) for item in self.knowledge}
 
 
@@ -59,7 +59,11 @@ def compile_snapshot(
     agent_id: str,
     fallback_model: str,
 ) -> CompiledAgentPlan:
-    """Perform compile snapshot within the module ownership boundary."""
+    """将不可变发布快照编译成 Runtime 唯一接受的执行契约。
+
+    编译同时校验租户/Agent 身份、图可达性、Prompt 变量、模型路由与输出 Schema，
+    防止 Runtime 在执行时“猜测”草稿含义。空快照仅走明确标识的本地开发计划。
+    """
     if not snapshot:
         return _local_plan(fallback_model)
     if snapshot.get("schema_version") != "1.0":
@@ -138,7 +142,7 @@ def compile_snapshot(
 
 
 def render_prompt(plan: dict[str, Any], variables: dict[str, Any]) -> str:
-    """Perform render prompt within the module ownership boundary."""
+    """以声明变量渲染发布 Prompt；任何缺失变量都会拒绝执行而非静默留空。"""
     template = str(plan.get("prompt_template", ""))
     used = set(_VARIABLE.findall(template))
     missing = sorted(name for name in used if _resolve(variables, name) is None)
@@ -146,7 +150,7 @@ def render_prompt(plan: dict[str, Any], variables: dict[str, Any]) -> str:
         raise SnapshotCompileError(f"published prompt variables are missing: {missing}")
 
     def replace(match: re.Match[str]) -> str:
-        """Perform replace within the module ownership boundary."""
+        """解析单个 ``{{path}}`` 占位符；外层已验证缺失值，故不做隐式默认。"""
         value = _resolve(variables, match.group(1))
         return str(value) if value is not None else ""
 
@@ -154,7 +158,7 @@ def render_prompt(plan: dict[str, Any], variables: dict[str, Any]) -> str:
 
 
 def validate_tool_manifests(plan: dict[str, Any], manifests: list[dict[str, Any]]) -> None:
-    """Validate the required invariant before dependent execution can continue."""
+    """比对目录实况与发布工具绑定，阻止版本、风险或审批策略漂移。"""
     actual = {(str(item.get("name")), str(item.get("version"))): item for item in manifests}
     for binding in plan.get("tools", []):
         key = (str(binding.get("tool_name")), str(binding.get("version")))
@@ -173,7 +177,7 @@ def validate_tool_manifests(plan: dict[str, Any], manifests: list[dict[str, Any]
 
 
 def validate_final_output(plan: dict[str, Any], answer: str) -> None:
-    """Validate the required invariant before dependent execution can continue."""
+    """当发布 Prompt 声明输出 Schema 时，验证最终回答是符合约束的 JSON。"""
     schema = plan.get("prompt_output_schema")
     if not schema:
         return
@@ -191,7 +195,7 @@ def validate_final_output(plan: dict[str, Any], answer: str) -> None:
 
 
 def _reachable_order(entrypoint: str, edges: list[Any], node_kinds: dict[str, str]) -> list[str]:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """广度遍历发布图并拒绝未知边端点，供编译器发现不可达节点。"""
     adjacency: dict[str, list[str]] = {name: [] for name in node_kinds}
     for edge in edges:
         if not isinstance(edge, dict):
@@ -212,7 +216,7 @@ def _reachable_order(entrypoint: str, edges: list[Any], node_kinds: dict[str, st
 
 
 def _mapping(value: dict[str, Any], name: str) -> dict[str, Any]:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """取得必须为对象的快照分段；不接受宽松类型转换以免隐藏发布错误。"""
     item = value.get(name)
     if not isinstance(item, dict):
         raise SnapshotCompileError(f"published snapshot {name} is missing")
@@ -220,7 +224,7 @@ def _mapping(value: dict[str, Any], name: str) -> dict[str, Any]:
 
 
 def _required(value: dict[str, Any], name: str) -> Any:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """读取非空必填字段，并把缺失转成可定位的编译错误。"""
     item = value.get(name)
     if item is None or item == "":
         raise SnapshotCompileError(f"published snapshot field is required: {name}")
@@ -228,7 +232,7 @@ def _required(value: dict[str, Any], name: str) -> Any:
 
 
 def _resolve(values: dict[str, Any], path: str) -> Any:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """安全解析点分变量路径；中途不存在返回 None 交由渲染器统一拒绝。"""
     current: Any = values
     for part in path.split("."):
         if not isinstance(current, dict) or part not in current:
@@ -238,7 +242,7 @@ def _resolve(values: dict[str, Any], path: str) -> Any:
 
 
 def _local_plan(model: str) -> CompiledAgentPlan:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """构造显式标记为未版本化的本地开发计划，不能伪装成生产发布。"""
     return CompiledAgentPlan(
         contract_hash="local-unversioned",
         graph_id="runtime-default",

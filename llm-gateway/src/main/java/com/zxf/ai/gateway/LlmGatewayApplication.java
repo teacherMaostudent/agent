@@ -8,6 +8,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 @SpringBootApplication
 @EnableConfigurationProperties(GatewayProperties.class)
 public class LlmGatewayApplication {
+    /** 启动 Spring 容器，并加载网关路由、鉴权、限额与可观测性配置。 */
     public static void main(String[] args) {
         SpringApplication.run(LlmGatewayApplication.class, args);
     }

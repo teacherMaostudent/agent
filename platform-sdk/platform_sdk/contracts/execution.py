@@ -43,6 +43,11 @@ class ExecutionContext(BaseModel):
         model_policy_version: str = "local-unversioned",
         run_id: str | None = None,
     ) -> ExecutionContext:
+        """创建一次运行不可变的传播身份、截止时间和尝试预算。
+
+        ``run_id`` 可由异步队列预先分配以保持重试关联；否则本地生成。deadline 使用
+        UTC 绝对时间，避免跨服务因时区或相对超时产生不同判断。
+        """
         return cls(
             request_id=request_id,
             trace_id=trace_id,
@@ -60,6 +65,7 @@ class ExecutionContext(BaseModel):
         )
 
     def headers(self) -> dict[str, str]:
+        """生成内部调用的审计/预算头；租户和用户不在此处伪造，由认证层提供。"""
         return {
             "X-Request-Id": self.request_id,
             "X-Trace-Id": self.trace_id,
@@ -74,6 +80,7 @@ class ExecutionContext(BaseModel):
         }
 
     def remaining_seconds(self) -> float:
+        """计算距离绝对截止时间的非负秒数，供 HTTP 超时和降级决策使用。"""
         return max(0.0, (self.deadline_at - datetime.now(UTC)).total_seconds())
 
 

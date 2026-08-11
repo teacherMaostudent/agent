@@ -23,18 +23,18 @@ class SqliteRepository:
     """Serialize audit ledger writes so every tenant chain has one predecessor."""
 
     def __init__(self, database_path: Path, schema_path: Path) -> None:
-        """Initialize SqliteRepository dependencies and local state."""
+        """保存数据库与建表脚本路径，并初始化串行写锁以维护审计链前序关系。"""
         self._database_path = database_path
         self._schema_path = schema_path
         self._write_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
-        """Perform initialize within the SqliteRepository ownership boundary."""
+        """创建本地审计表并为旧数据补齐哈希链字段，保证升级后的链可验证。"""
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         schema = self._schema_path.read_text(encoding="utf-8")
 
         def operation() -> None:
-            """Perform operation within the module ownership boundary."""
+            """在独立连接中执行建表、字段迁移及历史审计事件哈希回填。"""
             with self._connect() as connection:
                 connection.executescript(schema)
                 columns = {
@@ -82,16 +82,16 @@ class SqliteRepository:
         await asyncio.to_thread(operation)
 
     async def healthcheck(self) -> bool:
-        """Perform healthcheck within the SqliteRepository ownership boundary."""
+        """通过最小查询确认 SQLite 连接与基础读路径可用。"""
         return await self._read(
             lambda connection: connection.execute("SELECT 1").fetchone() is not None
         )
 
     async def ingest(self, event: GovernanceEvent, findings: list[Finding]) -> bool:
-        """Perform ingest within the SqliteRepository ownership boundary."""
+        """原子写入治理事件和派生发现，并将事件追加到所属租户的哈希链。"""
 
         def operation(connection: sqlite3.Connection) -> bool:
-            """Perform operation within the module ownership boundary."""
+            """计算前序哈希、写入事件与发现；重复事件以唯一约束实现幂等拒绝。"""
             previous = connection.execute(
                 "SELECT event_hash FROM audit_events WHERE tenant_id = ? "
                 "ORDER BY sequence DESC LIMIT 1",
@@ -165,10 +165,10 @@ class SqliteRepository:
         return await self._write(operation)
 
     async def verify_audit_chain(self, tenant_id: str) -> dict[str, Any]:
-        """Validate the required invariant before dependent execution can continue."""
+        """逐条重算指定租户审计链，定位前序哈希或事件哈希不一致的位置。"""
 
         def operation(connection: sqlite3.Connection) -> dict[str, Any]:
-            """Perform operation within the module ownership boundary."""
+            """按序读取事件并基于规范化载荷验证链完整性。"""
             rows = connection.execute(
                 "SELECT * FROM audit_events WHERE tenant_id = ? ORDER BY sequence ASC",
                 (tenant_id,),
@@ -198,10 +198,10 @@ class SqliteRepository:
     async def list_audit_events(
         self, tenant_id: str, after_sequence: int, limit: int
     ) -> tuple[list[AuditEvent], int | None]:
-        """List only values visible within the caller's tenant and lifecycle scope."""
+        """按租户和游标分页读取审计事件，避免跨租户暴露审计记录。"""
 
         def operation(connection: sqlite3.Connection) -> tuple[list[AuditEvent], int | None]:
-            """Perform operation within the module ownership boundary."""
+            """查询当前页事件并返回下一页游标所需的最后序号。"""
             rows = connection.execute(
                 """SELECT * FROM audit_events WHERE tenant_id = ? AND sequence > ?
                    ORDER BY sequence ASC LIMIT ?""",
@@ -216,10 +216,10 @@ class SqliteRepository:
     async def list_findings(
         self, tenant_id: str, status: FindingStatus | None, limit: int
     ) -> list[Finding]:
-        """List only values visible within the caller's tenant and lifecycle scope."""
+        """按租户、可选状态和数量上限列出治理发现。"""
 
         def operation(connection: sqlite3.Connection) -> list[Finding]:
-            """Perform operation within the module ownership boundary."""
+            """构建受限查询并将数据库记录转换为领域发现模型。"""
             query = "SELECT * FROM findings WHERE tenant_id = ?"
             params: list[object] = [tenant_id]
             if status:
@@ -234,10 +234,10 @@ class SqliteRepository:
     async def resolve_finding(
         self, tenant_id: str, finding_id: str, resolved_by: str, note: str, timestamp: str
     ) -> Finding | None:
-        """Apply the requested state transition with configured consistency checks."""
+        """仅将指定租户仍处于 OPEN 状态的发现原子迁移为已解决。"""
 
         def operation(connection: sqlite3.Connection) -> Finding | None:
-            """Perform operation within the module ownership boundary."""
+            """执行带状态条件的更新，防止并发重复解决覆盖已有处置人和说明。"""
             cursor = connection.execute(
                 """
                 UPDATE findings
@@ -265,10 +265,10 @@ class SqliteRepository:
         return await self._write(operation)
 
     async def get_finding(self, tenant_id: str, finding_id: str) -> Finding | None:
-        """Return the requested value through the established ownership boundary."""
+        """按租户和发现标识读取单条发现，不存在时返回空。"""
 
         def operation(connection: sqlite3.Connection) -> Finding | None:
-            """Perform operation within the module ownership boundary."""
+            """执行租户范围内的精确查询并恢复领域模型。"""
             row = connection.execute(
                 "SELECT * FROM findings WHERE tenant_id = ? AND finding_id = ?",
                 (tenant_id, finding_id),
@@ -278,7 +278,7 @@ class SqliteRepository:
         return await self._read(operation)
 
     async def get_tenant_policy(self, tenant_id: str) -> TenantPolicy | None:
-        """Return the requested value through the established ownership boundary."""
+        """读取租户治理策略；策略不存在时不虚构默认持久化记录。"""
         return await self._read(
             lambda connection: _policy_from_row(
                 connection.execute(
@@ -288,16 +288,16 @@ class SqliteRepository:
         )
 
     async def upsert_tenant_policy(self, policy: TenantPolicy, event: AuditEvent) -> None:
-        """Persist state while preserving the transaction and audit boundary."""
+        """在同一写事务中更新租户策略并追加对应审计事件。"""
         await self._write(lambda connection: _upsert_policy_and_audit(connection, policy, event))
 
     async def report(
         self, tenant_id: str, from_time: str | None, to_time: str | None
     ) -> tuple[int, dict[str, int], list[Finding]]:
-        """Perform report within the SqliteRepository ownership boundary."""
+        """按时间窗汇总租户审计总量、来源分布及关联发现。"""
 
         def operation(connection: sqlite3.Connection) -> tuple[int, dict[str, int], list[Finding]]:
-            """Perform operation within the module ownership boundary."""
+            """构建可选时间过滤条件并查询统计与关联发现明细。"""
             clauses = ["tenant_id = ?"]
             params: list[object] = [tenant_id]
             if from_time:
@@ -343,7 +343,7 @@ class SqliteRepository:
     async def upsert_document(
         self, tenant_id: str, kind: str, document_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        """Persist state while preserving the transaction and audit boundary."""
+        """按租户、文档类别和标识写入治理文档，并维护更新时间。"""
         now = payload.get("updatedAt") or payload.get("createdAt")
         if not isinstance(now, str) or not now:
             from datetime import UTC, datetime
@@ -351,7 +351,7 @@ class SqliteRepository:
             now = datetime.now(UTC).isoformat()
 
         def operation(connection: sqlite3.Connection) -> dict[str, Any]:
-            """Perform operation within the module ownership boundary."""
+            """使用冲突更新语义保存 JSON 载荷，避免重复文档产生多条记录。"""
             connection.execute(
                 """
                 INSERT INTO governance_documents (
@@ -370,10 +370,10 @@ class SqliteRepository:
     async def get_document(
         self, tenant_id: str, kind: str, document_id: str
     ) -> dict[str, Any] | None:
-        """Return the requested value through the established ownership boundary."""
+        """按租户、类别和文档标识读取原始治理文档载荷。"""
 
         def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
-            """Perform operation within the module ownership boundary."""
+            """在租户边界内精确查询并反序列化 JSON 载荷。"""
             row = connection.execute(
                 """
                 SELECT payload_json FROM governance_documents
@@ -388,10 +388,10 @@ class SqliteRepository:
     async def list_documents(
         self, tenant_id: str, kind: str, limit: int = 1_000
     ) -> list[dict[str, Any]]:
-        """List only values visible within the caller's tenant and lifecycle scope."""
+        """按更新时间倒序列出租户指定类别的文档，并限制单次返回数量。"""
 
         def operation(connection: sqlite3.Connection) -> list[dict[str, Any]]:
-            """Perform operation within the module ownership boundary."""
+            """执行受限列表查询并将每条 JSON 载荷还原为字典。"""
             rows = connection.execute(
                 """
                 SELECT payload_json FROM governance_documents
@@ -405,12 +405,12 @@ class SqliteRepository:
         return await self._read(operation)
 
     async def purge_documents_before(self, tenant_id: str, kinds: list[str], cutoff: str) -> int:
-        """Release or remove owned state without bypassing cleanup rules."""
+        """删除指定租户在保留截止时间之前、属于给定类别的文档。"""
         if not kinds:
             return 0
 
         def operation(connection: sqlite3.Connection) -> int:
-            """Perform operation within the module ownership boundary."""
+            """构建参数化删除语句，避免类别集合直接拼接造成注入风险。"""
             placeholders = ",".join("?" for _ in kinds)
             cursor = connection.execute(
                 f"DELETE FROM governance_documents WHERE tenant_id = ? "
@@ -422,21 +422,21 @@ class SqliteRepository:
         return await self._write(operation)
 
     async def _read(self, operation: Callable[[sqlite3.Connection], T]) -> T:
-        """Internal helper for SqliteRepository; preserve its caller-facing invariant."""
+        """在线程池中执行只读操作，避免阻塞事件循环且不获取写锁。"""
 
         def run() -> T:
-            """Perform run within the module ownership boundary."""
+            """打开短生命周期连接并运行调用方提供的只读函数。"""
             with self._connect() as connection:
                 return operation(connection)
 
         return await asyncio.to_thread(run)
 
     async def _write(self, operation: Callable[[sqlite3.Connection], T]) -> T:
-        """Internal helper for SqliteRepository; preserve its caller-facing invariant."""
+        """串行执行写操作并以 IMMEDIATE 事务包裹提交或回滚。"""
         async with self._write_lock:
 
             def run() -> T:
-                """Perform run within the module ownership boundary."""
+                """在独立连接中执行写入，异常时回滚以避免半完成状态。"""
                 with self._connect() as connection:
                     connection.execute("BEGIN IMMEDIATE")
                     try:
@@ -450,7 +450,7 @@ class SqliteRepository:
             return await asyncio.to_thread(run)
 
     def _connect(self) -> sqlite3.Connection:
-        """Internal helper for SqliteRepository; preserve its caller-facing invariant."""
+        """创建启用外键约束和行字典访问方式的 SQLite 连接。"""
         connection = sqlite3.connect(self._database_path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
@@ -458,12 +458,12 @@ class SqliteRepository:
 
 
 def _json(value: object) -> str:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """将载荷稳定序列化为规范 JSON，供哈希计算和持久化共用。"""
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _audit_from_row(row: sqlite3.Row) -> AuditEvent:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """将审计事件数据库行恢复为通过 Pydantic 校验的领域模型。"""
     return AuditEvent.model_validate(
         {
             "sequence": row["sequence"],
@@ -482,7 +482,7 @@ def _audit_from_row(row: sqlite3.Row) -> AuditEvent:
 
 
 def _finding_from_row(row: sqlite3.Row) -> Finding:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """将治理发现数据库行恢复为领域模型并反序列化证据字段。"""
     return Finding.model_validate(
         {
             "finding_id": row["finding_id"],
@@ -504,14 +504,14 @@ def _finding_from_row(row: sqlite3.Row) -> Finding:
 
 
 def _policy_from_row(row: sqlite3.Row | None) -> TenantPolicy | None:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """在记录存在时将租户策略 JSON 恢复为领域模型。"""
     return TenantPolicy.model_validate_json(row["policy_json"]) if row else None
 
 
 def _upsert_policy_and_audit(
     connection: sqlite3.Connection, policy: TenantPolicy, event: AuditEvent
 ) -> None:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """在同一连接中写入策略快照和其审计事件，维持二者一致性。"""
     connection.execute(
         """
         INSERT INTO tenant_policies (tenant_id, policy_json, updated_by, updated_at)

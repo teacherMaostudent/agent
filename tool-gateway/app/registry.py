@@ -29,12 +29,17 @@ class ToolRegistry:
     """
 
     def __init__(self) -> None:
+        """初始化仅允许启动期写入的版本化规格、适配器和版本索引。"""
         self._specs: dict[tuple[str, str], ToolSpec] = {}
         self._adapters: dict[tuple[str, str], ToolAdapter] = {}
         self._versions: dict[str, list[str]] = defaultdict(list)
 
     def register(self, spec: ToolSpec, adapter: ToolAdapter) -> None:
-        """Register one immutable catalog version; duplicates are configuration errors."""
+        """处理 register 对应的当前组件内部业务步骤。
+
+
+        Register one immutable catalog version; duplicates are configuration errors.
+        """
         if spec.key in self._specs:
             raise ValueError(f"tool already registered: {spec.name}:{spec.version}")
         Draft202012Validator.check_schema(spec.input_schema)
@@ -45,7 +50,11 @@ class ToolRegistry:
         self._versions[spec.name].append(spec.version)
 
     def resolve(self, name: str, version: str | None = None) -> tuple[ToolSpec, ToolAdapter]:
-        """Resolve an explicit or latest published version without bypassing the catalog."""
+        """处理 resolve 对应的当前组件内部业务步骤。
+
+
+        Resolve an explicit or latest published version without bypassing the catalog.
+        """
         if version is None:
             versions = self._versions.get(name, [])
             if not versions:
@@ -63,6 +72,11 @@ class ToolRegistry:
         tenant_id: str,
         permissions: frozenset[str],
     ) -> list[ToolManifest]:
+        """处理 manifests 对应的当前组件内部业务步骤。
+
+
+        Expose only the latest tenant-visible version whose permissions the caller owns.
+        """
         manifests: list[ToolManifest] = []
         for name in sorted(self._versions):
             spec = next(
@@ -81,15 +95,29 @@ class ToolRegistry:
         return manifests
 
     def assert_visible(self, spec: ToolSpec, tenant_id: str) -> None:
-        """Enforce tenant allow-lists before an adapter observes invocation input."""
+        """校验 assert_visible 对应的受控业务步骤。
+
+
+        Enforce tenant allow-lists before an adapter observes invocation input.
+        """
         if not spec.is_enabled_for(tenant_id):
             raise ToolDisabledError(f"unknown tool: {spec.name}")
 
     @property
     def count(self) -> int:
+        """处理 count 对应的当前组件内部业务步骤。
+
+
+        Return the number of immutable catalog entries for readiness diagnostics.
+        """
         return len(self._specs)
 
     def adapters(self) -> list[ToolAdapter]:
+        """处理 adapters 对应的当前组件内部业务步骤。
+
+
+        Return de-duplicated adapter instances because multiple versions may share one client.
+        """
         return list({id(adapter): adapter for adapter in self._adapters.values()}.values())
 
 
@@ -101,6 +129,11 @@ def load_registry(
     client_options: dict[str, Any] | None = None,
     schema_dir: Path | None = None,
 ) -> ToolRegistry:
+    """读取或查询 load_registry 对应的受控业务步骤。
+
+
+    Load and schema-validate the deployed catalog before creating any network adapter.
+    """
     try:
         raw: Any = json.loads(path.read_text(encoding="utf-8"))
         if schema_dir is not None:

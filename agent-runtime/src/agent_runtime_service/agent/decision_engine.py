@@ -26,19 +26,26 @@ Do not invent tool names, citations, document content, or business facts."""
 
 
 class DecisionEngine(Protocol):
-    def decide(self, state: AgentState, tool_registry: ToolRegistry) -> AgentDecision: ...
+    """定义每步只产生受验证动作的决策边界，不能直接产生副作用。"""
+    def decide(self, state: AgentState, tool_registry: ToolRegistry) -> AgentDecision:
+        """根据当前受控状态和可见工具提出下一步动作，不执行工具或修改业务数据。"""
+        ...
 
 
 class GatewayDecisionEngine:
     uses_llm = True
 
     def __init__(self, gateway: LlmGatewayClient, model: str) -> None:
-        """Initialize GatewayDecisionEngine dependencies and local state."""
+        """注入治理网关与逻辑模型；供应商、密钥和路由不进入 Runtime。"""
         self.gateway = gateway
         self.model = model
 
     def decide(self, state: AgentState, tool_registry: ToolRegistry) -> AgentDecision:
-        """Ask the gateway for one schema-constrained next action proposal."""
+        """以最小上下文请求单步 JSON 决策，并只暴露快照允许的工具清单。
+
+        历史、证据和工具输出均已在上游限制；此处只返回建议，Graph 仍会在执行前做
+        预算、版本和审批校验。
+        """
         manifests = tool_registry.manifests(
             frozenset(state.get("permissions", [])),
             tenant_id=state["tenant_id"],
@@ -133,7 +140,7 @@ class GatewayDecisionEngine:
         return AgentDecision.model_validate(raw)
 
     def last_cost_usd(self) -> float | None:
-        """Perform last cost usd within the GatewayDecisionEngine ownership boundary."""
+        """读取最后一次决策的网关费用，供 Runtime 以实际消耗替换预留。"""
         return self.gateway.last_cost_usd()
 
 
@@ -143,7 +150,7 @@ class OfflineDecisionEngine:
     uses_llm = False
 
     def decide(self, state: AgentState, tool_registry: ToolRegistry) -> AgentDecision:
-        """Perform decide within the OfflineDecisionEngine ownership boundary."""
+        """离线测试决策：先检索一次，再基于证据列表回答，不假装模型推理。"""
         if not state.get("evidence"):
             return AgentDecision(
                 action=AgentAction.RETRIEVE,

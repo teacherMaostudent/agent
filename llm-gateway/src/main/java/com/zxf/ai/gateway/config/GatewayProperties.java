@@ -57,149 +57,263 @@ public class GatewayProperties {
     private Billing billing = new Billing();
     private Map<String, PromptTemplate> promptTemplates = new LinkedHashMap<>();
 
+    /**
+     * 读取当前配置或运行状态字段 get oidc 的值，供调用方进行受控决策。
+    */
     public Oidc getOidc() {
         return oidc;
     }
 
+    /**
+     * 更新配置字段 set oidc；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setOidc(Oidc oidc) {
         this.oidc = oidc;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get opa 的值，供调用方进行受控决策。
+    */
     public Opa getOpa() {
         return opa;
     }
 
+    /**
+     * 更新配置字段 set opa；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setOpa(Opa opa) {
         this.opa = opa;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get request timeout 的值，供调用方进行受控决策。
+    */
     public Duration getRequestTimeout() {
         return requestTimeout;
     }
 
+    /**
+     * 更新配置字段 set request timeout；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setRequestTimeout(Duration requestTimeout) {
         this.requestTimeout = requestTimeout;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get max retries 的值，供调用方进行受控决策。
+    */
     public int getMaxRetries() {
         return maxRetries;
     }
 
+    /**
+     * 更新配置字段 set max retries；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setMaxRetries(int maxRetries) {
         this.maxRetries = maxRetries;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get quota store 的值，供调用方进行受控决策。
+    */
     public String getQuotaStore() {
         return quotaStore;
     }
 
+    /**
+     * 更新配置字段 set quota store；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setQuotaStore(String quotaStore) {
         this.quotaStore = quotaStore;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 is allow anonymous 的值，供调用方进行受控决策。
+    */
     public boolean isAllowAnonymous() {
         return allowAnonymous;
     }
 
+    /**
+     * 更新配置字段 set allow anonymous；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setAllowAnonymous(boolean allowAnonymous) {
         this.allowAnonymous = allowAnonymous;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get compatibility 的值，供调用方进行受控决策。
+    */
     public Compatibility getCompatibility() {
         return compatibility;
     }
 
+    /**
+     * 更新配置字段 set compatibility；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setCompatibility(Compatibility compatibility) {
         this.compatibility = compatibility;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get default model 的值，供调用方进行受控决策。
+    */
     public String getDefaultModel() {
         return defaultModel;
     }
 
+    /**
+     * 更新配置字段 set default model；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setDefaultModel(String defaultModel) {
         this.defaultModel = defaultModel;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get providers 的值，供调用方进行受控决策。
+    */
     public Map<String, Provider> getProviders() {
         return providers;
     }
 
+    /**
+     * 更新配置字段 set providers；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setProviders(Map<String, Provider> providers) {
         this.providers = providers;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get routes 的值，供调用方进行受控决策。
+    */
     public Map<String, Route> getRoutes() {
         return routes;
     }
 
+    /**
+     * 更新配置字段 set routes；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setRoutes(Map<String, Route> routes) {
         this.routes = routes;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get user quotas 的值，供调用方进行受控决策。
+    */
     public Map<String, UserQuota> getUserQuotas() {
         return userQuotas;
     }
 
+    /**
+     * 更新配置字段 set user quotas；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setUserQuotas(Map<String, UserQuota> userQuotas) {
         this.userQuotas = userQuotas;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get api keys 的值，供调用方进行受控决策。
+    */
     public Map<String, ApiKey> getApiKeys() {
         return apiKeys;
     }
 
+    /**
+     * 更新配置字段 set api keys；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setApiKeys(Map<String, ApiKey> apiKeys) {
         this.apiKeys = apiKeys;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get cache 的值，供调用方进行受控决策。
+    */
     public Cache getCache() {
         return cache;
     }
 
+    /**
+     * 更新配置字段 set cache；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setCache(Cache cache) {
         this.cache = cache;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get resilience 的值，供调用方进行受控决策。
+    */
     public Resilience getResilience() {
         return resilience;
     }
 
+    /**
+     * 更新配置字段 set resilience；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setResilience(Resilience resilience) {
         this.resilience = resilience;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get persistence 的值，供调用方进行受控决策。
+    */
     public Persistence getPersistence() {
         return persistence;
     }
 
+    /**
+     * 更新配置字段 set persistence；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setPersistence(Persistence persistence) {
         this.persistence = persistence;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get admin 的值，供调用方进行受控决策。
+    */
     public Admin getAdmin() {
         return admin;
     }
 
+    /**
+     * 更新配置字段 set admin；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setAdmin(Admin admin) {
         this.admin = admin;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get cost prediction 的值，供调用方进行受控决策。
+    */
     public CostPrediction getCostPrediction() {
         return costPrediction;
     }
 
+    /**
+     * 更新配置字段 set cost prediction；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setCostPrediction(CostPrediction costPrediction) {
         this.costPrediction = costPrediction;
     }
 
+    /**
+     * 读取当前配置或运行状态字段 get billing 的值，供调用方进行受控决策。
+    */
     public Billing getBilling() { return billing; }
+    /**
+     * 更新配置字段 set billing；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setBilling(Billing billing) { this.billing = billing; }
 
+    /**
+     * 读取当前配置或运行状态字段 get prompt templates 的值，供调用方进行受控决策。
+    */
     public Map<String, PromptTemplate> getPromptTemplates() {
         return promptTemplates;
     }
 
+    /**
+     * 更新配置字段 set prompt templates；该值由 Spring 配置绑定或受控管理接口提供。
+    */
     public void setPromptTemplates(Map<String, PromptTemplate> promptTemplates) {
         this.promptTemplates = promptTemplates;
     }
@@ -220,34 +334,58 @@ public class GatewayProperties {
          */
         private Map<String, Model> models = new LinkedHashMap<>();
 
+        /**
+         * 读取当前配置或运行状态字段 get base url 的值，供调用方进行受控决策。
+        */
         public String getBaseUrl() {
             return baseUrl;
         }
 
+        /**
+         * 更新配置字段 set base url；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setBaseUrl(String baseUrl) {
             this.baseUrl = baseUrl;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get protocol 的值，供调用方进行受控决策。
+        */
         public String getProtocol() {
             return protocol;
         }
 
+        /**
+         * 更新配置字段 set protocol；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setProtocol(String protocol) {
             this.protocol = protocol;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get api key 的值，供调用方进行受控决策。
+        */
         public String getApiKey() {
             return apiKey;
         }
 
+        /**
+         * 更新配置字段 set api key；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setApiKey(String apiKey) {
             this.apiKey = apiKey;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get models 的值，供调用方进行受控决策。
+        */
         public Map<String, Model> getModels() {
             return models;
         }
 
+        /**
+         * 更新配置字段 set models；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setModels(Map<String, Model> models) {
             this.models = models;
         }
@@ -282,69 +420,129 @@ public class GatewayProperties {
         /** 按单请求输入 token 数选择的阶梯价格，按 maxInputTokens 升序配置。 */
         private List<PriceTier> priceTiers = new ArrayList<>();
 
+        /**
+         * 读取当前配置或运行状态字段 get upstream model 的值，供调用方进行受控决策。
+        */
         public String getUpstreamModel() {
             return upstreamModel;
         }
 
+        /**
+         * 更新配置字段 set upstream model；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setUpstreamModel(String upstreamModel) {
             this.upstreamModel = upstreamModel;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get revision 的值，供调用方进行受控决策。
+        */
         public String getRevision() { return revision; }
+        /**
+         * 更新配置字段 set revision；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setRevision(String revision) { this.revision = revision; }
 
+        /**
+         * 读取当前配置或运行状态字段 get input price per1k 的值，供调用方进行受控决策。
+        */
         public BigDecimal getInputPricePer1k() {
             return inputPricePer1k;
         }
 
+        /**
+         * 更新配置字段 set input price per1k；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setInputPricePer1k(BigDecimal inputPricePer1k) {
             this.inputPricePer1k = inputPricePer1k;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get output price per1k 的值，供调用方进行受控决策。
+        */
         public BigDecimal getOutputPricePer1k() {
             return outputPricePer1k;
         }
 
+        /**
+         * 更新配置字段 set output price per1k；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setOutputPricePer1k(BigDecimal outputPricePer1k) {
             this.outputPricePer1k = outputPricePer1k;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get cached input price per1k 的值，供调用方进行受控决策。
+        */
         public BigDecimal getCachedInputPricePer1k() {
             return cachedInputPricePer1k;
         }
 
+        /**
+         * 更新配置字段 set cached input price per1k；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setCachedInputPricePer1k(BigDecimal cachedInputPricePer1k) {
             this.cachedInputPricePer1k = cachedInputPricePer1k;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get cache write price per1k 的值，供调用方进行受控决策。
+        */
         public BigDecimal getCacheWritePricePer1k() { return cacheWritePricePer1k; }
+        /**
+         * 更新配置字段 set cache write price per1k；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setCacheWritePricePer1k(BigDecimal cacheWritePricePer1k) { this.cacheWritePricePer1k = cacheWritePricePer1k; }
 
+        /**
+         * 读取当前配置或运行状态字段 get currency 的值，供调用方进行受控决策。
+        */
         public String getCurrency() {
             return currency;
         }
 
+        /**
+         * 更新配置字段 set currency；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setCurrency(String currency) {
             this.currency = currency;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get price version 的值，供调用方进行受控决策。
+        */
         public String getPriceVersion() {
             return priceVersion;
         }
 
+        /**
+         * 更新配置字段 set price version；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setPriceVersion(String priceVersion) {
             this.priceVersion = priceVersion;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get price source 的值，供调用方进行受控决策。
+        */
         public String getPriceSource() {
             return priceSource;
         }
 
+        /**
+         * 更新配置字段 set price source；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setPriceSource(String priceSource) {
             this.priceSource = priceSource;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get price tiers 的值，供调用方进行受控决策。
+        */
         public List<PriceTier> getPriceTiers() { return priceTiers; }
+        /**
+         * 更新配置字段 set price tiers；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setPriceTiers(List<PriceTier> priceTiers) { this.priceTiers = priceTiers; }
     }
 
@@ -355,15 +553,45 @@ public class GatewayProperties {
         private BigDecimal cacheWritePricePer1k;
         private BigDecimal outputPricePer1k;
 
+        /**
+         * 读取当前配置或运行状态字段 get max input tokens 的值，供调用方进行受控决策。
+        */
         public long getMaxInputTokens() { return maxInputTokens; }
+        /**
+         * 更新配置字段 set max input tokens；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setMaxInputTokens(long maxInputTokens) { this.maxInputTokens = maxInputTokens; }
+        /**
+         * 读取当前配置或运行状态字段 get input price per1k 的值，供调用方进行受控决策。
+        */
         public BigDecimal getInputPricePer1k() { return inputPricePer1k; }
+        /**
+         * 更新配置字段 set input price per1k；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setInputPricePer1k(BigDecimal inputPricePer1k) { this.inputPricePer1k = inputPricePer1k; }
+        /**
+         * 读取当前配置或运行状态字段 get cached input price per1k 的值，供调用方进行受控决策。
+        */
         public BigDecimal getCachedInputPricePer1k() { return cachedInputPricePer1k; }
+        /**
+         * 更新配置字段 set cached input price per1k；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setCachedInputPricePer1k(BigDecimal cachedInputPricePer1k) { this.cachedInputPricePer1k = cachedInputPricePer1k; }
+        /**
+         * 读取当前配置或运行状态字段 get cache write price per1k 的值，供调用方进行受控决策。
+        */
         public BigDecimal getCacheWritePricePer1k() { return cacheWritePricePer1k; }
+        /**
+         * 更新配置字段 set cache write price per1k；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setCacheWritePricePer1k(BigDecimal cacheWritePricePer1k) { this.cacheWritePricePer1k = cacheWritePricePer1k; }
+        /**
+         * 读取当前配置或运行状态字段 get output price per1k 的值，供调用方进行受控决策。
+        */
         public BigDecimal getOutputPricePer1k() { return outputPricePer1k; }
+        /**
+         * 更新配置字段 set output price per1k；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setOutputPricePer1k(BigDecimal outputPricePer1k) { this.outputPricePer1k = outputPricePer1k; }
     }
 
@@ -381,23 +609,77 @@ public class GatewayProperties {
         private long coldStartP95 = 2048;
         private long coldStartP99 = 4096;
 
+        /**
+         * 读取当前配置或运行状态字段 is enabled 的值，供调用方进行受控决策。
+        */
         public boolean isEnabled() { return enabled; }
+        /**
+         * 更新配置字段 set enabled；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        /**
+         * 读取当前配置或运行状态字段 get reservation quantile 的值，供调用方进行受控决策。
+        */
         public double getReservationQuantile() { return reservationQuantile; }
+        /**
+         * 更新配置字段 set reservation quantile；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setReservationQuantile(double reservationQuantile) { this.reservationQuantile = reservationQuantile; }
+        /**
+         * 读取当前配置或运行状态字段 get learning rate 的值，供调用方进行受控决策。
+        */
         public double getLearningRate() { return learningRate; }
+        /**
+         * 更新配置字段 set learning rate；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setLearningRate(double learningRate) { this.learningRate = learningRate; }
+        /**
+         * 读取当前配置或运行状态字段 get conformal window 的值，供调用方进行受控决策。
+        */
         public int getConformalWindow() { return conformalWindow; }
+        /**
+         * 更新配置字段 set conformal window；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setConformalWindow(int conformalWindow) { this.conformalWindow = conformalWindow; }
+        /**
+         * 读取当前配置或运行状态字段 get min samples 的值，供调用方进行受控决策。
+        */
         public int getMinSamples() { return minSamples; }
+        /**
+         * 更新配置字段 set min samples；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setMinSamples(int minSamples) { this.minSamples = minSamples; }
+        /**
+         * 读取当前配置或运行状态字段 get cold start p50 的值，供调用方进行受控决策。
+        */
         public long getColdStartP50() { return coldStartP50; }
+        /**
+         * 更新配置字段 set cold start p50；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setColdStartP50(long coldStartP50) { this.coldStartP50 = coldStartP50; }
+        /**
+         * 读取当前配置或运行状态字段 get cold start p90 的值，供调用方进行受控决策。
+        */
         public long getColdStartP90() { return coldStartP90; }
+        /**
+         * 更新配置字段 set cold start p90；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setColdStartP90(long coldStartP90) { this.coldStartP90 = coldStartP90; }
+        /**
+         * 读取当前配置或运行状态字段 get cold start p95 的值，供调用方进行受控决策。
+        */
         public long getColdStartP95() { return coldStartP95; }
+        /**
+         * 更新配置字段 set cold start p95；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setColdStartP95(long coldStartP95) { this.coldStartP95 = coldStartP95; }
+        /**
+         * 读取当前配置或运行状态字段 get cold start p99 的值，供调用方进行受控决策。
+        */
         public long getColdStartP99() { return coldStartP99; }
+        /**
+         * 更新配置字段 set cold start p99；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setColdStartP99(long coldStartP99) { this.coldStartP99 = coldStartP99; }
     }
 
@@ -409,11 +691,29 @@ public class GatewayProperties {
                 "USD", new BigDecimal("7.20")
         ));
 
+        /**
+         * 读取当前配置或运行状态字段 get base currency 的值，供调用方进行受控决策。
+        */
         public String getBaseCurrency() { return baseCurrency; }
+        /**
+         * 更新配置字段 set base currency；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setBaseCurrency(String baseCurrency) { this.baseCurrency = baseCurrency; }
+        /**
+         * 读取当前配置或运行状态字段 get exchange rate version 的值，供调用方进行受控决策。
+        */
         public String getExchangeRateVersion() { return exchangeRateVersion; }
+        /**
+         * 更新配置字段 set exchange rate version；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setExchangeRateVersion(String exchangeRateVersion) { this.exchangeRateVersion = exchangeRateVersion; }
+        /**
+         * 读取当前配置或运行状态字段 get exchange rates 的值，供调用方进行受控决策。
+        */
         public Map<String, BigDecimal> getExchangeRates() { return exchangeRates; }
+        /**
+         * 更新配置字段 set exchange rates；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setExchangeRates(Map<String, BigDecimal> exchangeRates) { this.exchangeRates = exchangeRates; }
     }
 
@@ -464,37 +764,67 @@ public class GatewayProperties {
          */
         private List<CanaryTarget> canary = new ArrayList<>();
 
+        /**
+         * 读取当前配置或运行状态字段 get primary 的值，供调用方进行受控决策。
+        */
         public String getPrimary() {
             return primary;
         }
 
+        /**
+         * 更新配置字段 set primary；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setPrimary(String primary) {
             this.primary = primary;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get version 的值，供调用方进行受控决策。
+        */
         public String getVersion() { return version; }
+        /**
+         * 更新配置字段 set version；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setVersion(String version) { this.version = version; }
 
+        /**
+         * 读取当前配置或运行状态字段 get fallbacks 的值，供调用方进行受控决策。
+        */
         public List<String> getFallbacks() {
             return fallbacks;
         }
 
+        /**
+         * 更新配置字段 set fallbacks；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setFallbacks(List<String> fallbacks) {
             this.fallbacks = fallbacks;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get weighted 的值，供调用方进行受控决策。
+        */
         public List<WeightedTarget> getWeighted() {
             return weighted;
         }
 
+        /**
+         * 更新配置字段 set weighted；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setWeighted(List<WeightedTarget> weighted) {
             this.weighted = weighted;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get canary 的值，供调用方进行受控决策。
+        */
         public List<CanaryTarget> getCanary() {
             return canary;
         }
 
+        /**
+         * 更新配置字段 set canary；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setCanary(List<CanaryTarget> canary) {
             this.canary = canary;
         }
@@ -513,18 +843,30 @@ public class GatewayProperties {
          */
         private int weight = 1;
 
+        /**
+         * 读取当前配置或运行状态字段 get target 的值，供调用方进行受控决策。
+        */
         public String getTarget() {
             return target;
         }
 
+        /**
+         * 更新配置字段 set target；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setTarget(String target) {
             this.target = target;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get weight 的值，供调用方进行受控决策。
+        */
         public int getWeight() {
             return weight;
         }
 
+        /**
+         * 更新配置字段 set weight；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setWeight(int weight) {
             this.weight = weight;
         }
@@ -543,18 +885,30 @@ public class GatewayProperties {
          */
         private int percent = 0;
 
+        /**
+         * 读取当前配置或运行状态字段 get target 的值，供调用方进行受控决策。
+        */
         public String getTarget() {
             return target;
         }
 
+        /**
+         * 更新配置字段 set target；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setTarget(String target) {
             this.target = target;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get percent 的值，供调用方进行受控决策。
+        */
         public int getPercent() {
             return percent;
         }
 
+        /**
+         * 更新配置字段 set percent；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setPercent(int percent) {
             this.percent = percent;
         }
@@ -564,18 +918,30 @@ public class GatewayProperties {
         private long dailyTokenLimit = 50_000;
         private BigDecimal dailyCostLimit = BigDecimal.ONE;
 
+        /**
+         * 读取当前配置或运行状态字段 get daily token limit 的值，供调用方进行受控决策。
+        */
         public long getDailyTokenLimit() {
             return dailyTokenLimit;
         }
 
+        /**
+         * 更新配置字段 set daily token limit；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setDailyTokenLimit(long dailyTokenLimit) {
             this.dailyTokenLimit = dailyTokenLimit;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get daily cost limit 的值，供调用方进行受控决策。
+        */
         public BigDecimal getDailyCostLimit() {
             return dailyCostLimit;
         }
 
+        /**
+         * 更新配置字段 set daily cost limit；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setDailyCostLimit(BigDecimal dailyCostLimit) {
             this.dailyCostLimit = dailyCostLimit;
         }
@@ -595,42 +961,72 @@ public class GatewayProperties {
          */
         private List<String> allowedModels = new ArrayList<>();
 
+        /**
+         * 读取当前配置或运行状态字段 is enabled 的值，供调用方进行受控决策。
+        */
         public boolean isEnabled() {
             return enabled;
         }
 
+        /**
+         * 更新配置字段 set enabled；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setEnabled(boolean enabled) {
             this.enabled = enabled;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get tenant id 的值，供调用方进行受控决策。
+        */
         public String getTenantId() {
             return tenantId;
         }
 
+        /**
+         * 更新配置字段 set tenant id；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setTenantId(String tenantId) {
             this.tenantId = tenantId;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get user id 的值，供调用方进行受控决策。
+        */
         public String getUserId() {
             return userId;
         }
 
+        /**
+         * 更新配置字段 set user id；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setUserId(String userId) {
             this.userId = userId;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 is trusted service 的值，供调用方进行受控决策。
+        */
         public boolean isTrustedService() {
             return trustedService;
         }
 
+        /**
+         * 更新配置字段 set trusted service；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setTrustedService(boolean trustedService) {
             this.trustedService = trustedService;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get allowed models 的值，供调用方进行受控决策。
+        */
         public List<String> getAllowedModels() {
             return allowedModels;
         }
 
+        /**
+         * 更新配置字段 set allowed models；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setAllowedModels(List<String> allowedModels) {
             this.allowedModels = allowedModels;
         }
@@ -644,50 +1040,86 @@ public class GatewayProperties {
         private boolean requireExplicitOptIn = true;
         private boolean mutexProtectionEnabled = true;
 
+        /**
+         * 读取当前配置或运行状态字段 is enabled 的值，供调用方进行受控决策。
+        */
         public boolean isEnabled() {
             return enabled;
         }
 
+        /**
+         * 更新配置字段 set enabled；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setEnabled(boolean enabled) {
             this.enabled = enabled;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get max entries 的值，供调用方进行受控决策。
+        */
         public int getMaxEntries() {
             return maxEntries;
         }
 
+        /**
+         * 更新配置字段 set max entries；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setMaxEntries(int maxEntries) {
             this.maxEntries = maxEntries;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get ttl 的值，供调用方进行受控决策。
+        */
         public Duration getTtl() {
             return ttl;
         }
 
+        /**
+         * 更新配置字段 set ttl；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setTtl(Duration ttl) {
             this.ttl = ttl;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get random ttl jitter 的值，供调用方进行受控决策。
+        */
         public Duration getRandomTtlJitter() {
             return randomTtlJitter;
         }
 
+        /**
+         * 更新配置字段 set random ttl jitter；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setRandomTtlJitter(Duration randomTtlJitter) {
             this.randomTtlJitter = randomTtlJitter;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 is mutex protection enabled 的值，供调用方进行受控决策。
+        */
         public boolean isMutexProtectionEnabled() {
             return mutexProtectionEnabled;
         }
 
+        /**
+         * 更新配置字段 set mutex protection enabled；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setMutexProtectionEnabled(boolean mutexProtectionEnabled) {
             this.mutexProtectionEnabled = mutexProtectionEnabled;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 is require explicit opt in 的值，供调用方进行受控决策。
+        */
         public boolean isRequireExplicitOptIn() {
             return requireExplicitOptIn;
         }
 
+        /**
+         * 更新配置字段 set require explicit opt in；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setRequireExplicitOptIn(boolean requireExplicitOptIn) {
             this.requireExplicitOptIn = requireExplicitOptIn;
         }
@@ -698,26 +1130,44 @@ public class GatewayProperties {
         private Duration circuitOpenDuration = Duration.ofSeconds(30);
         private int routeRateLimitPerMinute = 120;
 
+        /**
+         * 读取当前配置或运行状态字段 get circuit failure threshold 的值，供调用方进行受控决策。
+        */
         public int getCircuitFailureThreshold() {
             return circuitFailureThreshold;
         }
 
+        /**
+         * 更新配置字段 set circuit failure threshold；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setCircuitFailureThreshold(int circuitFailureThreshold) {
             this.circuitFailureThreshold = circuitFailureThreshold;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get circuit open duration 的值，供调用方进行受控决策。
+        */
         public Duration getCircuitOpenDuration() {
             return circuitOpenDuration;
         }
 
+        /**
+         * 更新配置字段 set circuit open duration；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setCircuitOpenDuration(Duration circuitOpenDuration) {
             this.circuitOpenDuration = circuitOpenDuration;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get route rate limit per minute 的值，供调用方进行受控决策。
+        */
         public int getRouteRateLimitPerMinute() {
             return routeRateLimitPerMinute;
         }
 
+        /**
+         * 更新配置字段 set route rate limit per minute；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setRouteRateLimitPerMinute(int routeRateLimitPerMinute) {
             this.routeRateLimitPerMinute = routeRateLimitPerMinute;
         }
@@ -726,10 +1176,16 @@ public class GatewayProperties {
     public static class Persistence {
         private boolean enabled = true;
 
+        /**
+         * 读取当前配置或运行状态字段 is enabled 的值，供调用方进行受控决策。
+        */
         public boolean isEnabled() {
             return enabled;
         }
 
+        /**
+         * 更新配置字段 set enabled；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setEnabled(boolean enabled) {
             this.enabled = enabled;
         }
@@ -738,10 +1194,16 @@ public class GatewayProperties {
     public static class Admin {
         private Security security = new Security();
 
+        /**
+         * 读取当前配置或运行状态字段 get security 的值，供调用方进行受控决策。
+        */
         public Security getSecurity() {
             return security;
         }
 
+        /**
+         * 更新配置字段 set security；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setSecurity(Security security) {
             this.security = security;
         }
@@ -751,18 +1213,30 @@ public class GatewayProperties {
         private AgentMemory agentMemory = new AgentMemory();
         private ComplianceWorkflow complianceWorkflow = new ComplianceWorkflow();
 
+        /**
+         * 读取当前配置或运行状态字段 get agent memory 的值，供调用方进行受控决策。
+        */
         public AgentMemory getAgentMemory() {
             return agentMemory;
         }
 
+        /**
+         * 更新配置字段 set agent memory；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setAgentMemory(AgentMemory agentMemory) {
             this.agentMemory = agentMemory;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get compliance workflow 的值，供调用方进行受控决策。
+        */
         public ComplianceWorkflow getComplianceWorkflow() {
             return complianceWorkflow;
         }
 
+        /**
+         * 更新配置字段 set compliance workflow；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setComplianceWorkflow(ComplianceWorkflow complianceWorkflow) {
             this.complianceWorkflow = complianceWorkflow;
         }
@@ -771,10 +1245,16 @@ public class GatewayProperties {
     public static class AgentMemory {
         private boolean enabled;
 
+        /**
+         * 读取当前配置或运行状态字段 is enabled 的值，供调用方进行受控决策。
+        */
         public boolean isEnabled() {
             return enabled;
         }
 
+        /**
+         * 更新配置字段 set enabled；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setEnabled(boolean enabled) {
             this.enabled = enabled;
         }
@@ -783,10 +1263,16 @@ public class GatewayProperties {
     public static class ComplianceWorkflow {
         private boolean enabled;
 
+        /**
+         * 读取当前配置或运行状态字段 is enabled 的值，供调用方进行受控决策。
+        */
         public boolean isEnabled() {
             return enabled;
         }
 
+        /**
+         * 更新配置字段 set enabled；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setEnabled(boolean enabled) {
             this.enabled = enabled;
         }
@@ -797,26 +1283,44 @@ public class GatewayProperties {
         private String username = "admin";
         private String password = "admin123";
 
+        /**
+         * 读取当前配置或运行状态字段 is enabled 的值，供调用方进行受控决策。
+        */
         public boolean isEnabled() {
             return enabled;
         }
 
+        /**
+         * 更新配置字段 set enabled；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setEnabled(boolean enabled) {
             this.enabled = enabled;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get username 的值，供调用方进行受控决策。
+        */
         public String getUsername() {
             return username;
         }
 
+        /**
+         * 更新配置字段 set username；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setUsername(String username) {
             this.username = username;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get password 的值，供调用方进行受控决策。
+        */
         public String getPassword() {
             return password;
         }
 
+        /**
+         * 更新配置字段 set password；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setPassword(String password) {
             this.password = password;
         }
@@ -827,26 +1331,44 @@ public class GatewayProperties {
         private String tenantClaim = "tenant_id";
         private String rolesClaim = "roles";
 
+        /**
+         * 读取当前配置或运行状态字段 is enabled 的值，供调用方进行受控决策。
+        */
         public boolean isEnabled() {
             return enabled;
         }
 
+        /**
+         * 更新配置字段 set enabled；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setEnabled(boolean enabled) {
             this.enabled = enabled;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get tenant claim 的值，供调用方进行受控决策。
+        */
         public String getTenantClaim() {
             return tenantClaim;
         }
 
+        /**
+         * 更新配置字段 set tenant claim；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setTenantClaim(String tenantClaim) {
             this.tenantClaim = tenantClaim;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get roles claim 的值，供调用方进行受控决策。
+        */
         public String getRolesClaim() {
             return rolesClaim;
         }
 
+        /**
+         * 更新配置字段 set roles claim；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setRolesClaim(String rolesClaim) {
             this.rolesClaim = rolesClaim;
         }
@@ -857,26 +1379,44 @@ public class GatewayProperties {
         private String baseUrl = "http://localhost:8181";
         private String decisionPath = "agent_platform/llm/allow";
 
+        /**
+         * 读取当前配置或运行状态字段 is enabled 的值，供调用方进行受控决策。
+        */
         public boolean isEnabled() {
             return enabled;
         }
 
+        /**
+         * 更新配置字段 set enabled；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setEnabled(boolean enabled) {
             this.enabled = enabled;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get base url 的值，供调用方进行受控决策。
+        */
         public String getBaseUrl() {
             return baseUrl;
         }
 
+        /**
+         * 更新配置字段 set base url；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setBaseUrl(String baseUrl) {
             this.baseUrl = baseUrl;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get decision path 的值，供调用方进行受控决策。
+        */
         public String getDecisionPath() {
             return decisionPath;
         }
 
+        /**
+         * 更新配置字段 set decision path；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setDecisionPath(String decisionPath) {
             this.decisionPath = decisionPath;
         }
@@ -912,18 +1452,30 @@ public class GatewayProperties {
          */
         private String user;
 
+        /**
+         * 读取当前配置或运行状态字段 get system 的值，供调用方进行受控决策。
+        */
         public String getSystem() {
             return system;
         }
 
+        /**
+         * 更新配置字段 set system；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setSystem(String system) {
             this.system = system;
         }
 
+        /**
+         * 读取当前配置或运行状态字段 get user 的值，供调用方进行受控决策。
+        */
         public String getUser() {
             return user;
         }
 
+        /**
+         * 更新配置字段 set user；该值由 Spring 配置绑定或受控管理接口提供。
+        */
         public void setUser(String user) {
             this.user = user;
         }

@@ -22,7 +22,7 @@ from app.domain.models import GovernanceEvent
 
 
 def _event(value: bytes) -> GovernanceEvent:
-    """Normalize direct, outbox and Debezium envelopes into one event contract."""
+    """处理 _event 对应的当前组件内部业务步骤。"""
     document: Any = json.loads(value)
     if isinstance(document, dict) and isinstance(document.get("payload"), dict):
         document = document["payload"]
@@ -68,7 +68,7 @@ def _event(value: bytes) -> GovernanceEvent:
 
 
 async def consume(settings: Settings) -> None:
-    """Consume with idempotent Kafka writes before committing source offsets."""
+    """处理 consume 对应的当前组件内部业务步骤。"""
     container = AppContainer(settings)
     await container.start()
     consumer = AIOKafkaConsumer(
@@ -141,7 +141,7 @@ async def consume(settings: Settings) -> None:
 
 
 def main() -> None:
-    """Perform main within the module ownership boundary."""
+    """处理 main 对应的当前组件内部业务步骤。"""
     settings = Settings()
     if not settings.kafka_bootstrap_servers:
         raise RuntimeError("GOVERNANCE_KAFKA_BOOTSTRAP_SERVERS is required")
@@ -149,7 +149,7 @@ def main() -> None:
 
 
 def _attempts(headers: list[tuple[str, bytes]] | None) -> int:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _attempts 对应的当前组件内部业务步骤。"""
     for name, value in headers or []:
         if name == "x-attempt":
             try:
@@ -160,7 +160,9 @@ def _attempts(headers: list[tuple[str, bytes]] | None) -> int:
 
 
 async def _respect_retry_not_before(headers: list[tuple[str, bytes]] | None) -> None:
-    """Delay retry-topic delivery without committing an event before its backoff.
+    """处理 _respect_retry_not_before 对应的当前组件内部业务步骤。
+
+
 
     The delay intentionally blocks the affected partition, preserving event
     order for an aggregate.  Production deployments can replace this bounded

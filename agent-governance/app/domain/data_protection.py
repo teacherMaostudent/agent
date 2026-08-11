@@ -32,7 +32,7 @@ _PHONE = re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)")
 
 
 def protect_payload(value: Any, *, capture_content: bool) -> Any:
-    """Redact secrets/PII and replace disabled content capture with a fingerprint."""
+    """处理 protect_payload 对应的当前组件内部业务步骤。"""
     if isinstance(value, dict):
         protected: dict[str, Any] = {}
         for key, item in value.items():
@@ -51,6 +51,7 @@ def protect_payload(value: Any, *, capture_content: bool) -> Any:
 
 
 def classify_payload(*, capture_content: bool, protected: Any) -> str:
+    """按实际留存内容给出数据分类，供保留期、导出与访问控制策略使用。"""
     if capture_content:
         return "restricted"
     serialized = json.dumps(protected, ensure_ascii=False)
@@ -58,7 +59,7 @@ def classify_payload(*, capture_content: bool, protected: Any) -> str:
 
 
 def sampled(identifier: str, rate: float) -> bool:
-    """Use stable hashing so retries make the same sampling decision."""
+    """处理 sampled 对应的当前组件内部业务步骤。"""
     if rate >= 1:
         return True
     if rate <= 0:
@@ -68,6 +69,7 @@ def sampled(identifier: str, rate: float) -> bool:
 
 
 def _content_reference(value: Any) -> dict[str, Any]:
+    """以长度和稳定摘要替代原文，使排障可关联而敏感内容不进入审计库。"""
     serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
     return {
         "redacted": True,

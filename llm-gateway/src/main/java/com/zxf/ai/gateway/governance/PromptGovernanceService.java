@@ -29,6 +29,7 @@ public class PromptGovernanceService {
     private final Map<String, PostProcessChain> chains = new LinkedHashMap<>();
     private final List<PromptExperiment> experiments = new ArrayList<>();
 
+    /** 注入可选治理状态仓储与 JSON 工具，使内存演示和持久化部署使用同一服务语义。 */
     public PromptGovernanceService(ObjectProvider<RuntimeStateRepository> stateRepository, ObjectMapper objectMapper) {
         this.stateRepository = stateRepository.getIfAvailable();
         this.objectMapper = objectMapper;
@@ -173,18 +174,23 @@ public class PromptGovernanceService {
         return id == null || id.isBlank() ? UUID.randomUUID().toString() : id;
     }
 
+    /** 描述模型输出必须满足的字段契约及示例结构。 */
     public record OutputContract(String id, String name, String description, List<String> requiredFields, Map<String, Object> schemaExample, Instant updatedAt) {
     }
 
+    /** 封装待按输出契约验证的结构化模型结果。 */
     public record ValidationRequest(String contractId, JsonNode output) {
     }
 
+    /** 表达输出契约校验结论及缺失字段清单。 */
     public record ValidationResult(String contractId, boolean valid, List<String> errors, JsonNode output) {
     }
 
+    /** 表达发布后须执行的确定性后处理步骤集合。 */
     public record PostProcessChain(String id, String name, List<String> steps, Instant updatedAt) {
     }
 
+    /** 封装 Prompt 变更实验的输入、对照输出和指标摘要。 */
     public record PromptExperimentRequest(
             String promptVersionId,
             String model,
@@ -197,6 +203,7 @@ public class PromptGovernanceService {
     ) {
     }
 
+    /** 保存可追溯的 Prompt 实验事实，供质量回归和审计复查。 */
     public record PromptExperiment(
             String id,
             Instant createdAt,

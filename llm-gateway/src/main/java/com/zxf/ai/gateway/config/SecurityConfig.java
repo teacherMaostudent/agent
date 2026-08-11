@@ -15,11 +15,17 @@ import org.springframework.security.web.server.SecurityWebFilterChain;
 public class SecurityConfig {
     private final GatewayProperties properties;
 
+    /**
+     * 初始化 security config 所需的依赖与运行期状态。
+    */
     public SecurityConfig(GatewayProperties properties) {
         this.properties = properties;
     }
 
     @Bean
+    /**
+     * 执行 security web filter chain 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
         GatewayProperties.Security security = properties.getAdmin().getSecurity();
         boolean oidcEnabled = properties.getOidc().isEnabled();
@@ -52,6 +58,9 @@ public class SecurityConfig {
     }
 
     @Bean
+    /**
+     * 执行 admin users 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public MapReactiveUserDetailsService adminUsers(PasswordEncoder passwordEncoder) {
         GatewayProperties.Security security = properties.getAdmin().getSecurity();
         return new MapReactiveUserDetailsService(User
@@ -62,6 +71,9 @@ public class SecurityConfig {
     }
 
     @Bean
+    /**
+     * 执行 password encoder 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public PasswordEncoder passwordEncoder() {
         return PasswordEncoderFactories.createDelegatingPasswordEncoder();
     }

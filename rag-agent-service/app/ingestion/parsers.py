@@ -8,6 +8,10 @@ class DocumentParser:
     """Best-effort parser with optional heavy dependencies kept at module boundaries."""
 
     def parse(self, path: Path) -> tuple[str, dict[str, Any]]:
+        """按受控文件类型提取文本及来源元数据，但不直接写文档或索引。
+
+        缺失可选解析依赖会显式失败，使队列记录可重试错误，而不是产生空证据。
+        """
         file_type = detect_file_type(path)
         if file_type in {"text", "markdown"}:
             return path.read_text(encoding="utf-8", errors="ignore"), {"parser": file_type}
@@ -31,6 +35,7 @@ class DocumentParser:
         return path.read_text(encoding="utf-8", errors="ignore"), {"parser": "fallback-text"}
 
     def _parse_pdf(self, path: Path) -> str:
+        """读取 PDF 文本层；疑似扫描件才降级为本地 OCR，避免常规文档高开销。"""
         try:
             import fitz  # type: ignore
         except ImportError as exc:
@@ -77,11 +82,10 @@ class DocumentParser:
         return "\n".join(pages_text)
 
     def _ocr_image(self, path: Path) -> str:
-        """Extract text locally and label it as OCR-derived evidence.
+        """本地提取图片 OCR 文本，并明确将其标记为可检索的派生证据。
 
-        The original image remains the authoritative artifact in object storage;
-        OCR text is a searchable derivative and must not be presented as a
-        pixel-perfect transcription without visual review.
+        原始图片仍是对象存储中的权威载体；未经人工视觉复核，OCR 文本不得被
+        表述为像素级准确的原件转写。
         """
         try:
             import numpy as np  # type: ignore
@@ -97,6 +101,7 @@ class DocumentParser:
         return OcrEngine.instance().recognize_image(pixels[:, :, ::-1])
 
     def _parse_word(self, path: Path) -> str:
+        """提取 Word 段落；缺少 python-docx 时显式中断摄取任务。"""
         try:
             from docx import Document as WordDocument  # type: ignore
         except ImportError as exc:
@@ -107,6 +112,7 @@ class DocumentParser:
         return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
     def _parse_excel(self, path: Path) -> str:
+        """逐表页转为可检索 Markdown，保留 sheet 边界而不臆造表格语义。"""
         try:
             import pandas as pd  # type: ignore
         except ImportError as exc:

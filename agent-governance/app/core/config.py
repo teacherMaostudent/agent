@@ -78,6 +78,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_security(self) -> Settings:
+        """在生产启动期强制检查审计身份、存储、消息与模型调用安全前提。"""
         if self.environment.lower() in {"production", "prod"}:
             unsafe: list[str] = []
             if not self.enforce_auditor_role:

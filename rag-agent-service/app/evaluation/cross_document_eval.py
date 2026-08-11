@@ -120,6 +120,7 @@ def evaluate_suite(pairs: list[tuple[dict, dict]]) -> SuiteReport:
 
 
 def _mean(xs: list[float]) -> float:
+    """计算序列算术平均值；空序列使用零以保持聚合指标可计算。"""
     return sum(xs) / len(xs) if xs else 0.0
 
 

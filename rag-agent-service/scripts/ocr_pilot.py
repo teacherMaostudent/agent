@@ -15,6 +15,7 @@ from pathlib import Path
 
 
 def main() -> None:
+    """执行指定 PDF 页的 OCR 试点，并打印结果供人工确认识别质量。"""
     if len(sys.argv) < 2:
         print("用法: python scripts/ocr_pilot.py <PDF路径> [起始页=0] [页数=5]")
         sys.exit(1)

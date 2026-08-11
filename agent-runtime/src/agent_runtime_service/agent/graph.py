@@ -61,6 +61,12 @@ class AgentGraph:
         checkpointer=None,
         cancellation_checker: Callable[[str, str], bool] | None = None,
     ) -> None:
+        """组装受控执行图。
+
+        ``context_client`` 是会话与 ACL 的唯一所有者，``rag_client`` 仅能经稳定
+        契约读取证据；二者均不得让 Runtime 直接接触其内部存储。可选取消检查器在
+        每个有副作用节点前执行，使 API 取消能够在长任务中尽快生效。
+        """
         self.decision_engine = decision_engine
         self.context_client = context_client
         # Evidence is read only through the published RAG contract. Context
@@ -76,6 +82,11 @@ class AgentGraph:
         self.graph = self._build().compile(checkpointer=checkpointer or InMemorySaver())
 
     def _build(self):
+        """声明不可绕过的状态机拓扑。
+
+        规划先于模型决策；检索和工具调用前分别经过预算守卫，审批中断恢复后回到
+        同一持久化线程。这里不按模型输出动态加边，避免模型取得流程控制权。
+        """
         # The plan phase runs before free-form decisioning.  It constrains
         # reachable knowledge sources and tools to the published snapshot.
         graph = StateGraph(AgentState)
@@ -130,7 +141,11 @@ class AgentGraph:
         return graph
 
     def run(self, initial: AgentState, thread_id: str) -> AgentRunResult:
-        """Execute a resumable published plan and surface approval interrupts safely."""
+        """从初始状态执行一次可恢复运行并转换内部异常为稳定结果。
+
+        ``thread_id`` 只用于 LangGraph 检查点，不授予业务权限；租户仍来自状态。
+        限额和取消属于预期终止，不能向调用者泄露框架异常或误报成成功。
+        """
         config = self._config(thread_id, initial["max_steps"])
         try:
             with trace.get_tracer(__name__).start_as_current_span("agent.graph.run") as span:
@@ -150,6 +165,11 @@ class AgentGraph:
         *,
         max_steps: int,
     ) -> AgentRunResult:
+        """向已中断的审批节点注入人工决定并继续原线程。
+
+        只接受 ``ApprovalResume`` 结构化载荷，避免将任意 API body 写入图状态；
+        检查点决定恢复位置，因此不得重新提供或重放初始请求。
+        """
         try:
             result = self.graph.invoke(
                 Command(resume=approval.model_dump(mode="json")),
@@ -163,12 +183,18 @@ class AgentGraph:
 
     @staticmethod
     def _config(thread_id: str, max_steps: int) -> dict[str, Any]:
+        """生成检查点标识和防死循环递归上限。
+
+        上限高于业务步数以容纳守卫、审批和收尾节点；实际业务步数仍由预算守卫
+        限制，不能借此放宽 ``max_steps``。
+        """
         return {
             "configurable": {"thread_id": thread_id},
             "recursion_limit": max(30, max_steps * 5 + 15),
         }
 
     def _analyze(self, state: AgentState) -> dict:
+        """执行意图、实体和来源分析，并为可选 LLM 分析做成本预留/对账。"""
         self._ensure_active(state)
         budget = self._budget(state)
         if self.planner.analyzer.uses_llm:
@@ -192,6 +218,11 @@ class AgentGraph:
         }
 
     def _load_memory(self, state: AgentState) -> dict:
+        """从 Context 服务读取已授权历史，但不在此阶段触发 RAG。
+
+        当前用户的同一问题会从历史中排除，防止 prompt 重复；Context 的降级状态
+        原样保留到运行状态，供后续规划与审计判断。
+        """
         self._ensure_active(state)
         request = ContextAssembleRequest(
             session_id=state.get("session_id", state["request_id"]),
@@ -228,6 +259,7 @@ class AgentGraph:
         }
 
     def _build_plan(self, state: AgentState) -> dict:
+        """把分析结果编译为当前运行唯一可用的路由、SLA 与检索策略。"""
         self._ensure_active(state)
         plan = self.planner.build_plan(state)
         return {
@@ -241,6 +273,7 @@ class AgentGraph:
 
     @staticmethod
     def _plan_route(state: AgentState) -> str:
+        """将受控计划路由映射为图节点；未知策略不允许跳过受控 Agent 路径。"""
         route = state["execution_plan"]["route"]["route"]
         if route == RouteType.CLARIFY:
             return "clarify"
@@ -249,7 +282,11 @@ class AgentGraph:
         return "agent"
 
     def _decide(self, state: AgentState) -> dict:
-        """Request one next action after enforcing the run's hard budget limits."""
+        """请求一次下一动作，并在模型调用前后严格管理预算。
+
+        决策引擎只能返回动作，不能直接执行工具或改变图边；网关实际费用会覆盖预留
+        值，避免由于估算偏差长期低报成本。
+        """
         self._ensure_active(state)
         budget = self.budget_guard.count_step(self._budget(state))
         if getattr(self.decision_engine, "uses_llm", False):
@@ -277,6 +314,7 @@ class AgentGraph:
         }
 
     def _route(self, state: AgentState) -> str:
+        """依据已验证的动作选择后继节点，超过步骤上限时优先终止。"""
         if state.get("step_count", 0) >= state["max_steps"]:
             return "limit"
         action = AgentDecision.model_validate(state["decision"]).action
@@ -287,13 +325,16 @@ class AgentGraph:
         }[action]
 
     def _retrieve(self, state: AgentState) -> dict:
+        """执行模型明确请求的下一轮检索，查询仅取已校验的决策字段。"""
         decision = AgentDecision.model_validate(state["decision"])
         return self._do_retrieve(state, decision.query, "retrieve")
 
     def _planned_retrieve(self, state: AgentState) -> dict:
+        """执行计划强制要求的首轮检索，避免模型跳过发布时约束的证据步骤。"""
         return self._do_retrieve(state, state["task"], "planned_retrieve")
 
     def _retrieval_guard(self, state: AgentState) -> dict:
+        """在检索前消耗轮次预算；达到策略上限立即失败而非静默削弱证据要求。"""
         self._ensure_active(state)
         current = self._budget(state)
         policy = state.get("execution_plan", {}).get("retrieval_policy", {})
@@ -306,6 +347,11 @@ class AgentGraph:
         return {"budget": budget.model_dump(mode="json")}
 
     def _do_retrieve(self, state: AgentState, query: str, node_name: str) -> dict:
+        """组装上下文并获取受发布知识绑定限制的证据。
+
+        可选 RAG 故障仅在策略允许且证据非必需时降级为 memory-only；证据必需的
+        发布版本必须失败关闭。历史、证据和降级原因都会写入审计状态。
+        """
         self._ensure_active(state)
         compiled = state.get("compiled_plan", {})
         knowledge = compiled.get("knowledge", [])
@@ -415,6 +461,7 @@ class AgentGraph:
 
     @staticmethod
     def _rag_required(state: AgentState) -> bool:
+        """按“有效策略→请求覆盖→发布绑定”优先级判定 RAG 是否必须成功。"""
         effective = state.get("execution_plan", {}).get("retrieval_policy", {})
         if "retrieval_required" in effective:
             return bool(effective["retrieval_required"])
@@ -432,12 +479,17 @@ class AgentGraph:
         )
 
     def _tool_guard(self, state: AgentState) -> dict:
+        """在任何工具执行前预留一次工具费用，防止审批后绕过成本限制。"""
         self._ensure_active(state)
         budget = self.budget_guard.reserve_tool(self._budget(state))
         return {"budget": budget.model_dump(mode="json")}
 
     def _tool(self, state: AgentState) -> dict:
-        """Execute an approved manifest and sanitize its output before re-prompting."""
+        """执行发布版本绑定的工具，并在重新提示模型前限制、脱敏不可信输出。
+
+        工具待审批时图会持久化中断；拒绝直接终止，批准后只用一次性审批标识重试
+        原调用。普通工具异常转为观察结果，供模型在剩余预算内处理。
+        """
         self._ensure_active(state)
         decision = AgentDecision.model_validate(state["decision"])
         published_version = self._published_tool_version(state, decision.tool_name)
@@ -516,6 +568,7 @@ class AgentGraph:
 
     @staticmethod
     def _after_tool(state: AgentState) -> str:
+        """仅工具被人工拒绝时结束，其他工具结果交回决策节点解释。"""
         return "finish" if state.get("termination_reason") == "TOOL_REJECTED" else "continue"
 
     @staticmethod
@@ -524,6 +577,11 @@ class AgentGraph:
         approval_id: str,
         tool_version: str,
     ) -> ToolContext:
+        """从运行状态构造最小工具权限上下文。
+
+        工具版本和审批标识由发布快照与审批流提供，模型参数不能覆盖；剩余尝试数
+        下传给 Tool Gateway，使下游也能拒绝超过执行预算的请求。
+        """
         return ToolContext(
             tenant_id=state["tenant_id"],
             user_id=state["user_id"],
@@ -543,6 +601,7 @@ class AgentGraph:
 
     @staticmethod
     def _published_tool_version(state: AgentState, tool_name: str) -> str:
+        """返回快照绑定的工具版本；未绑定工具必须显式拒绝执行。"""
         spec = state.get("agent_snapshot", {}).get("spec", {})
         if "tools" not in spec:
             return ""
@@ -555,6 +614,7 @@ class AgentGraph:
         )
 
     def _clarify(self, state: AgentState) -> dict:
+        """为低置信度意图生成确定性澄清结果，不调用模型以避免猜测性副作用。"""
         return {
             "final_answer": (
                 "Please clarify the request so that its intent can be determined safely."
@@ -564,6 +624,7 @@ class AgentGraph:
         }
 
     def _finalize(self, state: AgentState) -> dict:
+        """验证最终回答符合发布输出契约，并处理非回答的步数耗尽。"""
         self._ensure_active(state)
         with trace.get_tracer(__name__).start_as_current_span("agent.generate_final_answer"):
             decision = AgentDecision.model_validate(state["decision"])
@@ -582,6 +643,11 @@ class AgentGraph:
             }
 
     def _safety(self, state: AgentState) -> dict:
+        """实施回答前的最小证据规则并记录可审计安全状态。
+
+        工具成功可构成行动结果；否则若策略禁止无证据回答，不能以流畅文案掩盖
+        检索失败或证据不足。
+        """
         with trace.get_tracer(__name__).start_as_current_span("answer.safety_check"):
             answer = state.get("final_answer", "").strip()
             if state.get("termination_reason") == "NEEDS_CLARIFICATION":
@@ -610,6 +676,7 @@ class AgentGraph:
             return {"final_answer": answer, "safety_status": "PASSED"}
 
     def _result(self, result: dict[str, Any]) -> AgentRunResult:
+        """将 LangGraph 内部状态压缩为公开 API 结果，并保留审批中断详情。"""
         interrupt_items = [item.value for item in result.get("__interrupt__", [])]
         if interrupt_items:
             return AgentRunResult(
@@ -638,6 +705,7 @@ class AgentGraph:
 
     @staticmethod
     def _limited_result(state: dict[str, Any], error: RuntimeLimitExceeded) -> AgentRunResult:
+        """将预算或发布边界错误标准化为无敏感细节的 ``LIMIT_EXCEEDED`` 响应。"""
         return AgentRunResult(
             status="LIMIT_EXCEEDED",
             answer="Unable to complete within the configured runtime limits.",
@@ -652,6 +720,7 @@ class AgentGraph:
 
     @staticmethod
     def _cancelled_result(state: dict[str, Any]) -> AgentRunResult:
+        """将协作取消转为幂等终态，并保留已有执行痕迹供治理审计。"""
         return AgentRunResult(
             status="CANCELLED",
             answer="The run was cancelled.",
@@ -665,6 +734,7 @@ class AgentGraph:
         )
 
     def _ensure_active(self, state: AgentState) -> None:
+        """检查时间、成本、调用次数及外部取消标记；失败即阻止下一副作用。"""
         budget = self._budget(state)
         self.budget_guard.ensure_active(budget)
         if self.cancellation_checker and self.cancellation_checker(
@@ -675,6 +745,11 @@ class AgentGraph:
 
     @staticmethod
     def _budget(state: AgentState) -> RuntimeBudget:
+        """反序列化已有预算，或为本地兼容调用构造保守默认预算。
+
+        默认值只服务开发入口；生产请求应由运行 API 提供明确 deadline 与限制，
+        不能把此兼容路径当作无限额度。
+        """
         existing = state.get("budget")
         if existing:
             return RuntimeBudget.model_validate(existing)
@@ -700,6 +775,7 @@ class AgentGraph:
         node: str,
         detail: dict[str, Any],
     ) -> list[dict[str, Any]]:
+        """以追加方式记录节点级审计事件，避免节点覆盖此前的执行轨迹。"""
         return [
             *state.get("execution_trace", []),
             {
@@ -711,6 +787,7 @@ class AgentGraph:
 
     @staticmethod
     def _execution_headers(state: AgentState) -> dict[str, str]:
+        """向内部服务转发租户隔离、追踪和剩余预算，不透传原始用户 Header。"""
         budget = AgentGraph._budget(state)
         return {
             "X-Tenant-Id": state.get("tenant_id", ""),

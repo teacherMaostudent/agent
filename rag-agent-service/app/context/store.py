@@ -10,6 +10,7 @@ class ConversationStore:
     """Small persistence adapter; replace with PostgreSQL for multi-node production."""
 
     def __init__(self, backend=None, *, retention_days: int = 30, max_messages: int = 500) -> None:
+        """配置存储后端、保留期和单会话上限；会话 ACL 由服务层生成隔离键。"""
         self._db = backend
         self._memory: dict[str, list[ConversationMessage]] = {}
         self._lock = RLock()
@@ -17,6 +18,7 @@ class ConversationStore:
         self._max_messages = max_messages
 
     def list_messages(self, session_id: str) -> list[ConversationMessage]:
+        """读取仍在保留期内的会话消息，不在读取时物理删除过期历史。"""
         with self._lock:
             if self._db is not None:
                 payload = self._db.get(_KIND_SESSION, session_id) or {"messages": []}
@@ -29,6 +31,7 @@ class ConversationStore:
             return [item for item in messages if item.created_at >= cutoff]
 
     def append(self, session_id: str, message: ConversationMessage) -> None:
+        """以有限 CAS 重试追加消息，防止并发请求丢失上下文；超过上限保留最新消息。"""
         with self._lock:
             if self._db is not None:
                 for _ in range(8):
@@ -53,11 +56,13 @@ class ConversationStore:
                 self._memory[session_id] = messages[-self._max_messages :]
 
     def delete(self, session_id: str) -> bool:
+        """按完整隔离键删除会话；调用方需先将租户、用户与会话组合为该键。"""
         with self._lock:
             if self._db is not None:
                 return self._db.delete(_KIND_SESSION, session_id)
             return self._memory.pop(session_id, None) is not None
 
     def close(self) -> None:
+        """关闭底层 KV 后端；内存模式没有外部资源。"""
         if self._db is not None:
             self._db.close()

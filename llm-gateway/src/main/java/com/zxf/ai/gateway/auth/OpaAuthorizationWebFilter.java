@@ -26,12 +26,18 @@ public class OpaAuthorizationWebFilter implements WebFilter, Ordered {
     private final GatewayProperties properties;
     private final WebClient client;
 
+    /**
+     * 初始化 opa authorization web filter 所需的依赖与运行期状态。
+    */
     public OpaAuthorizationWebFilter(GatewayProperties properties, WebClient.Builder builder) {
         this.properties = properties;
         this.client = builder.baseUrl(properties.getOpa().getBaseUrl()).build();
     }
 
     @Override
+    /**
+     * 在请求进入后续链路前执行 filter，确保身份和授权边界得到落实。
+    */
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         if (!properties.getOpa().isEnabled()
                 || !exchange.getRequest().getPath().value().equals("/v1/chat/completions")) {
@@ -57,12 +63,18 @@ public class OpaAuthorizationWebFilter implements WebFilter, Ordered {
                 .onErrorResume(error -> deny(exchange));
     }
 
+    /**
+     * 执行 allowed 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private boolean allowed(Map<?, ?> document) {
         Object result = document.get("result");
         return Boolean.TRUE.equals(result)
                 || result instanceof Map<?, ?> decision && Boolean.TRUE.equals(decision.get("allow"));
     }
 
+    /**
+     * 执行 deny 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private Mono<Void> deny(ServerWebExchange exchange) {
         exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);
         exchange.getResponse().getHeaders().setContentType(MediaType.APPLICATION_JSON);
@@ -72,6 +84,9 @@ public class OpaAuthorizationWebFilter implements WebFilter, Ordered {
     }
 
     @Override
+    /**
+     * 读取当前配置或运行状态字段 get order 的值，供调用方进行受控决策。
+    */
     public int getOrder() {
         return SecurityWebFiltersOrder.AUTHENTICATION.getOrder() + 2;
     }

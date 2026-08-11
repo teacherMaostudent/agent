@@ -38,7 +38,11 @@ class OidcIdentityMiddleware:
         trusted_workload_prefixes: Iterable[str] = (),
         workload_roles: Iterable[str] = ("platform-workload",),
     ) -> None:
-        """Initialize OidcIdentityMiddleware dependencies and local state."""
+        """配置 JWT 验证来源、声明映射及受信任工作负载例外。
+
+        ``trusted_workload_prefixes`` 只能用于独立受 mTLS/网络策略保护的端点；其余
+        业务请求都会删除调用方伪造的身份 Header 后再写入验证后的声明。
+        """
         self.app = app
         self.enabled = enabled
         self.issuer = issuer.rstrip("/")
@@ -57,7 +61,11 @@ class OidcIdentityMiddleware:
         )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Internal helper for OidcIdentityMiddleware; preserve its caller-facing invariant."""
+        """验证 Bearer JWT 并重建下游兼容身份 Header。
+
+        仅带 platform-workload 角色的主体可委托租户；普通用户的 tenant/user 必须取自
+        已验证声明。任何验签、受众或必需声明失败一律返回 401。
+        """
         if (
             not self.enabled
             or scope["type"] != "http"
@@ -123,13 +131,13 @@ class OidcIdentityMiddleware:
 
     @staticmethod
     async def _reject(send: Send, detail: str) -> None:
-        """Internal helper for OidcIdentityMiddleware; preserve its caller-facing invariant."""
+        """以统一 JSON 401 终止 ASGI 调用，避免继续进入任何业务中间件。"""
         response = JSONResponse({"detail": detail}, status_code=401)
         await response({"type": "http"}, lambda: None, send)
 
 
 def _required_claim(claims: dict[str, Any], name: str) -> str:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """读取非空字符串声明；不接受隐式类型转换以避免身份歧义。"""
     value = claims.get(name)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"required claim is missing: {name}")
@@ -137,7 +145,7 @@ def _required_claim(claims: dict[str, Any], name: str) -> str:
 
 
 def _roles(value: Any) -> list[str]:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """标准化逗号字符串或列表形式的角色/权限声明。"""
     if isinstance(value, str):
         return [part.strip() for part in value.split(",") if part.strip()]
     if isinstance(value, list):
@@ -146,7 +154,7 @@ def _roles(value: Any) -> list[str]:
 
 
 def _required_header(headers: Headers, name: str) -> str:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """读取经过认证工作负载委托的必填 Header，缺失即拒绝。"""
     value = headers.get(name, "").strip()
     if not value:
         raise ValueError(f"verified workload did not provide delegated header: {name}")
@@ -166,7 +174,7 @@ class WorkloadTokenProvider:
         scope: str = "",
         timeout: float = 5.0,
     ) -> None:
-        """Initialize WorkloadTokenProvider dependencies and local state."""
+        """配置 client-credentials 凭据并初始化带锁缓存；密钥仅应来自 Secret 挂载。"""
         self.token_url = token_url
         self.client_id = client_id
         self.client_secret = client_secret
@@ -179,17 +187,17 @@ class WorkloadTokenProvider:
 
     @property
     def enabled(self) -> bool:
-        """Perform enabled within the WorkloadTokenProvider ownership boundary."""
+        """仅当三项必需 OAuth 配置齐全时启用令牌注入。"""
         return bool(self.token_url and self.client_id and self.client_secret)
 
     def authorization_header(self) -> dict[str, str]:
-        """Perform authorization header within the WorkloadTokenProvider ownership boundary."""
+        """返回认证头；未配置身份时返回空值以保留本地开发兼容性。"""
         if not self.enabled:
             return {}
         return {"Authorization": f"Bearer {self.access_token()}"}
 
     def access_token(self) -> str:
-        """Refresh under a lock so concurrent calls cannot stampede the IdP."""
+        """在锁内刷新访问令牌，避免并发请求同时冲击身份提供方。"""
         with self._lock:
             if self._token and monotonic() < self._expires_at:
                 return self._token
@@ -216,7 +224,7 @@ class WorkloadTokenProvider:
 
 
 def build_workload_token_provider(settings: Any) -> WorkloadTokenProvider:
-    """Perform build workload token provider within the module ownership boundary."""
+    """从任意服务 Settings 读取统一字段，构造其专属工作负载令牌提供者。"""
     return WorkloadTokenProvider(
         token_url=getattr(settings, "workload_token_url", ""),
         client_id=getattr(settings, "workload_client_id", ""),

@@ -16,7 +16,7 @@ from app.infrastructure.kafka_consumer import _event
 
 
 async def replay(settings: Settings, event_id: str, max_records: int) -> int:
-    """Republish selected dead-letter events through normal idempotent ingestion."""
+    """处理 replay 对应的当前组件内部业务步骤。"""
     consumer = AIOKafkaConsumer(
         settings.kafka_dlq_topic,
         bootstrap_servers=settings.kafka_bootstrap_servers,
@@ -58,7 +58,7 @@ async def replay(settings: Settings, event_id: str, max_records: int) -> int:
 
 
 def main() -> None:
-    """Perform main within the module ownership boundary."""
+    """处理 main 对应的当前组件内部业务步骤。"""
     parser = argparse.ArgumentParser(description="Explicitly replay Governance DLQ events")
     parser.add_argument("--event-id", default="")
     parser.add_argument("--max-records", type=int, default=1)

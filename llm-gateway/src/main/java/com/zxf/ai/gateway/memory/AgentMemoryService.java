@@ -25,6 +25,7 @@ public class AgentMemoryService {
     private final RuntimeStateRepository stateRepository;
     private final List<MemoryItem> memory = new ArrayList<>();
 
+    /** 选择可选持久化仓储；未配置时仅用于本地兼容演示的内存实现。 */
     public AgentMemoryService(ObjectProvider<RuntimeStateRepository> stateRepository) {
         this.stateRepository = stateRepository.getIfAvailable();
     }
@@ -123,9 +124,11 @@ public class AgentMemoryService {
         };
     }
 
+    /** 描述一次分层记忆写入，包括隔离范围、内容与附加元数据。 */
     public record MemoryWriteRequest(String layer, String scopeId, String content, Map<String, Object> metadata) {
     }
 
+    /** 表达已写入的不可变记忆项及其作用域和创建时间。 */
     public record MemoryItem(String id, String layer, String scopeId, String content, Map<String, Object> metadata, Instant createdAt) {
     }
 }

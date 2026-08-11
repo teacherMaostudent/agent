@@ -22,6 +22,11 @@ class AsyncRunQueue:
     """Durable local queue behind the asynchronous Runtime API."""
 
     def __init__(self, path: Path, execute: Callable[[dict[str, Any]], dict]) -> None:
+        """初始化仅供开发的 SQLite 队列并恢复未完成任务。
+
+        该实现不宣称 HA；生产使用 Temporal。崩溃前 RUNNING 会回到 QUEUED，因此执行器
+        必须保持幂等。
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(path, check_same_thread=False, timeout=30)
         self._connection.row_factory = sqlite3.Row
@@ -48,7 +53,7 @@ class AsyncRunQueue:
             self._pool.submit(self._run, json.loads(row["submission_json"]))
 
     def submit(self, submission: dict[str, Any]) -> dict[str, Any]:
-        """Persist first, then schedule; retries with the same request id are replays."""
+        """先持久化再调度；相同请求标识的重试只返回既有任务，保证异步提交幂等。"""
         now = datetime.now(UTC).isoformat()
         run_id = submission.setdefault("run_id", f"run_{uuid4().hex}")
         with self._lock:
@@ -75,6 +80,7 @@ class AsyncRunQueue:
         return self.get(submission["tenant_id"], run_id) or {}
 
     def get(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+        """按租户和运行 ID 读取队列快照，避免跨租户枚举状态。"""
         with self._lock:
             row = self._connection.execute(
                 "SELECT * FROM runtime_jobs WHERE tenant_id = ? AND run_id = ?",
@@ -83,6 +89,7 @@ class AsyncRunQueue:
         return self._row(row) if row else None
 
     def cancel(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+        """记录协作式取消；已运行任务在 Graph 的下一个守卫节点实际停止。"""
         with self._lock:
             self._connection.execute(
                 "UPDATE runtime_jobs SET cancel_requested = 1, status = CASE WHEN status = 'QUEUED' THEN 'CANCELLED' ELSE status END, "
@@ -93,11 +100,13 @@ class AsyncRunQueue:
         return self.get(tenant_id, run_id)
 
     def close(self) -> None:
+        """等待本地任务结束后关闭 SQLite 连接，适用于开发进程退出。"""
         self._pool.shutdown(wait=True, cancel_futures=False)
         with self._lock:
             self._connection.close()
 
     def _run(self, submission: dict[str, Any]) -> None:
+        """在工作线程执行一条持久化提交，并以终态或错误更新本地记录。"""
         run_id = submission["run_id"]
         with self._lock:
             row = self._connection.execute(
@@ -130,6 +139,7 @@ class AsyncRunQueue:
 
     @staticmethod
     def _row(row: sqlite3.Row) -> dict[str, Any]:
+        """将 SQLite 行转为 API 安全快照，不返回内部提交 payload。"""
         return {
             "run_id": row["run_id"],
             "request_id": row["request_id"],

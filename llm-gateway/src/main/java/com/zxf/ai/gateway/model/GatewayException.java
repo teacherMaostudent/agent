@@ -11,11 +11,13 @@ import org.springframework.http.HttpStatus;
 public class GatewayException extends RuntimeException {
     private final HttpStatus status;
 
+    /** 以可安全返回给调用方的消息和对应 HTTP 状态构造统一网关异常。 */
     public GatewayException(HttpStatus status, String message) {
         super(message);
         this.status = status;
     }
 
+    /** 返回异常应映射到的 HTTP 状态。 */
     public HttpStatus status() {
         return status;
     }

@@ -26,12 +26,14 @@ public class QuantileRegressionOutputTokenPredictor implements OutputTokenPredic
     private final TokenEstimator tokenEstimator;
     private final Map<String, ModelState> states = new ConcurrentHashMap<>();
 
+    /** 注入预测参数与统一 Token 估算器，状态仍按 provider:model 隔离保存。 */
     public QuantileRegressionOutputTokenPredictor(GatewayProperties properties, TokenEstimator tokenEstimator) {
         this.properties = properties;
         this.tokenEstimator = tokenEstimator;
     }
 
     @Override
+    /** 返回冷启动或在线分位回归预测，并选择满足预算风险偏好的预占分位数。 */
     public OutputTokenPrediction predict(ModelEndpoint endpoint, JsonNode request) {
         GatewayProperties.CostPrediction config = properties.getCostPrediction();
         if (!config.isEnabled()) {
@@ -60,6 +62,7 @@ public class QuantileRegressionOutputTokenPredictor implements OutputTokenPredic
     }
 
     @Override
+    /** 用完成响应的实际输出长度更新该模型的分位回归和 P95 残差窗口。 */
     public void observe(ModelEndpoint endpoint, JsonNode request, long actualCompletionTokens) {
         if (!properties.getCostPrediction().isEnabled() || actualCompletionTokens < 0) {
             return;
@@ -78,6 +81,7 @@ public class QuantileRegressionOutputTokenPredictor implements OutputTokenPredic
     /**
      * 关闭在线预测时仍返回一个静态冷启动预算，保证配额预占链路不会退回到“只计算输入”的不安全状态。
      */
+    /** 在线预测关闭或样本不足时返回配置化冷启动分位数，仍保留安全预算。 */
     private OutputTokenPrediction coldStartPrediction(GatewayProperties.CostPrediction config, JsonNode request) {
         long p50 = Math.max(1, config.getColdStartP50());
         long p90 = Math.max(p50, config.getColdStartP90());
@@ -92,6 +96,7 @@ public class QuantileRegressionOutputTokenPredictor implements OutputTokenPredic
                 Math.max(1, selected), 0, 0, "cold-start-static-v1");
     }
 
+    /** 用冷启动分位数初始化线性模型权重，避免初始预测为零。 */
     private ModelState newState(GatewayProperties.CostPrediction config) {
         long[] cold = {config.getColdStartP50(), config.getColdStartP90(),
                 config.getColdStartP95(), config.getColdStartP99()};
@@ -106,6 +111,7 @@ public class QuantileRegressionOutputTokenPredictor implements OutputTokenPredic
         return new ModelState(weights);
     }
 
+    /** 从提示词规模、消息、工具、RAG、结构化输出与温度构造稳定特征向量。 */
     private double[] features(ModelEndpoint endpoint, JsonNode request) {
         long inputTokens = tokenEstimator.estimatePromptTokens(endpoint, request);
         int messageCount = request.path("messages").isArray() ? request.path("messages").size() : 1;
@@ -123,11 +129,13 @@ public class QuantileRegressionOutputTokenPredictor implements OutputTokenPredic
         };
     }
 
+    /** 读取调用方显式声明的最大输出长度；未声明时返回零表示不施加硬上限。 */
     private long explicitOutputLimit(JsonNode request) {
         long maxCompletion = request.path("max_completion_tokens").asLong(0);
         return maxCompletion > 0 ? maxCompletion : request.path("max_tokens").asLong(0);
     }
 
+    /** 将配置的风险分位数映射到对应预测值，保证选择结果可审计。 */
     private long select(double quantile, long p50, long p90, long p95, long p99) {
         if (quantile <= 0.50) return p50;
         if (quantile <= 0.90) return p90;
@@ -135,12 +143,14 @@ public class QuantileRegressionOutputTokenPredictor implements OutputTokenPredic
         return p99;
     }
 
+    /** 修复数值训练造成的分位数倒置，保持 P50 至 P99 单调不减。 */
     private void enforceMonotonic(long[] values) {
         for (int i = 1; i < values.length; i++) {
             values[i] = Math.max(values[i], values[i - 1]);
         }
     }
 
+    /** 从近期残差取目标覆盖率分位数，给 P95 预测增加非负校准余量。 */
     private long conformalCorrection(Deque<Long> residuals, double coverage) {
         if (residuals.isEmpty()) return 0;
         long[] sorted = residuals.stream().mapToLong(Long::longValue).sorted().toArray();
@@ -148,6 +158,7 @@ public class QuantileRegressionOutputTokenPredictor implements OutputTokenPredic
         return Math.max(0, sorted[index]);
     }
 
+    /** 在加入校准余量时防止长整型溢出，溢出则饱和到最大值。 */
     private long safeAdd(long value, long delta) {
         if (Long.MAX_VALUE - value < delta) return Long.MAX_VALUE;
         return value + delta;
@@ -169,10 +180,12 @@ public class QuantileRegressionOutputTokenPredictor implements OutputTokenPredic
         private final Deque<Long> p95Residuals = new ArrayDeque<>();
         private long samples;
 
+        /** 保存四个分位模型的可变权重与有限长度的 P95 残差窗口。 */
         private ModelState(double[][] weights) {
             this.weights = weights;
         }
 
+        /** 对给定特征计算四个线性分位预测，并将每项下限限定为一个 Token。 */
         long[] predict(double[] features) {
             long[] result = new long[weights.length];
             for (int q = 0; q < weights.length; q++) {
@@ -183,6 +196,7 @@ public class QuantileRegressionOutputTokenPredictor implements OutputTokenPredic
             return result;
         }
 
+        /** 使用 pinball-loss 方向更新每个分位模型，避免依赖离线训练工件。 */
         void update(double[] features, long actual, double learningRate) {
             long[] predicted = predict(features);
             for (int q = 0; q < weights.length; q++) {
@@ -193,6 +207,7 @@ public class QuantileRegressionOutputTokenPredictor implements OutputTokenPredic
             }
         }
 
+        /** 记录 P95 残差并裁剪窗口，限制单模型的在线状态内存。 */
         void addResidual(long residual, int maxWindow) {
             p95Residuals.addLast(residual);
             while (p95Residuals.size() > Math.max(10, maxWindow)) p95Residuals.removeFirst();

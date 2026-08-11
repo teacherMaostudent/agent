@@ -22,21 +22,33 @@ import org.springframework.web.bind.annotation.RestController;
 public class LegacyAgentMemoryController {
     private final AgentMemoryService memoryService;
 
+    /**
+     * 初始化 legacy agent memory controller 所需的依赖与运行期状态。
+    */
     public LegacyAgentMemoryController(AgentMemoryService memoryService) {
         this.memoryService = memoryService;
     }
 
     @GetMapping("/admin/engineering/memory")
+    /**
+     * 执行 memory 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public Object memory() {
         return memoryService.snapshot();
     }
 
     @PostMapping("/admin/engineering/memory")
+    /**
+     * 执行 write memory 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public Object writeMemory(@RequestBody AgentMemoryService.MemoryWriteRequest request) {
         return memoryService.put(request);
     }
 
     @GetMapping("/v1/memory/context")
+    /**
+     * 执行 memory context 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public Object memoryContext(
             @RequestHeader(value = "X-User-Id", required = false) String userId,
             @RequestParam(value = "sessionId", required = false) String sessionId

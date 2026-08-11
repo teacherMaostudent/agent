@@ -31,11 +31,13 @@ public class GatewayPolicyService {
      */
     private final Map<String, AtomicInteger> minuteCounters = new ConcurrentHashMap<>();
 
+    /** 注入路由韧性参数和可选持久化仓储，以支持跨重启恢复熔断状态。 */
     public GatewayPolicyService(GatewayProperties properties, ObjectProvider<RuntimeStateRepository> stateRepository) {
         this.properties = properties;
         this.stateRepository = stateRepository.getIfAvailable();
     }
 
+    /** 在上游调用前执行熔断与每分钟路由限流，拒绝已知不可用或过载目标。 */
     public void beforeCall(ModelEndpoint endpoint) {
         RouteState state = state(endpoint.key());
         if (state.openUntil != null && state.openUntil.isAfter(Instant.now())) {
@@ -50,6 +52,7 @@ public class GatewayPolicyService {
         }
     }
 
+    /** 记录一次成功并复位连续失败计数，使半开恢复路径重新可用。 */
     public void recordSuccess(ModelEndpoint endpoint) {
         RouteState state = state(endpoint.key());
         // 成功一次即可关闭熔断并清零连续失败计数，属于简单半开恢复策略。
@@ -60,6 +63,7 @@ public class GatewayPolicyService {
         persist(endpoint.key(), state);
     }
 
+    /** 记录失败并在连续失败达到阈值时打开熔断窗口。 */
     public void recordFailure(ModelEndpoint endpoint) {
         RouteState state = state(endpoint.key());
         state.healthy = false;
@@ -72,11 +76,13 @@ public class GatewayPolicyService {
         persist(endpoint.key(), state);
     }
 
+    /** 判断路由当前是否未处于熔断窗口，供选路前的只读检查使用。 */
     public boolean isAvailable(ModelEndpoint endpoint) {
         RouteState state = state(endpoint.key());
         return state.openUntil == null || state.openUntil.isBefore(Instant.now());
     }
 
+    /** 返回路由健康和限流配置快照，不暴露任何上游服务密钥。 */
     public Map<String, Object> snapshot() {
         return Map.of(
                 "store", stateRepository == null ? "memory" : "mysql",
@@ -86,6 +92,7 @@ public class GatewayPolicyService {
         );
     }
 
+    /** 获取或从持久化状态恢复指定路由的并发安全健康状态。 */
     private RouteState state(String key) {
         return states.computeIfAbsent(key, ignored -> {
             RouteState state = new RouteState();
@@ -97,12 +104,14 @@ public class GatewayPolicyService {
         });
     }
 
+    /** 若持久化可用则保存路由状态，使重启后不丢失熔断事实。 */
     private void persist(String key, RouteState state) {
         if (stateRepository != null) {
             stateRepository.saveDocument(ROUTE_STATE_KIND, key, RouteStateDocument.from(key, state));
         }
     }
 
+    /** 保存单一路由的熔断、健康与最近结果状态。 */
     public static class RouteState {
         private final AtomicInteger failureCount = new AtomicInteger();
         private volatile boolean healthy = true;
@@ -110,26 +119,32 @@ public class GatewayPolicyService {
         private volatile Instant lastSuccessAt;
         private volatile Instant lastFailureAt;
 
+        /** 返回当前连续失败次数。 */
         public int getFailureCount() {
             return failureCount.get();
         }
 
+        /** 返回最后一次调用后记录的健康标记。 */
         public boolean isHealthy() {
             return healthy;
         }
 
+        /** 返回熔断窗口截止时间；为空表示路由未被熔断。 */
         public Instant getOpenUntil() {
             return openUntil;
         }
 
+        /** 返回最近一次成功调用时间。 */
         public Instant getLastSuccessAt() {
             return lastSuccessAt;
         }
 
+        /** 返回最近一次失败调用时间。 */
         public Instant getLastFailureAt() {
             return lastFailureAt;
         }
 
+        /** 用已持久化快照恢复本地路由状态，保持计数和时间点的一致性。 */
         private void apply(RouteStateDocument document) {
             failureCount.set(document.failureCount());
             healthy = document.healthy();
@@ -139,6 +154,7 @@ public class GatewayPolicyService {
         }
     }
 
+    /** 定义可落库的路由状态快照，避免直接持久化可变并发对象。 */
     public record RouteStateDocument(
             String routeKey,
             int failureCount,
@@ -147,6 +163,7 @@ public class GatewayPolicyService {
             Instant lastSuccessAt,
             Instant lastFailureAt
     ) {
+        /** 将可变运行状态投影为可序列化的不可变持久化文档。 */
         static RouteStateDocument from(String routeKey, RouteState state) {
             return new RouteStateDocument(
                     routeKey,

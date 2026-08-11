@@ -26,10 +26,12 @@ public class UsageReportService {
     private final RuntimeStateRepository stateRepository;
     private final List<UsageRecord> records = new ArrayList<>();
 
+    /** 选择可选持久化仓储；无仓储时仅保留当前实例的用量数据。 */
     public UsageReportService(ObjectProvider<RuntimeStateRepository> stateRepository) {
         this.stateRepository = stateRepository.getIfAvailable();
     }
 
+    /** 记录一次网关模型调用的 Token、成本和预测偏差输入，保留完整关联标识。 */
     public void record(GatewayRequestContext context, ModelEndpoint endpoint, GatewayUsage usage,
                        OutputTokenPrediction prediction, long latencyMs) {
         UsageRecord record = new UsageRecord(
@@ -70,6 +72,7 @@ public class UsageReportService {
         }
     }
 
+    /** 接收其他平台组件报告的成本，明确标记其非网关本地 Token 计量来源。 */
     public void recordExternal(String requestId, String tenantId, String userId, String component,
                                String operation, BigDecimal cost, long latencyMs) {
         UsageRecord record = new UsageRecord(
@@ -110,6 +113,7 @@ public class UsageReportService {
         }
     }
 
+    /** 生成全量用量与成本汇总，并按提供商、模型、用户和租户分组。 */
     public Map<String, Object> report() {
         List<UsageRecord> snapshot = snapshot();
         return Map.of(
@@ -126,6 +130,7 @@ public class UsageReportService {
         );
     }
 
+    /** 生成当天用量与成本快照，作为日级预算和异常排查输入。 */
     public Map<String, Object> dailyReport() {
         LocalDate today = LocalDate.now();
         List<UsageRecord> todayRecords = snapshot().stream()
@@ -141,6 +146,7 @@ public class UsageReportService {
         );
     }
 
+    /** 清空用量历史；持久化部署将删除同种类记录，必须由授权管理操作触发。 */
     public void clear() {
         if (stateRepository != null) {
             stateRepository.deleteKind(KIND);
@@ -151,6 +157,7 @@ public class UsageReportService {
         }
     }
 
+    /** 返回稳定的用量记录副本，隔离报表读取与并发写入。 */
     private List<UsageRecord> snapshot() {
         if (stateRepository != null) {
             return stateRepository.listDocuments(KIND, UsageRecord.class);
@@ -160,6 +167,7 @@ public class UsageReportService {
         }
     }
 
+    /** 按调用方给定维度聚合用量记录。 */
     private Map<String, Summary> group(List<UsageRecord> source, java.util.function.Function<UsageRecord, String> classifier) {
         Map<String, Summary> result = new LinkedHashMap<>();
         for (UsageRecord record : source) {
@@ -168,12 +176,14 @@ public class UsageReportService {
         return result;
     }
 
+    /** 将一组用量记录归并为总量、成本和预测误差统计。 */
     private Summary summarize(List<UsageRecord> source) {
         Summary summary = new Summary();
         source.forEach(summary::add);
         return summary;
     }
 
+    /** 保存单次模型或外部组件成本上报的不可变用量事实。 */
     public record UsageRecord(
             Instant timestamp,
             String requestId,
@@ -205,6 +215,7 @@ public class UsageReportService {
     ) {
     }
 
+    /** 对用量、成本和 Token 预测误差进行增量聚合的统计对象。 */
     public static class Summary {
         private long requests;
         private long promptTokens;
@@ -215,6 +226,7 @@ public class UsageReportService {
         private long absolutePredictionErrorTotal;
         private long predictions;
 
+        /** 将一条用量记录累加到当前汇总，并仅对有预测的记录计算误差。 */
         void add(UsageRecord record) {
             requests++;
             promptTokens += record.promptTokens();
@@ -228,30 +240,37 @@ public class UsageReportService {
             }
         }
 
+        /** 返回汇总中的调用次数。 */
         public long getRequests() {
             return requests;
         }
 
+        /** 返回汇总提示词 Token 数。 */
         public long getPromptTokens() {
             return promptTokens;
         }
 
+        /** 返回汇总生成 Token 数。 */
         public long getCompletionTokens() {
             return completionTokens;
         }
 
+        /** 返回汇总总 Token 数。 */
         public long getTotalTokens() {
             return totalTokens;
         }
 
+        /** 返回汇总成本。 */
         public BigDecimal getCost() {
             return cost;
         }
 
+        /** 返回调用平均时延毫秒数。 */
         public long getAvgLatencyMs() {
             return requests == 0 ? 0 : latencyMsTotal / requests;
         }
 
+        /** 返回有预测样本的平均绝对生成 Token 误差。 */
         public long getAvgAbsolutePredictionErrorTokens() {
             return predictions == 0 ? 0 : absolutePredictionErrorTotal / predictions;
         }

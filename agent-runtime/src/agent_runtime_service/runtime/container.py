@@ -39,6 +39,11 @@ class AgentRuntimeContainer:
     """
 
     def __init__(self, *, build_async_queue: bool = True) -> None:
+        """按配置组合执行平面的依赖。
+
+        Runtime 只经 SDK HTTP 契约访问 Context/RAG/Tool Gateway；任一启动健康检查失败都
+        阻止接收请求，避免半可用 Agent。
+        """
         self.settings = get_settings()
         self.workload_identity = build_workload_token_provider(self.settings)
         if self.settings.persistence == "postgres":
@@ -152,6 +157,7 @@ class AgentRuntimeContainer:
             )
 
     def close(self) -> None:
+        """按依赖反向顺序关闭队列、客户端、存储和检查点连接。"""
         if self.async_runs is not None:
             self.async_runs.close()
         self.tool_registry.close()
@@ -164,11 +170,12 @@ class AgentRuntimeContainer:
             self._checkpoint_connection.close()
 
     def _is_cancelled(self, tenant_id: str, run_id: str) -> bool:
+        """读取持久化协作取消标记，供 Graph 在外部调用前中止。"""
         run = self.run_store.get(tenant_id, run_id)
         return bool(run and run.cancel_requested)
 
     def _mtls_options(self) -> dict:
-        """Use this Runtime identity for every internal HTTP client connection."""
+        """为全部内部 HTTP 客户端连接生成 Runtime 专属 mTLS 身份配置。"""
         return mtls_httpx_options(
             enabled=self.settings.mtls_enabled,
             ca_file=self.settings.mtls_ca_file,
@@ -177,6 +184,7 @@ class AgentRuntimeContainer:
         )
 
     def _execute_submission(self, submission: dict) -> dict:
+        """让异步 Worker 复用唯一同步运行入口，防止 API 与 Worker 状态机分叉。"""
         from types import SimpleNamespace
 
         from platform_sdk.contracts.runtime_api import AgentRunRequest

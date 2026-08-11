@@ -25,4 +25,13 @@ $env:PYTHONPATH="$PWD\platform-sdk;$PWD\platform-infra;$PWD\agent-runtime\src"
 python -m pytest agent-runtime/tests -q
 ```
 
+如果 IDE 将 `platform_sdk` 标为“未解析引用”，请为 Runtime 选择稳定的
+`agent-runtime/.venv312` 解释器，然后执行一次本地安装：
+
+```powershell
+.\agent-runtime\.venv312\Scripts\python.exe -m pip install --force-reinstall --no-deps .\platform-infra .\platform-sdk
+```
+
+Windows 非 ASCII 工作目录下不建议使用 Hatch editable 安装，因为 `.pth` 路径可能被错误解码。随后重新加载项目；`platform-sdk` 必须作为源码根或已安装分发存在，不能依赖临时的终端 `PYTHONPATH`。
+
 生产 Compose 为 Runtime、Context、RAG Query、摄取 API 和摄取 Worker 分配不同的 OIDC 工作负载客户端。部署时还应为每个工作负载签发独立 mTLS 证书；`X-Tenant-Id` 等 Header 只保留为迁移期兼容输入，不能作为生产身份信任根。

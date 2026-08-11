@@ -21,11 +21,15 @@ import java.util.concurrent.ThreadLocalRandom;
 public class ModelRouter {
     private final GatewayProperties properties;
 
+    /** 注入已发布的路由目录；调用方不能借此传入供应商地址或凭据。 */
     public ModelRouter(GatewayProperties properties) {
+        /** Retain the frozen route catalog; Runtime never supplies provider credentials or endpoints. */
         this.properties = properties;
     }
 
+    /** 按逻辑模型名生成主路由与故障回退的有序调用计划。 */
     public List<ModelEndpoint> resolve(String requestedModel) {
+        /** Build the ordered primary-plus-fallback plan for a non-pinned business request. */
         String model = requestedModel == null || requestedModel.isBlank()
                 ? properties.getDefaultModel()
                 : requestedModel;
@@ -42,7 +46,7 @@ public class ModelRouter {
         return routeKeys.stream().map(this::toEndpoint).toList();
     }
 
-    /** Reject an evaluation when its frozen route release or model revision drifted. */
+    /** 校验冻结路由版本和模型修订号，拒绝评测或治理请求发生配置漂移。 */
     public List<ModelEndpoint> resolvePinned(
             String requestedModel, String expectedRouteVersion, String expectedModelRevision) {
         if (expectedRouteVersion == null || expectedRouteVersion.isBlank()
@@ -60,7 +64,9 @@ public class ModelRouter {
         return endpoints;
     }
 
+    /** 依次应用灰度、权重和显式主路由规则，权重异常时安全回退到主路由。 */
     private String selectPrimary(GatewayProperties.Route route) {
+        /** Apply canary first, then weighted routing, while preserving an explicit safe primary fallback. */
         for (GatewayProperties.CanaryTarget canary : route.getCanary()) {
             int percent = Math.max(0, Math.min(100, canary.getPercent()));
             if (percent > 0 && ThreadLocalRandom.current().nextInt(100) < percent) {
@@ -87,7 +93,9 @@ public class ModelRouter {
         return route.getPrimary();
     }
 
+    /** 将目录中的 provider:model 键解析为受配置约束的上游端点。 */
     private ModelEndpoint toEndpoint(String routeKey) {
+        /** Resolve only configured provider:model pairs so callers cannot select arbitrary upstream URLs. */
         String[] parts = routeKey.split(":", 2);
         if (parts.length != 2) {
             throw new GatewayException(HttpStatus.BAD_REQUEST, "Invalid route key: " + routeKey);

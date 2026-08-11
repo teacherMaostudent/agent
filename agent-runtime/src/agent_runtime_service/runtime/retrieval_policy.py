@@ -101,6 +101,11 @@ _TEMPLATES: dict[RetrievalProfile, dict[str, Any]] = {
 
 
 def infer_profile(task: str, intent: str, metadata: dict[str, Any]) -> ProfileDecision:
+    """从请求信号推断候选检索档位，结果仍须被 ``resolve_profile`` 收紧。
+
+    显式请求可表达用户意图，但不能直接扩大能力；非法枚举退回标准档位并保留原因，
+    使治理系统能够发现调用方配置错误。
+    """
     explicit = metadata.get("retrieval_profile") or metadata.get("retrievalProfile")
     if explicit:
         try:
@@ -162,6 +167,11 @@ def resolve_profile(
     budget: dict[str, Any] | None,
     metadata: dict[str, Any] | None = None,
 ) -> EffectiveRetrievalPolicy:
+    """将候选档位与发布快照、剩余预算求交集，形成唯一可执行策略。
+
+    快照白名单和硬轮次上限优先于分类器；没有可用检索轮次时明确降级为 NO_RAG，
+    由 Graph 根据 ``retrieval_required`` 决定失败关闭还是允许回答。
+    """
     metadata = metadata or {}
     spec = (snapshot or {}).get("spec", {}) if isinstance(snapshot, dict) else {}
     configured = spec.get("retrieval_policy", {}) if isinstance(spec, dict) else {}

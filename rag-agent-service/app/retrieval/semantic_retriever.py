@@ -16,11 +16,13 @@ from app.retrieval.embedding_store import EmbeddingStore
 
 class SemanticRetriever:
     def __init__(self, embedder, regulation_store: EmbeddingStore) -> None:
+        """绑定同源嵌入器与法规向量库，保证查询和索引位于同一向量空间。"""
         self.embedder = embedder
         self.regulation_store = regulation_store
         self._chunker = TextChunker()
 
     def has_regulation_library(self) -> bool:
+        """判断法规索引是否已有可用片段，供上层选择语义检索或空结果路径。"""
         return len(self.regulation_store) > 0
 
     def search_regulations(

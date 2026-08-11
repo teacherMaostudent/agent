@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 def detect_file_type(path: Path) -> str:
+    """仅按白名单扩展名选择解析器；未知类型走安全的文本回退路径。"""
     suffix = path.suffix.lower()
     if suffix == ".pdf":
         return "pdf"

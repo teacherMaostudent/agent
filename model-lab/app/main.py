@@ -25,9 +25,17 @@ class ExperimentPlan(BaseModel):
 
     @model_validator(mode="after")
     def validate_method_parameters(self):
+        """校验 validate_method_parameters 对应的受控业务步骤。
+
+
+        Require method-specific reproducibility inputs before a GPU worker can be scheduled.
+        """
         if self.method in {"lora", "qlora"} and "lora_rank" not in self.parameters:
             raise ValueError("LoRA/QLoRA plans require parameters.lora_rank")
-        if self.method in {"dpo", "grpo"} and "preference_dataset_uri" not in self.parameters:
+        if (
+            self.method in {"dpo", "grpo"}
+            and "preference_dataset_uri" not in self.parameters
+        ):
             raise ValueError("DPO/GRPO plans require a preference dataset")
         if self.method == "distributed" and "launcher" not in self.parameters:
             raise ValueError("distributed plans require parameters.launcher")
@@ -66,21 +74,32 @@ app = FastAPI(title="Agent Platform Model Lab")
 
 @app.post("/v1/experiments", response_model=ExperimentRecord)
 def create_experiment(plan: ExperimentPlan) -> ExperimentRecord:
-    """Register an immutable plan before an external GPU job is started."""
+    """创建或构建 create_experiment 对应的受控业务步骤。
+
+
+    Register an immutable plan before an external GPU job is started.
+    """
     experiment_id = f"exp_{uuid4().hex}"
-    record = ExperimentRecord(experiment_id=experiment_id, plan=plan, created_at=datetime.now(UTC))
+    record = ExperimentRecord(
+        experiment_id=experiment_id, plan=plan, created_at=datetime.now(UTC)
+    )
     records[experiment_id] = record
     return record
 
 
 @app.post("/v1/experiments/{experiment_id}/evaluate", response_model=ExperimentRecord)
 def record_evaluation(experiment_id: str, result: EvaluationResult) -> ExperimentRecord:
-    """Gate promotion using threshold comparisons that are deterministic and auditable."""
+    """处理 record_evaluation 对应的当前组件内部业务步骤。
+
+
+    Gate promotion using threshold comparisons that are deterministic and auditable.
+    """
     record = records.get(experiment_id)
     if record is None:
         raise HTTPException(404, "experiment not found")
     failed = [
-        name for name, threshold in record.plan.evaluation_thresholds.items()
+        name
+        for name, threshold in record.plan.evaluation_thresholds.items()
         if result.metrics.get(name, float("-inf")) < threshold
     ]
     record.evaluation = result
@@ -91,12 +110,18 @@ def record_evaluation(experiment_id: str, result: EvaluationResult) -> Experimen
 
 @app.post("/v1/experiments/{experiment_id}/model-card", response_model=ExperimentRecord)
 def attach_model_card(experiment_id: str, card: ModelCard) -> ExperimentRecord:
-    """Approve an evaluated artifact only after its immutable identity and intended use are declared."""
+    """处理 attach_model_card 对应的当前组件内部业务步骤。
+
+
+    Approve an evaluated artifact only after its immutable identity and intended use are declared.
+    """
     record = records.get(experiment_id)
     if record is None:
         raise HTTPException(404, "experiment not found")
     if record.status != "EVALUATED":
-        raise HTTPException(409, "quality gate must pass before a model card is attached")
+        raise HTTPException(
+            409, "quality gate must pass before a model card is attached"
+        )
     record.model_card = card
     record.status = "APPROVED"
     records[experiment_id] = record
@@ -105,7 +130,11 @@ def attach_model_card(experiment_id: str, card: ModelCard) -> ExperimentRecord:
 
 @app.get("/v1/experiments/{experiment_id}", response_model=ExperimentRecord)
 def get_experiment(experiment_id: str) -> ExperimentRecord:
-    """Return immutable experiment evidence for Control Plane release validation."""
+    """读取或查询 get_experiment 对应的受控业务步骤。
+
+
+    Return immutable experiment evidence for Control Plane release validation.
+    """
     record = records.get(experiment_id)
     if record is None:
         raise HTTPException(404, "experiment not found")

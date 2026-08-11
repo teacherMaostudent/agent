@@ -22,10 +22,12 @@ class SchemaRegistry:
     changing the validation boundary in each service.
     """
     def __init__(self, schema_dir: str | Path) -> None:
+        """固定只读 Schema 目录并建立进程内缓存；版本由文件名/发布制品决定。"""
         self.schema_dir = Path(schema_dir)
         self._schemas: dict[str, dict[str, Any]] = {}
 
     def get(self, name: str) -> dict[str, Any]:
+        """加载并校验一个 Schema；损坏、缺失或非法定义都会失败关闭。"""
         if name not in self._schemas:
             path = self.schema_dir / name
             try:
@@ -37,6 +39,7 @@ class SchemaRegistry:
         return self._schemas[name]
 
     def validate(self, name: str, payload: Any) -> None:
+        """验证 Payload 并报告首个稳定排序错误位置，供生产者修复契约违例。"""
         errors = sorted(
             Draft202012Validator(self.get(name)).iter_errors(payload),
             key=lambda item: list(item.path),

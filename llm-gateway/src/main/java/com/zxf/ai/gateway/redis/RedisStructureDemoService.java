@@ -12,6 +12,7 @@ import java.util.Map;
 public class RedisStructureDemoService {
     private final StringRedisTemplate redisTemplate;
 
+    /** 获取可选 Redis 模板；无 Redis 时保留可解释的禁用响应。 */
     public RedisStructureDemoService(ObjectProvider<StringRedisTemplate> redisTemplate) {
         this.redisTemplate = redisTemplate.getIfAvailable();
     }

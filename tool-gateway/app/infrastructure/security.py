@@ -14,6 +14,11 @@ def validate_outbound_url(
     allow_private_networks: bool,
     resolve_dns: bool = True,
 ) -> None:
+    """校验 validate_outbound_url 对应的受控业务步骤。
+
+
+    Block SSRF by enforcing protocol, host allow-list and resolved-address policy.
+    """
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"}:
         raise UnsafeEndpointError("tool endpoint must use http or https")
@@ -45,6 +50,11 @@ def validate_outbound_url(
 
 
 def _host_allowed(hostname: str, allowed_hosts: list[str]) -> bool:
+    """处理 _host_allowed 对应的当前组件内部业务步骤。
+
+
+    Match exact hosts or one-label wildcard suffixes without accepting the root domain.
+    """
     for allowed in allowed_hosts:
         normalized = allowed.lower()
         if normalized.startswith("*."):

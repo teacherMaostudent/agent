@@ -14,18 +14,18 @@ class GatewayPolicyClient:
     """Executes route reads/mutations; orchestration remains in Control Plane."""
 
     def __init__(self, settings: Settings) -> None:
-        """Initialize GatewayPolicyClient dependencies and local state."""
+        """保存 Gateway 连接与凭据配置；实际连接仅在请求时短暂创建。"""
         self._settings = settings
 
     def _auth(self) -> httpx.BasicAuth:
-        """Internal helper for GatewayPolicyClient; preserve its caller-facing invariant."""
+        """构造 Gateway 管理 API 的基本认证；凭据仅来自受保护配置字段。"""
         return httpx.BasicAuth(
             self._settings.llm_gateway_admin_username,
             self._settings.llm_gateway_admin_password,
         )
 
     def _client_options(self) -> dict[str, Any]:
-        """Internal helper for GatewayPolicyClient; preserve its caller-facing invariant."""
+        """按服务配置传递 mTLS 信任链与客户端证书，禁止调用方自行绕过。"""
         return mtls_httpx_options(
             enabled=self._settings.mtls_enabled,
             ca_file=self._settings.mtls_ca_file,
@@ -34,7 +34,7 @@ class GatewayPolicyClient:
         )
 
     async def route(self, route_name: str) -> dict[str, Any]:
-        """Perform route within the GatewayPolicyClient ownership boundary."""
+        """读取已存在的 Gateway 路由；未知路由显式失败以阻止发布漂移。"""
         async with httpx.AsyncClient(
             base_url=self._settings.llm_gateway_base_url,
             auth=self._auth(),
@@ -49,7 +49,7 @@ class GatewayPolicyClient:
         return routes[route_name]
 
     async def upsert_route(self, route_name: str, route: dict[str, Any]) -> dict[str, Any]:
-        """Persist state while preserving the transaction and audit boundary."""
+        """将经发布编排确认的路由写入 Gateway；调用方负责 Saga 补偿与审计。"""
         async with httpx.AsyncClient(
             base_url=self._settings.llm_gateway_base_url,
             auth=self._auth(),
@@ -63,7 +63,7 @@ class GatewayPolicyClient:
     async def performance_summary(
         self, since: datetime, route_name: str, target: str
     ) -> dict[str, Any]:
-        """Perform performance summary within the GatewayPolicyClient ownership boundary."""
+        """读取灰度窗口性能指标，供 Control Plane 判断自动提升或回滚。"""
         provider, model = target.split(":", 1)
         async with httpx.AsyncClient(
             base_url=self._settings.llm_gateway_base_url,
@@ -85,13 +85,15 @@ class GatewayPolicyClient:
 
 
 class GovernanceQualityClient:
+    """调用 Governance 质量门禁；Control Plane 不复制评测与准入规则。"""
+
     def __init__(self, settings: Settings) -> None:
-        """Initialize GovernanceQualityClient dependencies and local state."""
+        """初始化工作负载令牌提供者，使跨服务请求绑定 Control Plane 身份。"""
         self._settings = settings
         self._workload_identity = build_workload_token_provider(settings)
 
     async def quality_gate(self, tenant_id: str, run_id: str) -> dict[str, Any]:
-        """Perform quality gate within the GovernanceQualityClient ownership boundary."""
+        """请求治理质量门禁；网络或认证失败必须阻断发布而不是默认放行。"""
         headers = {
             "X-Tenant-Id": tenant_id,
             "X-User-Id": self._settings.governance_user_id,
@@ -122,9 +124,11 @@ class ModelLabClient:
     """Verify that an offline model artifact passed evaluation before online rollout."""
 
     def __init__(self, settings: Settings) -> None:
+        """保存 Model Lab 服务端点；工件校验发生在路由发布前。"""
         self._settings = settings
 
     async def approved_artifact(self, experiment_id: str) -> dict[str, Any]:
+        """仅返回已批准且含模型卡的实验工件，缺失任一条件即拒绝上线。"""
         async with httpx.AsyncClient(
             base_url=self._settings.model_lab_base_url, timeout=30
         ) as client:

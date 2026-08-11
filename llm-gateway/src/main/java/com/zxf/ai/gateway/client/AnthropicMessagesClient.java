@@ -34,6 +34,9 @@ public class AnthropicMessagesClient implements LlmProviderClient {
     private final ObjectMapper objectMapper;
     private final GatewayProperties properties;
 
+    /**
+     * 初始化 anthropic messages client 所需的依赖与运行期状态。
+    */
     public AnthropicMessagesClient(WebClient.Builder webClientBuilder, ObjectMapper objectMapper, GatewayProperties properties) {
         this.webClientBuilder = webClientBuilder;
         this.objectMapper = objectMapper;
@@ -41,11 +44,17 @@ public class AnthropicMessagesClient implements LlmProviderClient {
     }
 
     @Override
+    /**
+     * 执行 protocol 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public String protocol() {
         return "anthropic";
     }
 
     @Override
+    /**
+     * 执行 chat completion 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public Mono<JsonNode> chatCompletion(ModelEndpoint endpoint, JsonNode originalRequest) {
         ObjectNode upstreamRequest = toAnthropicRequest(endpoint, originalRequest, false);
         return client(endpoint)
@@ -63,6 +72,9 @@ public class AnthropicMessagesClient implements LlmProviderClient {
     }
 
     @Override
+    /**
+     * 执行 stream chat completion 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public Flux<String> streamChatCompletion(ModelEndpoint endpoint, JsonNode originalRequest) {
         ObjectNode upstreamRequest = toAnthropicRequest(endpoint, originalRequest, true);
         return client(endpoint)
@@ -78,6 +90,9 @@ public class AnthropicMessagesClient implements LlmProviderClient {
                 .onErrorMap(this::mapError);
     }
 
+    /**
+     * 执行 client 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private WebClient client(ModelEndpoint endpoint) {
         WebClient.Builder builder = webClientBuilder.clone()
                 .baseUrl(trimTrailingSlash(endpoint.provider().getBaseUrl()))
@@ -89,6 +104,9 @@ public class AnthropicMessagesClient implements LlmProviderClient {
         return builder.build();
     }
 
+    /**
+     * 执行 to anthropic request 的协议或数据转换，保持内部模型与外部契约隔离。
+    */
     private ObjectNode toAnthropicRequest(ModelEndpoint endpoint, JsonNode originalRequest, boolean stream) {
         ObjectNode request = objectMapper.createObjectNode();
         request.put("model", endpoint.upstreamModel());
@@ -133,6 +151,9 @@ public class AnthropicMessagesClient implements LlmProviderClient {
         return request;
     }
 
+    /**
+     * 执行 max tokens 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private int maxTokens(JsonNode originalRequest) {
         if (originalRequest.has("max_tokens")) {
             return originalRequest.path("max_tokens").asInt(1024);
@@ -143,6 +164,9 @@ public class AnthropicMessagesClient implements LlmProviderClient {
         return 1024;
     }
 
+    /**
+     * 执行 system prompt 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private String systemPrompt(JsonNode originalRequest) {
         StringBuilder builder = new StringBuilder();
         JsonNode messages = originalRequest.path("messages");
@@ -160,6 +184,9 @@ public class AnthropicMessagesClient implements LlmProviderClient {
         return builder.toString();
     }
 
+    /**
+     * 执行 to open ai compatible response 的协议或数据转换，保持内部模型与外部契约隔离。
+    */
     private JsonNode toOpenAiCompatibleResponse(ModelEndpoint endpoint, JsonNode anthropicResponse) {
         ObjectNode response = objectMapper.createObjectNode();
         response.put("id", anthropicResponse.path("id").asText(""));
@@ -194,6 +221,9 @@ public class AnthropicMessagesClient implements LlmProviderClient {
         return response;
     }
 
+    /**
+     * 执行 text content 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private String textContent(JsonNode content) {
         if (!content.isArray()) {
             return content.asText("");
@@ -207,11 +237,17 @@ public class AnthropicMessagesClient implements LlmProviderClient {
         return builder.toString();
     }
 
+    /**
+     * 执行 retry spec 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private Retry retrySpec() {
         return Retry.backoff(properties.getMaxRetries(), Duration.ofMillis(300))
                 .filter(this::isRetryable);
     }
 
+    /**
+     * 执行 apply retry if enabled 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private <T> Mono<T> applyRetryIfEnabled(Mono<T> mono) {
         if (properties.getMaxRetries() <= 0) {
             return mono;
@@ -219,6 +255,9 @@ public class AnthropicMessagesClient implements LlmProviderClient {
         return mono.retryWhen(retrySpec());
     }
 
+    /**
+     * 执行 apply retry if enabled 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private <T> Flux<T> applyRetryIfEnabled(Flux<T> flux) {
         if (properties.getMaxRetries() <= 0) {
             return flux;
@@ -226,6 +265,9 @@ public class AnthropicMessagesClient implements LlmProviderClient {
         return flux.retryWhen(retrySpec());
     }
 
+    /**
+     * 读取当前配置或运行状态字段 is retryable 的值，供调用方进行受控决策。
+    */
     private boolean isRetryable(Throwable throwable) {
         if (throwable instanceof WebClientResponseException responseException) {
             return responseException.getStatusCode().is5xxServerError()
@@ -234,6 +276,9 @@ public class AnthropicMessagesClient implements LlmProviderClient {
         return true;
     }
 
+    /**
+     * 执行 map error 的协议或数据转换，保持内部模型与外部契约隔离。
+    */
     private Throwable mapError(Throwable throwable) {
         if (throwable instanceof GatewayException) {
             return throwable;
@@ -246,6 +291,9 @@ public class AnthropicMessagesClient implements LlmProviderClient {
         return new GatewayException(HttpStatus.BAD_GATEWAY, throwable.getMessage());
     }
 
+    /**
+     * 执行 trim trailing slash 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private String trimTrailingSlash(String baseUrl) {
         if (baseUrl == null) {
             return "";

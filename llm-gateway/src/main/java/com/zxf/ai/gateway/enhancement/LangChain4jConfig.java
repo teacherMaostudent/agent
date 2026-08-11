@@ -15,6 +15,7 @@ import org.springframework.context.annotation.Configuration;
 @EnableConfigurationProperties(LangChain4jProperties.class)
 @ConditionalOnProperty(prefix = "enhancement.langchain4j", name = "enabled", havingValue = "true")
 public class LangChain4jConfig {
+    /** 依据受控配置创建 OpenAI 兼容聊天模型，不在此处处理路由或租户鉴权。 */
     @Bean
     public ChatModel langChain4jChatModel(LangChain4jProperties properties) {
         return OpenAiChatModel.builder()
@@ -25,6 +26,7 @@ public class LangChain4jConfig {
                 .build();
     }
 
+    /** 将模型、检索器和受注册工具组装为 LangChain4j AI Service。 */
     @Bean
     public GatewayAssistant gatewayAssistant(
             ChatModel langChain4jChatModel,

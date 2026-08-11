@@ -12,7 +12,10 @@ import ssl
 
 
 def main() -> None:
-    """Launch the configured ASGI application and fail closed for incomplete mTLS."""
+    """启动指定 ASGI 应用；生产启用 mTLS 时强制要求并校验客户端证书。
+
+    应用路径和证书仅从环境配置读取，不允许 HTTP 请求影响监听地址或 TLS 模式。
+    """
     import uvicorn
 
     app = os.environ.get("PLATFORM_ASGI_APP", "").strip()

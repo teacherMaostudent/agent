@@ -15,6 +15,11 @@ from typing import Any
 def mtls_httpx_options(
     *, enabled: bool, ca_file: str = "", cert_file: str = "", key_file: str = ""
 ) -> dict[str, Any]:
+    """构造 httpx mTLS 参数并在启用时验证所有证书路径。
+
+    mTLS 关闭时返回空配置以支持本地 HTTP；一旦启用，CA、客户端证书或私钥缺失都
+    立即失败，禁止无证书回退。
+    """
     if not enabled:
         return {}
     missing = [

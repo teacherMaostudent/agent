@@ -21,6 +21,9 @@ public class EngineeringGovernanceController {
     private final PromptGovernanceService promptGovernanceService;
     private final RedisStructureDemoService redisStructureDemoService;
 
+    /**
+     * 初始化 engineering governance controller 所需的依赖与运行期状态。
+    */
     public EngineeringGovernanceController(
             BadCaseService badCaseService,
             PromptGovernanceService promptGovernanceService,

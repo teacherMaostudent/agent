@@ -24,6 +24,9 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
     private final ObjectMapper objectMapper;
     private final GatewayProperties properties;
 
+    /**
+     * 初始化 open ai compatible client 所需的依赖与运行期状态。
+    */
     public OpenAiCompatibleClient(WebClient.Builder webClientBuilder, ObjectMapper objectMapper, GatewayProperties properties) {
         this.webClientBuilder = webClientBuilder;
         this.objectMapper = objectMapper;
@@ -31,6 +34,9 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
     }
 
     @Override
+    /**
+     * 执行 protocol 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public String protocol() {
         return "openai-compatible";
     }
@@ -80,6 +86,9 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
                 .onErrorMap(this::mapError);
     }
 
+    /**
+     * 执行 client 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private WebClient client(ModelEndpoint endpoint) {
         // WebClient.Builder 是 Spring 管理的共享 builder，clone 后再设置 baseUrl/header，
         // 可以避免不同 provider 的 baseUrl 和 Authorization 互相污染。
@@ -93,6 +102,9 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
         return builder.build();
     }
 
+    /**
+     * 执行 with upstream model 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private JsonNode withUpstreamModel(ModelEndpoint endpoint, JsonNode originalRequest, boolean stream) {
         // 对外暴露的 model 可以是网关逻辑模型名；真正发给厂商的模型名使用 upstreamModel。
         // deepCopy 可以避免修改 Controller 收到的原始 JsonNode，降低副作用。
@@ -109,12 +121,18 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
         return copy;
     }
 
+    /**
+     * 执行 retry spec 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private Retry retrySpec() {
         // 指数退避比固定间隔更温和，能减少上游短暂故障时的瞬时流量放大。
         return Retry.backoff(properties.getMaxRetries(), Duration.ofMillis(300))
                 .filter(this::isRetryable);
     }
 
+    /**
+     * 执行 apply retry if enabled 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private <T> Mono<T> applyRetryIfEnabled(Mono<T> mono) {
         // Reactor 的 retryWhen 在 0 次重试时会直接抛 Retries exhausted，单独跳过更符合直觉。
         if (properties.getMaxRetries() <= 0) {
@@ -123,6 +141,9 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
         return mono.retryWhen(retrySpec());
     }
 
+    /**
+     * 执行 apply retry if enabled 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private <T> Flux<T> applyRetryIfEnabled(Flux<T> flux) {
         if (properties.getMaxRetries() <= 0) {
             return flux;
@@ -130,6 +151,9 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
         return flux.retryWhen(retrySpec());
     }
 
+    /**
+     * 读取当前配置或运行状态字段 is retryable 的值，供调用方进行受控决策。
+    */
     private boolean isRetryable(Throwable throwable) {
         if (throwable instanceof WebClientResponseException responseException) {
             // 5xx 和 429 通常可能是临时性问题，适合重试；4xx 鉴权、参数、模型不存在通常不重试。
@@ -140,6 +164,9 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
         return true;
     }
 
+    /**
+     * 执行 map error 的协议或数据转换，保持内部模型与外部契约隔离。
+    */
     private Throwable mapError(Throwable throwable) {
         if (throwable instanceof GatewayException) {
             return throwable;
@@ -154,6 +181,9 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
         return new GatewayException(HttpStatus.BAD_GATEWAY, throwable.getMessage());
     }
 
+    /**
+     * 执行 trim trailing slash 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private String trimTrailingSlash(String baseUrl) {
         if (baseUrl == null) {
             return "";

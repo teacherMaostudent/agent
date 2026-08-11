@@ -30,9 +30,12 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+# Local interpreters are development artifacts, never Runtime source files.
+exclude = [".venv", ".venv312"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 # SQL DDL and framework signatures are formatter-managed; long literals should
 # not obscure the execution-state invariants merely to satisfy line wrapping.
-ignore = ["E501"]
+# RUF002 reports normal Chinese punctuation inside explanatory docstrings.
+ignore = ["E501", "RUF002"]

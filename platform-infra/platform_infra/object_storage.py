@@ -24,6 +24,7 @@ class S3ObjectStorage:
         region: str = "",
         kms_key_id: str = "",
     ) -> None:
+        """创建 S3 客户端；桶、前缀和 KMS key 只能由部署配置确定。"""
         self.bucket = bucket
         self.prefix = prefix.strip("/")
         self.kms_key_id = kms_key_id
@@ -43,6 +44,11 @@ class S3ObjectStorage:
         retention_days: int | None = None,
         compliance_mode: bool = False,
     ) -> tuple[str, str]:
+        """流式写入内容寻址对象，并返回对象键与完整 SHA-256。
+
+        文件名会去路径化以防目录穿越；可选 Object Lock 用于不可变审计导出，调用方
+        必须保证目标桶已启用对应保留能力。
+        """
         digest = hashlib.sha256()
         # Hash before upload without retaining an unbounded document in process memory.
         # Small objects stay in memory; large documents spill to a private temp file and
@@ -96,6 +102,7 @@ class S3ObjectStorage:
         return key, checksum
 
     def download(self, key: str, target: Path) -> Path:
+        """下载指定对象到调用者给定路径；访问控制由 S3 身份策略承担。"""
         target.parent.mkdir(parents=True, exist_ok=True)
         self.client.download_file(self.bucket, key, str(target))
         return target

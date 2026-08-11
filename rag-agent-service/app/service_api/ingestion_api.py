@@ -13,6 +13,7 @@ def upload_document(
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
 ) -> dict:
+    """保存上传原件和租户归属后创建解析任务；API 不在请求线程同步解析大文件。"""
     container = request.app.state.container
     path, sha256 = container.storage.save_upload(file.filename or "upload.bin", file.file)
     object_key = container.storage.object_key_for(path)
@@ -47,6 +48,7 @@ def create_job(
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
 ) -> IngestionJob:
+    """创建显式摄取任务；需要文档的任务在入队前校验，避免 Worker 无效重试。"""
     if payload.job_type in {"PARSE", "OCR"} and not payload.document_id:
         raise HTTPException(status_code=400, detail=f"{payload.job_type} requires document_id")
     job = IngestionJob(
@@ -65,6 +67,7 @@ def get_job(
     request: Request,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
 ) -> IngestionJob:
+    """按 job_id 与 tenant_id 查询任务，未授权和不存在均返回 404 防止枚举。"""
     job = request.app.state.container.job_store.get(job_id, x_tenant_id)
     if job is None:
         raise HTTPException(status_code=404, detail="ingestion job not found")
@@ -77,6 +80,7 @@ def get_document(
     request: Request,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
 ) -> Document:
+    """读取当前租户拥有的文档；跨租户和不存在统一隐藏为 404。"""
     document = request.app.state.container.repository.get_document(document_id)
     if document is None or document.metadata.get("tenant_id") != x_tenant_id:
         raise HTTPException(status_code=404, detail="document not found")

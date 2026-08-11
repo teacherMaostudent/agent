@@ -23,14 +23,22 @@ _monitor: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None
 
 
 def bind_monitor(executor: Callable[[str, str], Awaitable[dict[str, Any]]]) -> None:
-    """Bind the process-local activity implementation at worker start-up."""
+    """处理 bind_monitor 对应的当前组件内部业务步骤。
+
+
+    Bind the process-local activity implementation at worker start-up.
+    """
     global _monitor
     _monitor = executor
 
 
 @activity.defn(name="monitor_model_release")
 async def monitor_model_release(tenant_id: str, release_id: str) -> dict[str, Any]:
-    """Run the bounded monitor model release operation and surface failures."""
+    """处理 monitor_model_release 对应的当前组件内部业务步骤。
+
+
+    Run the bounded monitor model release operation and surface failures.
+    """
     if _monitor is None:
         raise RuntimeError("release monitor activity is not bound")
     return await _monitor(tenant_id, release_id)
@@ -42,7 +50,11 @@ class ModelReleaseWorkflow:
     async def run(self, tenant_id: str, release_id: str, interval_seconds: float) -> str:
         # The activity is retryable; the release monitor itself must remain
         # idempotent because a completed activity can be replayed by Temporal.
-        """Perform run within the ModelReleaseWorkflow ownership boundary."""
+        """处理 run 对应的当前组件内部业务步骤。
+
+
+        Perform run within the ModelReleaseWorkflow ownership boundary.
+        """
         while True:
             release = await workflow.execute_activity(
                 "monitor_model_release",
@@ -62,7 +74,11 @@ class ModelReleaseWorkflow:
 
 class TemporalReleaseOrchestrator:
     def __init__(self, target: str, namespace: str, task_queue: str) -> None:
-        """Initialize TemporalReleaseOrchestrator dependencies and local state."""
+        """初始化该组件的依赖、配置与内部状态。
+
+
+        Initialize TemporalReleaseOrchestrator dependencies and local state.
+        """
         self.task_queue = task_queue
         self._loop = asyncio.new_event_loop()
         self._thread = Thread(target=self._loop.run_forever, daemon=True)
@@ -72,7 +88,11 @@ class TemporalReleaseOrchestrator:
     def start(self, tenant_id: str, release_id: str, interval_seconds: float) -> None:
         # A deterministic workflow id turns a duplicate API request into a
         # Temporal-level conflict instead of starting two release monitors.
-        """Perform start within the TemporalReleaseOrchestrator ownership boundary."""
+        """处理 start 对应的当前组件内部业务步骤。
+
+
+        Perform start within the TemporalReleaseOrchestrator ownership boundary.
+        """
         self._call(
             self._client.start_workflow(
                 ModelReleaseWorkflow.run,
@@ -83,18 +103,30 @@ class TemporalReleaseOrchestrator:
         )
 
     def close(self) -> None:
-        """Perform close within the TemporalReleaseOrchestrator ownership boundary."""
+        """处理 close 对应的当前组件内部业务步骤。
+
+
+        Perform close within the TemporalReleaseOrchestrator ownership boundary.
+        """
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5)
 
     def _call(self, coroutine):
-        """Internal helper for TemporalReleaseOrchestrator; preserve its caller-facing invariant."""
+        """处理 _call 对应的当前组件内部业务步骤。
+
+
+        Internal helper for TemporalReleaseOrchestrator; preserve its caller-facing invariant.
+        """
         future: Future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
         return future.result(timeout=30)
 
 
 async def run_worker() -> None:
-    """Run the bounded run worker operation and surface failures."""
+    """执行 run_worker 对应的受控业务步骤。
+
+
+    Run the bounded run worker operation and surface failures.
+    """
     from app.container import AppContainer
     from app.core.config import Settings
 
@@ -116,5 +148,9 @@ async def run_worker() -> None:
 
 
 def main() -> None:
-    """Perform main within the module ownership boundary."""
+    """处理 main 对应的当前组件内部业务步骤。
+
+
+    Perform main within the module ownership boundary.
+    """
     asyncio.run(run_worker())

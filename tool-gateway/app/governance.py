@@ -29,7 +29,11 @@ class GovernanceOutboxPublisher:
         workload_identity: WorkloadTokenProvider | None = None,
         delivery_mode: str = "direct",
     ) -> None:
-        """Initialize GovernanceOutboxPublisher dependencies and local state."""
+        """初始化该组件的依赖、配置与内部状态。
+
+
+        Initialize GovernanceOutboxPublisher dependencies and local state.
+        """
         self.repository = repository
         self.base_url = base_url.rstrip("/")
         self.event_key = event_key
@@ -44,7 +48,11 @@ class GovernanceOutboxPublisher:
         spec: ToolSpec,
         approval_granted: bool,
     ) -> None:
-        """Perform publish invocation within the GovernanceOutboxPublisher ownership boundary."""
+        """发布或投递 publish_invocation 对应的受控业务步骤。
+
+
+        Perform publish invocation within the GovernanceOutboxPublisher ownership boundary.
+        """
         self.repository.enqueue_event(
             {
                 "event_id": f"evt_{uuid4().hex}",
@@ -74,7 +82,11 @@ class GovernanceOutboxPublisher:
         )
 
     async def flush(self) -> None:
-        """Perform flush within the GovernanceOutboxPublisher ownership boundary."""
+        """处理 flush 对应的当前组件内部业务步骤。
+
+
+        Perform flush within the GovernanceOutboxPublisher ownership boundary.
+        """
         # CDC observes the committed outbox row.  Sending the same row over
         # HTTP would create a second transport and turn deduplication into a
         # correctness requirement rather than a safety net.

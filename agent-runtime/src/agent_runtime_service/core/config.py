@@ -79,19 +79,23 @@ class RuntimeSettings(BaseSettings):
 
     @property
     def runtime_store_path(self) -> Path:
+        """返回开发 SQLite Run/Outbox 路径；生产 PostgreSQL 不使用该文件。"""
         return self.data_dir / "runtime_runs.db"
 
     @property
     def runtime_checkpoint_path(self) -> Path:
+        """返回开发 LangGraph 检查点路径；不可用于多副本共享状态。"""
         return self.data_dir / "runtime_checkpoints.db"
 
     @property
     def runtime_jobs_path(self) -> Path:
+        """返回开发异步队列路径；生产调度改用 Temporal。"""
         return self.data_dir / "runtime_jobs.db"
 
 
 @lru_cache
 def get_settings() -> RuntimeSettings:
+    """缓存一次配置并确保本地数据目录存在，避免每个请求重复解析环境变量。"""
     settings = RuntimeSettings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     return settings

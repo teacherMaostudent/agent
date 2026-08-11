@@ -27,20 +27,18 @@ from app.infrastructure.sqlite_repository import SqliteRepository
 
 
 class GovernanceService:
-    """Ingest idempotent events and expose tenant-scoped audit decisions."""
-
-    """Persists immutable audit events before exposing derived findings.
+    """先持久化不可变审计事件，再暴露派生的租户治理结论。
 
     Evaluation is deterministic at ingestion time.  A duplicate event does
     not create findings again, preserving idempotency across outbox retries.
     """
 
     def __init__(self, repository: SqliteRepository) -> None:
-        """Initialize GovernanceService dependencies and local state."""
+        """初始化该组件的依赖、配置与内部状态。"""
         self._repository = repository
 
     async def ingest(self, event: GovernanceEvent) -> IngestionResult:
-        """Perform ingest within the GovernanceService ownership boundary."""
+        """按事件 ID 幂等写入审计链；重复投递不会重复生成治理发现项。"""
         policy = await self.get_tenant_policy_for(event.tenant_id)
         findings = evaluate(event, policy)
         audit_event = AuditEvent(**event.model_dump(), sequence=0, received_at=utc_now())
@@ -54,7 +52,7 @@ class GovernanceService:
     async def list_audit_events(
         self, identity: Identity, after_sequence: int, limit: int
     ) -> AuditEventList:
-        """List only values visible within the caller's tenant and lifecycle scope."""
+        """以序列游标读取调用方租户审计链，分页不会跳过或重排历史事件。"""
         items, next_cursor = await self._repository.list_audit_events(
             identity.tenant_id, after_sequence, limit
         )
@@ -63,7 +61,7 @@ class GovernanceService:
     async def list_findings(
         self, identity: Identity, status: FindingStatus | None, limit: int
     ) -> FindingList:
-        """List only values visible within the caller's tenant and lifecycle scope."""
+        """按调用方租户和可选状态读取发现项，避免跨租户的处置可见性。"""
         return FindingList(
             items=await self._repository.list_findings(identity.tenant_id, status, limit)
         )
@@ -71,7 +69,7 @@ class GovernanceService:
     async def resolve_finding(
         self, identity: Identity, finding_id: str, request: FindingResolution
     ) -> Finding:
-        """Apply the requested state transition with configured consistency checks."""
+        """原子解决开放发现项；重复解决与不存在的 ID 返回不同领域错误。"""
         finding = await self._repository.resolve_finding(
             identity.tenant_id,
             finding_id,
@@ -86,18 +84,18 @@ class GovernanceService:
         raise NotFoundError(f"Finding '{finding_id}' was not found.")
 
     async def get_tenant_policy(self, identity: Identity) -> TenantPolicy:
-        """Return the requested value through the established ownership boundary."""
+        """读取审计身份所属租户的策略，不能通过请求参数指定其他租户。"""
         return await self.get_tenant_policy_for(identity.tenant_id)
 
     async def get_tenant_policy_for(self, tenant_id: str) -> TenantPolicy:
-        """Return the requested value through the established ownership boundary."""
+        """加载指定租户策略；未配置时生成独立默认值，不回退到共享策略。"""
         policy = await self._repository.get_tenant_policy(tenant_id)
         return policy or TenantPolicy(tenant_id=tenant_id)
 
     async def update_tenant_policy(
         self, identity: Identity, request: TenantPolicyUpdate
     ) -> TenantPolicy:
-        """Apply the requested state transition with configured consistency checks."""
+        """更新租户策略并同步追加审计事件，确保策略变更本身可复核。"""
         policy = TenantPolicy(
             tenant_id=identity.tenant_id,
             **request.model_dump(),
@@ -128,7 +126,7 @@ class GovernanceService:
     async def report(
         self, identity: Identity, from_time: datetime | None, to_time: datetime | None
     ) -> ComplianceReport:
-        """Perform report within the GovernanceService ownership boundary."""
+        """聚合受限时间窗内的审计与发现项，并按开放严重度推导合规状态。"""
         total, events_by_source, findings = await self._repository.report(
             identity.tenant_id,
             from_time.isoformat() if from_time else None,

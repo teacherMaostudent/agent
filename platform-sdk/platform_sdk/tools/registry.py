@@ -70,6 +70,7 @@ class ToolRegistry:
     """Single enforcement point for tool schema, permission, timeout and audit."""
 
     def __init__(self, default_timeout: float = 20.0) -> None:
+        """初始化进程内工具注册表；它只用于本地适配，不替代远程 Gateway 治理。"""
         self.default_timeout = default_timeout
         self._tools: dict[str, ToolDefinition] = {}
         self._audit: list[ToolAuditRecord] = []
@@ -84,6 +85,7 @@ class ToolRegistry:
         required_permissions: set[str] | frozenset[str],
         timeout_seconds: float | None = None,
     ) -> None:
+        """注册带参数模型、权限与超时的工具，重复名称必须失败以避免覆盖审计语义。"""
         if name in self._tools:
             raise ValueError(f"tool already registered: {name}")
         self._tools[name] = ToolDefinition(
@@ -103,6 +105,7 @@ class ToolRegistry:
         user_id: str = "agent-runtime",
         request_id: str = "",
     ) -> list[dict[str, Any]]:
+        """返回当前权限可见的工具描述；不返回不可见工具以避免目录枚举泄露。"""
         return [
             {
                 "name": item.name,
@@ -116,6 +119,11 @@ class ToolRegistry:
         ]
 
     def execute(self, name: str, arguments: dict[str, Any], context: ToolContext) -> Any:
+        """在本地执行工具并强制参数、权限、超时与审计边界。
+
+        超时后不等待协作式任务完成，避免请求线程被卡住；生产副作用工具仍须在
+        Tool Gateway 中具备幂等、审批和可取消语义。
+        """
         started = datetime.now(UTC)
         error: Exception | None = None
         try:
@@ -162,5 +170,6 @@ class ToolRegistry:
                 self._audit.append(record)
 
     def audit_records(self) -> list[ToolAuditRecord]:
+        """返回审计记录的快照，调用方不能修改内部审计列表。"""
         with self._lock:
             return list(self._audit)

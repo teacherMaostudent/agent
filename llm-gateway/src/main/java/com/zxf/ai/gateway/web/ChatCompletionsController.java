@@ -28,6 +28,9 @@ public class ChatCompletionsController {
     private final QuotaService quotaService;
     private final ApiKeyService apiKeyService;
 
+    /**
+     * 初始化 chat completions controller 所需的依赖与运行期状态。
+    */
     public ChatCompletionsController(ChatGatewayService chatGatewayService, QuotaService quotaService, ApiKeyService apiKeyService) {
         this.chatGatewayService = chatGatewayService;
         this.quotaService = quotaService;
@@ -71,12 +74,8 @@ public class ChatCompletionsController {
     }
 
     /**
-     * Resolves the caller identity once for both JSON and SSE paths.
-     *
-     * <p>The API key is authoritative for tenant and user. A caller may repeat
-     * {@code X-Tenant-Id} for end-to-end correlation, but it cannot use that
-     * header to cross a tenant boundary.</p>
-     */
+     * 执行 request context 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private GatewayRequestContext requestContext(HttpHeaders headers, JsonNode request, boolean stream) {
         String claimedUserId = headers.getFirst("X-User-Id");
         String model = request.path("model").asText(null);
@@ -113,6 +112,9 @@ public class ChatCompletionsController {
     }
 
     /** Parses a non-negative request-scoped budget in the gateway base currency. */
+    /**
+     * 执行 parse cost budget 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private BigDecimal parseCostBudget(String rawBudget) {
         if (rawBudget == null || rawBudget.isBlank()) {
             return null;

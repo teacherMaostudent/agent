@@ -24,6 +24,7 @@ public record GatewayUsage(
         return of(promptTokens, completionTokens, cost, "", "LOCAL_TOKENIZER", "ESTIMATED");
     }
 
+    /** 用完整的币种、使用量来源和成本状态创建可审计的用量记录。 */
     public static GatewayUsage of(long promptTokens, long completionTokens, BigDecimal cost,
                                   String currency, String usageSource, String costStatus) {
         return new GatewayUsage(promptTokens, completionTokens, promptTokens + completionTokens,

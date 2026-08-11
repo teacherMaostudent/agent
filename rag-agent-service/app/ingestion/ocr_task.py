@@ -16,11 +16,13 @@ _lock = threading.Lock()
 
 
 def is_running(document_id: str) -> bool:
+    """查询进程内去重标记；它不是跨节点的分布式锁。"""
     with _lock:
         return document_id in _running
 
 
 def start_ocr(document_id: str, container) -> bool:
+    """启动开发用后台 OCR；同进程重复请求返回 False，避免重复消耗资源。"""
     """启动后台 OCR。已在跑则返回 False(不重复触发),否则起线程并返回 True。"""
     with _lock:
         if document_id in _running:
@@ -32,6 +34,7 @@ def start_ocr(document_id: str, container) -> bool:
 
 
 def _run(document_id: str, container) -> None:
+    """后台 OCR 状态流转；异常必须落为 OCR_FAILED，不能静默丢失。"""
     """后台线程体:逐页 OCR,进度落库,完成/失败更新状态。"""
     try:
         document = container.repository.get_document(document_id)
@@ -42,6 +45,7 @@ def _run(document_id: str, container) -> None:
         container.repository.save_document(document)
 
         def progress(done: int, total: int) -> None:
+            """逐页保存进度，使客户端可轮询而无需共享 Worker 内存。"""
             document.metadata["ocr_done"] = done
             document.metadata["ocr_total"] = total
             # 每页落库一次,让 status 端点能实时看到进度。SQLite 写很快,468 次可接受。

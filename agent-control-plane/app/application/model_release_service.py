@@ -28,7 +28,11 @@ logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _now 对应的当前组件内部业务步骤。
+
+
+    Internal helper for module; preserve its caller-facing invariant.
+    """
     return datetime.now(UTC).isoformat()
 
 
@@ -43,7 +47,11 @@ class ModelReleaseService:
         governance: GovernanceQualityClient,
         model_lab: ModelLabClient | None = None,
     ) -> None:
-        """Initialize ModelReleaseService dependencies and local state."""
+        """初始化该组件的依赖、配置与内部状态。
+
+
+        Initialize ModelReleaseService dependencies and local state.
+        """
         self._repository = repository
         self._settings = settings
         self._gateway = gateway
@@ -51,7 +59,11 @@ class ModelReleaseService:
         self._model_lab = model_lab
 
     async def start(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
-        """Start a bounded canary only when the referenced quality gate passed."""
+        """处理 start 对应的当前组件内部业务步骤。
+
+
+        Start a bounded canary only when the referenced quality gate passed.
+        """
         route_name = _required(request, "routeName")
         target = _required(request, "canaryTarget")
         if ":" not in target:
@@ -95,7 +107,11 @@ class ModelReleaseService:
         return await self._repository.save_model_release(tenant_id, release["id"], release)
 
     async def monitor(self, tenant_id: str, release_id: str) -> dict[str, Any]:
-        """Promote, continue, or roll back using recorded—not inferred—baseline state."""
+        """处理 monitor 对应的当前组件内部业务步骤。
+
+
+        Promote, continue, or roll back using recorded—not inferred—baseline state.
+        """
         release = await self.get(tenant_id, release_id)
         if release["status"] not in {"CANARY_ACTIVE", "MONITORING"}:
             return release
@@ -139,23 +155,39 @@ class ModelReleaseService:
         return await self._promote(tenant_id, release, metrics)
 
     async def rollback(self, tenant_id: str, release_id: str, reason: str) -> dict[str, Any]:
-        """Perform rollback within the ModelReleaseService ownership boundary."""
+        """处理 rollback 对应的当前组件内部业务步骤。
+
+
+        Perform rollback within the ModelReleaseService ownership boundary.
+        """
         release = await self.get(tenant_id, release_id)
         return await self._rollback(tenant_id, release, {}, [reason or "manual rollback"])
 
     async def get(self, tenant_id: str, release_id: str) -> dict[str, Any]:
-        """Perform get within the ModelReleaseService ownership boundary."""
+        """处理 get 对应的当前组件内部业务步骤。
+
+
+        Perform get within the ModelReleaseService ownership boundary.
+        """
         release = await self._repository.get_model_release(tenant_id, release_id)
         if not release:
             raise NotFoundError(f"Unknown model route release: {release_id}")
         return release
 
     async def list(self, tenant_id: str) -> list[dict[str, Any]]:
-        """Perform list within the ModelReleaseService ownership boundary."""
+        """处理 list 对应的当前组件内部业务步骤。
+
+
+        Perform list within the ModelReleaseService ownership boundary.
+        """
         return await self._repository.list_model_releases(tenant_id)
 
     async def monitor_active(self) -> None:
-        """Run the bounded monitor active operation and surface failures."""
+        """处理 monitor_active 对应的当前组件内部业务步骤。
+
+
+        Run the bounded monitor active operation and surface failures.
+        """
         for tenant_id, release in await self._repository.list_active_model_releases():
             try:
                 await self.monitor(tenant_id, release["id"])
@@ -168,7 +200,11 @@ class ModelReleaseService:
     async def _promote(
         self, tenant_id: str, release: dict[str, Any], metrics: dict[str, Any]
     ) -> dict[str, Any]:
-        """Internal helper for ModelReleaseService; preserve its caller-facing invariant."""
+        """处理 _promote 对应的当前组件内部业务步骤。
+
+
+        Internal helper for ModelReleaseService; preserve its caller-facing invariant.
+        """
         current = await self._gateway.route(release["routeName"])
         old_primary = current.get("primary")
         promoted = deepcopy(current)
@@ -188,7 +224,11 @@ class ModelReleaseService:
         metrics: dict[str, Any],
         reasons: list[str],
     ) -> dict[str, Any]:
-        """Internal helper for ModelReleaseService; preserve its caller-facing invariant."""
+        """处理 _rollback 对应的当前组件内部业务步骤。
+
+
+        Internal helper for ModelReleaseService; preserve its caller-facing invariant.
+        """
         if release["status"] == "PROMOTED":
             raise InvalidStateError("A promoted route requires a new release to roll back.")
         await self._gateway.upsert_route(release["routeName"], release["previousRoute"])
@@ -202,7 +242,11 @@ class ModelReleaseService:
         metrics: dict[str, Any],
         reasons: list[str],
     ) -> dict[str, Any]:
-        """Internal helper for ModelReleaseService; preserve its caller-facing invariant."""
+        """处理 _save 对应的当前组件内部业务步骤。
+
+
+        Internal helper for ModelReleaseService; preserve its caller-facing invariant.
+        """
         updated = {
             **release,
             "status": status,
@@ -214,7 +258,11 @@ class ModelReleaseService:
 
 
 def _required(request: dict[str, Any], name: str) -> str:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _required 对应的当前组件内部业务步骤。
+
+
+    Internal helper for module; preserve its caller-facing invariant.
+    """
     value = str(request.get(name) or "").strip()
     if not value:
         raise PolicyViolationError(f"{name} is required.")

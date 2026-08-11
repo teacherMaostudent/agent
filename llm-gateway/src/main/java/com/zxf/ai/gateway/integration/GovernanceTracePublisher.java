@@ -29,6 +29,7 @@ public class GovernanceTracePublisher {
     private static final Set<String> CONTENT_FIELDS = Set.of(
             "messages", "content", "prompt", "input", "output", "arguments");
 
+    /** 注入异步平台客户端与序列化器，并读取是否允许导出受限原文的策略。 */
     public GovernanceTracePublisher(
             PlatformServiceClient platform,
             ObjectMapper objectMapper,
@@ -38,6 +39,7 @@ public class GovernanceTracePublisher {
         this.captureContent = captureContent;
     }
 
+    /** 以最佳努力方式发布完成 Trace；导出失败绝不改变已经返回的模型响应。 */
     @EventListener
     public void publish(GatewayTraceEvent event) {
         // Content policy is applied before either export path.  Trace delivery
@@ -86,6 +88,7 @@ public class GovernanceTracePublisher {
                 );
     }
 
+    /** 递归屏蔽提示词、工具参数与凭据字段，保留审计所需的非内容元数据。 */
     private JsonNode redactContent(JsonNode node) {
         if (node instanceof ObjectNode object) {
             Iterator<Map.Entry<String, JsonNode>> fields = object.fields();

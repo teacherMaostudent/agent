@@ -7,6 +7,7 @@ class ControlPlaneError(Exception):
     code = "control_plane_error"
 
     def __init__(self, message: str, **details: object) -> None:
+        """保存可安全返回给调用方的错误代码、消息与结构化上下文。"""
         super().__init__(message)
         self.message = message
         self.details = details
@@ -32,6 +33,7 @@ class DraftValidationError(ControlPlaneError):
     code = "draft_validation_failed"
 
     def __init__(self, report: ValidationReport) -> None:
+        """将草稿校验报告封装为可由 API 统一序列化的发布拒绝错误。"""
         super().__init__("Agent draft contains validation errors.")
         self.report = report
         self.details = {"report": report.model_dump(mode="json")}

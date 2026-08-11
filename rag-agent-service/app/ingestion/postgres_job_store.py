@@ -11,6 +11,7 @@ class PostgresIngestionJobStore:
     """HA-safe ingestion state with SKIP LOCKED worker claims."""
 
     def __init__(self, dsn: str, schema: str) -> None:
+        """连接 PostgreSQL 并创建支持多 Worker 竞争领取的摄取任务表。"""
         self._dsn = dsn
         self._schema = schema
         with connect_postgres(dsn, schema) as connection:
@@ -31,10 +32,12 @@ class PostgresIngestionJobStore:
             connection.commit()
 
     def create(self, job: IngestionJob) -> IngestionJob:
+        """将待处理任务写入 PostgreSQL，作为多副本 Worker 的共享事实来源。"""
         self._write(job)
         return job
 
     def get(self, job_id: str, tenant_id: str | None = None) -> IngestionJob | None:
+        """读取任务，并在查询结果返回前执行租户隔离检查。"""
         with connect_postgres(self._dsn, self._schema) as connection:
             row = connection.execute(
                 "SELECT payload FROM ingestion_jobs WHERE job_id = ?", (job_id,)
@@ -45,6 +48,7 @@ class PostgresIngestionJobStore:
         return job
 
     def claim_next(self) -> IngestionJob | None:
+        """使用 FOR UPDATE SKIP LOCKED 领取任务，避免多个 Worker 等待同一行锁。"""
         now = datetime.now(UTC)
         with connect_postgres(self._dsn, self._schema) as connection:
             row = connection.execute(
@@ -73,6 +77,7 @@ class PostgresIngestionJobStore:
             return job
 
     def complete(self, job: IngestionJob, result: dict) -> IngestionJob:
+        """写入成功终态，释放租约并保留结果供 API 和审计读取。"""
         job.status = JobStatus.COMPLETED
         job.result = result
         job.error = ""
@@ -83,6 +88,7 @@ class PostgresIngestionJobStore:
         return job
 
     def fail(self, job: IngestionJob, error: str) -> IngestionJob:
+        """持久化失败原因并计算下一次尝试；达到上限后永久失败。"""
         now = datetime.now(UTC)
         job.status = JobStatus.QUEUED if job.attempts < job.max_attempts else JobStatus.FAILED
         job.error = error[:4000]
@@ -97,6 +103,7 @@ class PostgresIngestionJobStore:
         return job
 
     def _write(self, job: IngestionJob, connection=None) -> None:
+        """写入任务快照；复用传入连接时由上层 claim 事务统一提交。"""
         owned = connection is None
         target = connection or connect_postgres(self._dsn, self._schema)
         try:
@@ -126,4 +133,5 @@ class PostgresIngestionJobStore:
                 target.close()
 
     def close(self) -> None:
+        """PostgreSQL 连接按操作获取，无需保留或关闭长连接。"""
         return None

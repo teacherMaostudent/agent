@@ -94,14 +94,17 @@ class RuntimeBudget(BaseModel):
 
     @property
     def remaining_cost_usd(self) -> float:
+        """返回非负剩余成本，避免下游因浮点微小误差得到负额度。"""
         return max(0.0, self.max_cost_usd - self.spent_cost_usd)
 
     @property
     def remaining_ms(self) -> int:
+        """以 UTC 绝对截止时间计算剩余毫秒，供 SLA 与超时守卫共享。"""
         return max(0, int((self.deadline_at - datetime.now(UTC)).total_seconds() * 1_000))
 
     @property
     def remaining_attempts(self) -> int:
+        """返回未使用下游尝试次数，不能小于零。"""
         return max(0, self.max_attempts - self.attempts_used)
 
 
@@ -114,6 +117,7 @@ class ApprovalResume(BaseModel):
 
 class RuntimeLimitExceeded(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
+        """携带稳定机器码的预期限制异常，API 不必解析自然语言错误消息。"""
         super().__init__(message)
         self.code = code
 

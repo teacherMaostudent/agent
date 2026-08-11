@@ -13,6 +13,7 @@ _configured = False
 
 
 def configure_tracing(settings) -> None:
+    """进程内只配置一次 OpenTelemetry，避免热重载重复导出相同 span。"""
     global _configured
     if not settings.otel_enabled or _configured:
         return
@@ -36,5 +37,6 @@ def configure_tracing(settings) -> None:
 
 
 def instrument_fastapi(app, settings) -> None:
+    """在启用追踪时为 FastAPI 加入请求 span；禁用时不引入额外中间件。"""
     if settings.otel_enabled:
         FastAPIInstrumentor.instrument_app(app)

@@ -18,7 +18,11 @@ def create_service_app(
     routers: Iterable[APIRouter],
     readiness: Callable[[], dict] | None = None,
 ) -> FastAPI:
-    """Create one deployable process with consistent auth, CORS, health and tracing."""
+    """创建一致的服务边界：认证、授权、CORS、健康检查、追踪及退出清理。
+
+    业务 Router 只暴露自身能力；OIDC/OPA 与服务间密钥在统一中间件中执行，
+    防止各 API 入口遗漏身份或策略校验。
+    """
     configure_logging()
     settings = container.settings
     tracing_settings = settings.model_copy(update={"otel_service_name": service_name})
@@ -26,6 +30,7 @@ def create_service_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        """在 ASGI 生命周期结束时关闭容器持有的存储和网络资源。"""
         yield
         close = getattr(container, "close", None)
         if close is not None:
@@ -36,6 +41,11 @@ def create_service_app(
 
     @app.middleware("http")
     async def service_auth(request: Request, call_next):
+        """验证服务间共享凭据；健康端点例外以支持编排器探针。
+
+        该兼容层与 mTLS/OIDC 并存，生产身份逐步迁移到工作负载令牌后仍保留
+        常量时间比较，避免因错误配置放开内部 API。
+        """
         if settings.require_service_auth and not request.url.path.endswith(
             ("/health", "/health/ready")
         ):
@@ -78,10 +88,12 @@ def create_service_app(
 
     @app.get(f"{settings.api_prefix}/health", tags=["health"])
     def health() -> dict:
+        """报告进程存活，不访问外部依赖，因此适合 liveness probe。"""
         return {"status": "UP", "service": service_name}
 
     @app.get(f"{settings.api_prefix}/health/ready", tags=["health"])
     def ready() -> dict:
+        """检查可选依赖；异常转换为 503，供流量入口停止向未就绪副本路由。"""
         try:
             detail = readiness() if readiness is not None else {}
         except Exception as exc:

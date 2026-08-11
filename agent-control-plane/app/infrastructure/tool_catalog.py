@@ -22,11 +22,13 @@ class ToolCatalogValidator:
         *,
         required: bool = False,
     ) -> None:
+        """加载目录和 Schema 注册表，并记录生产环境是否必须执行绑定校验。"""
         self.path = Path(path)
         self.registry = SchemaRegistry(schema_dir)
         self.required = required
 
     def validate_bindings(self, bindings: list[dict]) -> None:
+        """发布前验证工具名和版本在受 Schema 约束的目录中存在，拒绝漂移绑定。"""
         if not self.required:
             # Local/test deployments may not mount the production Catalog;
             # production configuration turns this check on explicitly.

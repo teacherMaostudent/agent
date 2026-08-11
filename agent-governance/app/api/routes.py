@@ -36,16 +36,19 @@ EventKey = Annotated[None, Depends(validate_event_key)]
 
 
 def service(container: AppContainer) -> GovernanceService:
+    """返回治理应用服务，路由层不直接实现审计一致性或规则评估。"""
     return container.service
 
 
 @router.get("/health/live", response_model=HealthStatus, tags=["health"])
 async def liveness() -> HealthStatus:
+    """报告进程存活；不声明数据库、Kafka 或对象存储已经可用。"""
     return HealthStatus(status="ok")
 
 
 @router.get("/health/ready", response_model=HealthStatus, tags=["health"])
 async def readiness(container: Container) -> HealthStatus:
+    """确认审计仓储可访问；异常会由统一错误处理映射为非就绪响应。"""
     await container.repository.healthcheck()
     return HealthStatus(status="ok")
 
@@ -59,6 +62,7 @@ async def readiness(container: Container) -> HealthStatus:
 async def ingest_event(
     event: GovernanceEvent, _: EventKey, container: Container
 ) -> IngestionResult:
+    """校验共享事件 Schema 后幂等摄取审计事件，调用方须持有写入密钥。"""
     # Pydantic validates the service model; the shared JSON Schema additionally
     # protects cross-language publishers from contract drift at this boundary.
     container.schema_registry.validate("governance-event.v1.json", event.model_dump(mode="json"))
@@ -72,11 +76,13 @@ async def list_audit_events(
     after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1_000),
 ) -> AuditEventList:
+    """以序号分页读取租户审计链，审计身份不能跨越自己的租户边界。"""
     return await service(container).list_audit_events(identity, after_sequence, limit)
 
 
 @router.get("/v1/governance/audit-events/verify", tags=["audit"])
 async def verify_audit_chain(identity: Auditor, container: Container) -> dict[str, Any]:
+    """验证指定租户哈希链完整性，用于审计导出前的防篡改检查。"""
     return await container.repository.verify_audit_chain(identity.tenant_id)
 
 
@@ -87,6 +93,7 @@ async def list_findings(
     finding_status: Annotated[FindingStatus | None, Query(alias="status")] = None,
     limit: int = Query(default=100, ge=1, le=1_000),
 ) -> FindingList:
+    """按状态列出规则发现项；不允许以 API 过滤条件扩大可见租户范围。"""
     return await service(container).list_findings(identity, finding_status, limit)
 
 
@@ -99,11 +106,13 @@ async def resolve_finding(
     identity: Auditor,
     container: Container,
 ) -> Finding:
+    """记录人工处置结论；服务层拒绝不合法的发现项状态回退。"""
     return await service(container).resolve_finding(identity, finding_id, request)
 
 
 @router.get("/v1/governance/tenant-policy", response_model=TenantPolicy, tags=["policy"])
 async def get_tenant_policy(identity: Auditor, container: Container) -> TenantPolicy:
+    """获取本租户治理策略，策略是评估与审计判断的唯一配置来源。"""
     return await service(container).get_tenant_policy(identity)
 
 
@@ -111,6 +120,7 @@ async def get_tenant_policy(identity: Auditor, container: Container) -> TenantPo
 async def update_tenant_policy(
     request: TenantPolicyUpdate, identity: Auditor, container: Container
 ) -> TenantPolicy:
+    """更新租户治理策略；服务层同时记录可追溯审计事件。"""
     return await service(container).update_tenant_policy(identity, request)
 
 
@@ -121,6 +131,7 @@ async def compliance_report(
     from_time: Annotated[datetime | None, Query()] = None,
     to_time: Annotated[datetime | None, Query()] = None,
 ) -> ComplianceReport:
+    """生成时间范围内的租户合规报告，时间过滤不改变审计事件原文。"""
     return await service(container).report(identity, from_time, to_time)
 
 
@@ -128,6 +139,7 @@ async def compliance_report(
 # /admin/eval routes as a compatibility proxy to these endpoints.
 @router.get("/v1/governance/evaluations", tags=["evaluation"])
 async def evaluation_snapshot(identity: Auditor, container: Container) -> dict[str, Any]:
+    """返回治理侧评测资产与运行概览，而非 Gateway 的兼容代理数据。"""
     return await container.evaluation.snapshot(identity.tenant_id)
 
 
@@ -135,6 +147,7 @@ async def evaluation_snapshot(identity: Auditor, container: Container) -> dict[s
 async def upsert_prompt_version(
     request: dict[str, Any], identity: Auditor, container: Container
 ) -> dict[str, Any]:
+    """登记不可变 Prompt 版本；Judge 运行只能引用已登记的版本。"""
     return await container.evaluation.upsert_asset(identity.tenant_id, PROMPT_VERSION, request)
 
 
@@ -142,6 +155,7 @@ async def upsert_prompt_version(
 async def upsert_retrieval_strategy(
     request: dict[str, Any], identity: Auditor, container: Container
 ) -> dict[str, Any]:
+    """登记可复现检索策略，以固定评测中检索配置的语义。"""
     return await container.evaluation.upsert_asset(identity.tenant_id, RETRIEVAL_STRATEGY, request)
 
 
@@ -149,6 +163,7 @@ async def upsert_retrieval_strategy(
 async def upsert_golden_case(
     request: dict[str, Any], identity: Auditor, container: Container
 ) -> dict[str, Any]:
+    """登记 Golden Case 及专家标签、证据预期，作为发布门禁基准。"""
     return await container.evaluation.upsert_asset(identity.tenant_id, GOLDEN_CASE, request)
 
 
@@ -156,6 +171,7 @@ async def upsert_golden_case(
 async def upsert_judge_rubric(
     request: dict[str, Any], identity: Auditor, container: Container
 ) -> dict[str, Any]:
+    """登记 Judge 量表版本，冻结模型、Prompt 和评分规则的组合。"""
     return await container.evaluation.upsert_asset(identity.tenant_id, JUDGE_RUBRIC, request)
 
 
@@ -163,6 +179,7 @@ async def upsert_judge_rubric(
 async def run_regression(
     request: dict[str, Any], identity: Auditor, container: Container
 ) -> dict[str, Any]:
+    """运行回归评测，结果与输入资产版本绑定，避免均分掩盖配置漂移。"""
     return await container.evaluation.run_regression(identity.tenant_id, request)
 
 
@@ -170,16 +187,19 @@ async def run_regression(
 async def run_judge(
     request: dict[str, Any], identity: Auditor, container: Container
 ) -> dict[str, Any]:
+    """执行冻结 Judge 运行；调用方身份会作为评测审计责任人保存。"""
     return await container.evaluation.judge(identity.tenant_id, identity.user_id, request)
 
 
 @router.post("/v1/governance/evaluations/judge-runs/{run_id}/calibration", tags=["evaluation"])
 async def calibrate_judge(run_id: str, identity: Auditor, container: Container) -> dict[str, Any]:
+    """以专家标注集校准 Judge，未通过校准的版本不得用于质量门禁。"""
     return await container.evaluation.calibrate(identity.tenant_id, run_id)
 
 
 @router.get("/v1/governance/evaluations/calibration/weekly-report", tags=["evaluation"])
 async def weekly_calibration_report(identity: Auditor, container: Container) -> dict[str, Any]:
+    """汇总本租户按周 Judge 校准与漂移信号，供治理负责人复核。"""
     return await container.evaluation.weekly_calibration_report(identity.tenant_id)
 
 
@@ -193,6 +213,7 @@ async def run_quality_gate(
     container: Container,
     request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """依据分组 Hard Gate 评估一次 Judge 运行，禁止仅用平均分放行。"""
     return await container.evaluation.quality_gate(identity.tenant_id, run_id, request)
 
 
@@ -200,6 +221,7 @@ async def run_quality_gate(
 async def record_evaluation_trace(
     request: dict[str, Any], identity: Auditor, container: Container
 ) -> dict[str, Any]:
+    """写入离线评测 Trace，使答案、证据和指标能按版本追溯。"""
     return await container.evaluation.record_trace(identity.tenant_id, request)
 
 
@@ -207,16 +229,19 @@ async def record_evaluation_trace(
 async def create_compliance_review(
     request: dict[str, Any], identity: Auditor, container: Container
 ) -> dict[str, Any]:
+    """创建需人工确认的合规工作项；审批状态由 Governance 独立持有。"""
     return await container.compliance.create(identity.tenant_id, identity.user_id, request)
 
 
 @router.get("/v1/governance/compliance", tags=["compliance-workflow"])
 async def compliance_workflow_snapshot(identity: Auditor, container: Container) -> dict[str, Any]:
+    """返回租户合规工作流概览，不执行或推进任何业务操作。"""
     return await container.compliance.snapshot(identity.tenant_id)
 
 
 @router.get("/v1/governance/compliance/reviews", tags=["compliance-workflow"])
 async def list_compliance_reviews(identity: Auditor, container: Container) -> list[dict[str, Any]]:
+    """列出租户合规复核项，供授权审计人员完成处置。"""
     return await container.compliance.list(identity.tenant_id)
 
 
@@ -224,6 +249,7 @@ async def list_compliance_reviews(identity: Auditor, container: Container) -> li
 async def get_compliance_review(
     review_id: str, identity: Auditor, container: Container
 ) -> dict[str, Any]:
+    """按租户读取单个合规复核项，避免通过全局 ID 越权读取。"""
     return await container.compliance.get(identity.tenant_id, review_id)
 
 
@@ -237,11 +263,13 @@ async def confirm_compliance_review(
     identity: Auditor,
     container: Container,
 ) -> dict[str, Any]:
+    """确认合规复核；服务层保证确认只能发生一次并留下审计记录。"""
     return await container.compliance.confirm(identity.tenant_id, review_id, request)
 
 
 @router.get("/v1/governance/compliance/audit-logs", tags=["compliance-workflow"])
 async def compliance_audit_logs(identity: Auditor, container: Container) -> list[dict[str, Any]]:
+    """读取合规工作流自身的审计日志，和业务审计事件分开建模。"""
     return await container.compliance.audit_logs(identity.tenant_id)
 
 
@@ -249,6 +277,7 @@ async def compliance_audit_logs(identity: Auditor, container: Container) -> list
 async def record_gateway_trace(
     request: dict[str, Any], identity: Auditor, container: Container
 ) -> dict[str, Any]:
+    """记录 Gateway 线上调用 Trace，后续抽样、脱敏与保留策略在服务层执行。"""
     return await container.evaluation.record_gateway_trace(identity.tenant_id, request)
 
 
@@ -256,11 +285,13 @@ async def record_gateway_trace(
 async def record_feedback(
     request: dict[str, Any], identity: Auditor, container: Container
 ) -> dict[str, Any]:
+    """记录人工反馈及责任人，用于线上校准闭环而非直接改写 Golden 集。"""
     return await container.evaluation.record_feedback(identity.tenant_id, identity.user_id, request)
 
 
 @router.get("/v1/governance/evaluations/online", tags=["online-evaluation"])
 async def online_evaluation_snapshot(identity: Auditor, container: Container) -> dict[str, Any]:
+    """返回线上抽样和人工复核闭环的租户级状态。"""
     return await container.evaluation.online_snapshot(identity.tenant_id)
 
 
@@ -271,6 +302,7 @@ async def online_evaluation_snapshot(identity: Auditor, container: Container) ->
 async def judge_online_sample(
     sample_id: str, identity: Auditor, container: Container
 ) -> dict[str, Any]:
+    """使用冻结 Judge 审核一个线上样本，结果不会替代人工最终复核。"""
     return await container.evaluation.judge_online(identity.tenant_id, identity.user_id, sample_id)
 
 
@@ -284,6 +316,7 @@ async def review_online_sample(
     identity: Auditor,
     container: Container,
 ) -> dict[str, Any]:
+    """记录人工对线上样本的复核，作为后续专家校准数据来源。"""
     return await container.evaluation.review_online_sample(
         identity.tenant_id, identity.user_id, sample_id, request
     )
@@ -299,6 +332,7 @@ async def review_golden_candidate(
     identity: Auditor,
     container: Container,
 ) -> dict[str, Any]:
+    """审核候选 Golden 样本；只有通过复核的记录才能进入专家标注集。"""
     return await container.evaluation.review_golden_candidate(
         identity.tenant_id, identity.user_id, candidate_id, request
     )

@@ -21,9 +21,21 @@ _PATH_ARGUMENT = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 class ToolAdapter(Protocol):
     """Execute a catalogued tool after Gateway authorization has already passed."""
 
-    async def execute(self, arguments: dict[str, Any], context: InvocationContext) -> Any: ...
+    async def execute(self, arguments: dict[str, Any], context: InvocationContext) -> Any:
+        """处理 execute 对应的当前组件内部业务步骤。
 
-    async def close(self) -> None: ...
+
+        Execute the already-authorized operation without adding a second policy decision.
+        """
+        ...
+
+    async def close(self) -> None:
+        """处理 close 对应的当前组件内部业务步骤。
+
+
+        Release transport resources owned by the concrete adapter during shutdown.
+        """
+        ...
 
 
 class HttpToolAdapter:
@@ -38,7 +50,11 @@ class HttpToolAdapter:
         client: httpx.AsyncClient | None = None,
         client_options: dict[str, Any] | None = None,
     ) -> None:
-        """Initialize HttpToolAdapter dependencies and local state."""
+        """初始化该组件的依赖、配置与内部状态。
+
+
+        Initialize HttpToolAdapter dependencies and local state.
+        """
         self.config = config
         self.allow_private_networks = allow_private_networks
         self.max_response_bytes = max_response_bytes
@@ -52,7 +68,11 @@ class HttpToolAdapter:
         )
 
     async def execute(self, arguments: dict[str, Any], context: InvocationContext) -> Any:
-        """Perform execute within the HttpToolAdapter ownership boundary."""
+        """处理 execute 对应的当前组件内部业务步骤。
+
+
+        Perform execute within the HttpToolAdapter ownership boundary.
+        """
         url, remaining = _render_url(self.config.url, arguments)
         validate_outbound_url(
             url,
@@ -100,7 +120,11 @@ class HttpToolAdapter:
         return response.text
 
     async def close(self) -> None:
-        """Perform close within the HttpToolAdapter ownership boundary."""
+        """处理 close 对应的当前组件内部业务步骤。
+
+
+        Perform close within the HttpToolAdapter ownership boundary.
+        """
         if self._owns_client:
             await self.client.aclose()
 
@@ -116,7 +140,11 @@ class McpToolAdapter:
         *,
         allow_private_networks: bool,
     ) -> None:
-        """Initialize McpToolAdapter dependencies and local state."""
+        """初始化该组件的依赖、配置与内部状态。
+
+
+        Initialize McpToolAdapter dependencies and local state.
+        """
         self.config = config
         self.allow_private_networks = allow_private_networks
         validate_outbound_url(
@@ -127,7 +155,11 @@ class McpToolAdapter:
         )
 
     async def execute(self, arguments: dict[str, Any], context: InvocationContext) -> Any:
-        """Perform execute within the McpToolAdapter ownership boundary."""
+        """处理 execute 对应的当前组件内部业务步骤。
+
+
+        Perform execute within the McpToolAdapter ownership boundary.
+        """
         validate_outbound_url(
             self.config.server_url,
             self.config.allowed_hosts,
@@ -170,7 +202,11 @@ class McpToolAdapter:
         return [item.model_dump(mode="json") for item in result.content]
 
     async def close(self) -> None:
-        """Perform close within the McpToolAdapter ownership boundary."""
+        """处理 close 对应的当前组件内部业务步骤。
+
+
+        Perform close within the McpToolAdapter ownership boundary.
+        """
         return None
 
 
@@ -184,18 +220,30 @@ class CallableToolAdapter:
             Any | Awaitable[Any],
         ],
     ) -> None:
-        """Initialize CallableToolAdapter dependencies and local state."""
+        """初始化该组件的依赖、配置与内部状态。
+
+
+        Initialize CallableToolAdapter dependencies and local state.
+        """
         self.handler = handler
 
     async def execute(self, arguments: dict[str, Any], context: InvocationContext) -> Any:
-        """Perform execute within the CallableToolAdapter ownership boundary."""
+        """处理 execute 对应的当前组件内部业务步骤。
+
+
+        Perform execute within the CallableToolAdapter ownership boundary.
+        """
         result = self.handler(arguments, context)
         if isinstance(result, Awaitable):
             return await result
         return result
 
     async def close(self) -> None:
-        """Perform close within the CallableToolAdapter ownership boundary."""
+        """处理 close 对应的当前组件内部业务步骤。
+
+
+        Perform close within the CallableToolAdapter ownership boundary.
+        """
         return None
 
 
@@ -206,7 +254,11 @@ def build_http_adapter(
     max_response_bytes: int,
     client_options: dict[str, Any] | None = None,
 ) -> HttpToolAdapter:
-    """Perform build http adapter within the module ownership boundary."""
+    """创建或构建 build_http_adapter 对应的受控业务步骤。
+
+
+    Create the only HTTP adapter type after its outbound policy has been validated.
+    """
     return HttpToolAdapter(
         config,
         allow_private_networks=allow_private_networks,
@@ -216,11 +268,19 @@ def build_http_adapter(
 
 
 def _render_url(template: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """序列化或渲染 _render_url 对应的受控业务步骤。
+
+
+    Substitute allow-listed path placeholders with escaped scalars and retain other arguments.
+    """
     consumed: set[str] = set()
 
     def replace(match: re.Match[str]) -> str:
-        """Perform replace within the module ownership boundary."""
+        """处理 replace 对应的当前组件内部业务步骤。
+
+
+        Reject missing or complex path values before they can change an outbound URL.
+        """
         name = match.group(1)
         if name not in arguments:
             raise ToolUpstreamError(f"missing URL template argument: {name}")
@@ -240,7 +300,11 @@ def _build_headers(
     auth_env: str | None,
     context: InvocationContext,
 ) -> dict[str, str]:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """创建或构建 _build_headers 对应的受控业务步骤。
+
+
+    Build traceable upstream headers without placing raw approval data in the URL.
+    """
     headers = {
         **static_headers,
         "X-Tenant-Id": context.tenant_id,
@@ -258,5 +322,9 @@ def _build_headers(
 
 
 async def close_adapters(adapters: list[ToolAdapter]) -> None:
-    """Release or remove owned state without bypassing cleanup rules."""
+    """管理生命周期 close_adapters 对应的受控业务步骤。
+
+
+    Release or remove owned state without bypassing cleanup rules.
+    """
     await asyncio.gather(*(adapter.close() for adapter in adapters))

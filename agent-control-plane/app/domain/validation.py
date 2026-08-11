@@ -16,6 +16,7 @@ _PROMPT_VARIABLE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
 
 
 def validate_agent_spec(spec: AgentDraftSpec, policy: TenantPolicy) -> ValidationReport:
+    """以确定性规则校验图、Prompt、工具、知识和模型策略，不修改草稿。"""
     issues: list[ValidationIssue] = []
 
     node_ids = [node.node_id for node in spec.graph.nodes]
@@ -200,6 +201,7 @@ def validate_agent_spec(spec: AgentDraftSpec, policy: TenantPolicy) -> Validatio
 
 
 def _reachable(entrypoint: str, adjacency: dict[str, set[str]]) -> set[str]:
+    """广度优先计算入口可达节点，用于阻止发布包含永远不会执行的步骤。"""
     visited: set[str] = set()
     queue = deque([entrypoint])
     while queue:
@@ -212,8 +214,10 @@ def _reachable(entrypoint: str, adjacency: dict[str, set[str]]) -> set[str]:
 
 
 def _error(code: str, path: str, message: str) -> ValidationIssue:
+    """构造会阻断发布的结构化校验问题，路径可直接定位到草稿字段。"""
     return ValidationIssue(severity=IssueSeverity.ERROR, code=code, path=path, message=message)
 
 
 def _warning(code: str, path: str, message: str) -> ValidationIssue:
+    """构造不阻断发布但需人工确认的结构化校验问题。"""
     return ValidationIssue(severity=IssueSeverity.WARNING, code=code, path=path, message=message)

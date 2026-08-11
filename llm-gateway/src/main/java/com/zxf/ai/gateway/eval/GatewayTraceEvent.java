@@ -32,8 +32,7 @@ public record GatewayTraceEvent(
         String currency
 ) {
     /**
-     * Compatibility constructor for internal callers that do not originate
-     * from an Agent run. New model-access paths should use the full identity.
+     * 为非 Agent 发起的兼容调用补齐追踪身份；新模型访问链路必须传入完整身份。
      */
     public GatewayTraceEvent(
             String requestId,

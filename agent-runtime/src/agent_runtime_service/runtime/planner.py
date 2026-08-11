@@ -39,7 +39,9 @@ class SemanticAnalysis(Protocol):
 
     def analyze(
         self, state: dict[str, Any]
-    ) -> tuple[IntentResult, list[EntityResult], SourcePlan]: ...
+    ) -> tuple[IntentResult, list[EntityResult], SourcePlan]:
+        """从运行状态提取意图、实体和允许的数据源，不生成最终执行动作。"""
+        ...
 
 
 class HeuristicSemanticAnalyzer:
@@ -48,6 +50,7 @@ class HeuristicSemanticAnalyzer:
     uses_llm = False
 
     def analyze(self, state: dict[str, Any]) -> tuple[IntentResult, list[EntityResult], SourcePlan]:
+        """用可解释词表和发布绑定生成本地分析，作为网关不可用时的确定性路径。"""
         task = state["task"]
         lowered = task.lower()
         intent_name, confidence, reason = self._intent(lowered)
@@ -84,6 +87,7 @@ class HeuristicSemanticAnalyzer:
 
     @staticmethod
     def _intent(lowered: str) -> tuple[str, float, str]:
+        """按优先级匹配受维护的意图词表；无匹配时返回低置信通用意图。"""
         rules = [
             (("refund", "退款", "退货"), "refund_application"),
             (("audit", "review", "审查", "审核", "合规"), "compliance_review"),
@@ -104,6 +108,7 @@ class HeuristicSemanticAnalyzer:
 
     @staticmethod
     def _entities(task: str) -> list[EntityResult]:
+        """提取有限结构化实体供规划使用，不改写或持久化原始请求。"""
         found: list[EntityResult] = []
         for name, pattern in (
             ("email", _EMAIL),
@@ -125,10 +130,12 @@ source_plan{knowledge_bases,context_sources,required_permissions,reason}.
 Only select knowledge bases present in the published snapshot. Never invent permissions."""
 
     def __init__(self, gateway: LlmGatewayClient, model: str) -> None:
+        """注入受治理网关和逻辑模型名，使语义增强仍经过既定模型路由。"""
         self.gateway = gateway
         self.model = model
 
     def analyze(self, state: dict[str, Any]) -> tuple[IntentResult, list[EntityResult], SourcePlan]:
+        """向网关请求结构化语义分析，同时只暴露快照允许的来源范围。"""
         payload = {
             "task": state["task"],
             "metadata": state.get("metadata", {}),
@@ -161,6 +168,7 @@ Only select knowledge bases present in the published snapshot. Never invent perm
         )
 
     def last_cost_usd(self) -> float | None:
+        """读取本次分析对应的网关账单，供 Graph 用实际费用对账。"""
         return self.gateway.last_cost_usd()
 
 
@@ -168,9 +176,11 @@ class RuntimePlanner:
     """Translate request signals into bounded planning metadata, not final actions."""
 
     def __init__(self, analyzer: SemanticAnalysis) -> None:
+        """注入可替换的语义分析器，便于在网关故障时切换到确定性分析。"""
         self.analyzer = analyzer
 
     def analyze(self, state: dict[str, Any]) -> dict[str, Any]:
+        """序列化分析输出与候选检索档位，尚不允许其直接决定执行动作。"""
         intent, entities, source_plan = self.analyzer.analyze(state)
         return {
             "intent": intent.model_dump(mode="json"),
@@ -182,6 +192,7 @@ class RuntimePlanner:
         }
 
     def build_plan(self, state: dict[str, Any]) -> ExecutionPlan:
+        """把分析、预算和发布快照合成为可审计的有限执行计划。"""
         intent = IntentResult.model_validate(state["intent"])
         entities = [EntityResult.model_validate(item) for item in state.get("entities", [])]
         sources = SourcePlan.model_validate(state["source_plan"])
@@ -226,10 +237,12 @@ def _complexity(
     entities: list[EntityResult],
     sources: SourcePlan,
 ) -> ComplexityAssessment:
+    """按来源、写操作、审批和实体数等可解释信号评分，不依赖模型自评。"""
     score = 5
     reasons: list[str] = []
 
     def add(points: int, reason: str) -> None:
+        """累计受上限约束的评分，并记录每一项业务原因。"""
         nonlocal score
         score += points
         reasons.append(reason)
@@ -265,6 +278,7 @@ def _complexity(
 
 
 def _sla(budget: RuntimeBudget, complexity: ComplexityAssessment) -> SlaAssessment:
+    """由剩余绝对时间和复杂度得出 SLA 可行性，不承诺无法完成的质量等级。"""
     minimum = (
         1_000 if complexity.level == "simple" else 3_000 if complexity.level == "medium" else 8_000
     )
@@ -284,6 +298,7 @@ def _sla(budget: RuntimeBudget, complexity: ComplexityAssessment) -> SlaAssessme
 
 
 def _estimated_cost(complexity: ComplexityAssessment, sources: SourcePlan) -> float:
+    """给路由使用的保守估算；实际成本仍以 Gateway 账单为准。"""
     base = 0.01 if complexity.level == "simple" else 0.03 if complexity.level == "medium" else 0.08
     return round(base + 0.002 * (len(sources.knowledge_bases) + len(sources.context_sources)), 6)
 
@@ -295,6 +310,7 @@ def _route(
     sla: SlaAssessment,
     cost: CostAssessment,
 ) -> RouteDecision:
+    """根据置信度、SLA、成本和副作用选择受控路径及允许降级链。"""
     reasons: list[str] = []
     if intent.confidence < 0.6:
         route = RouteType.CLARIFY
@@ -337,6 +353,7 @@ def _route(
 
 
 def _execution_headers(state: dict[str, Any]) -> dict[str, str]:
+    """生成下游网关所需运行关联与剩余预算头，不传播任意客户端 Header。"""
     budget = state.get("budget", {})
     return {
         "X-Tenant-Id": state["tenant_id"],
@@ -367,6 +384,7 @@ def select_logical_model(
     fallback: str,
     compiled_plan: dict[str, Any] | None = None,
 ) -> str:
+    """优先从已编译计划选择逻辑模型，缺失时才使用发布策略和本地回退。"""
     compiled = compiled_plan or {}
     if compiled.get("logical_model"):
         return str(compiled["logical_model"])

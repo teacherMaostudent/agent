@@ -22,6 +22,7 @@ class QwenEmbeddingClient:
         timeout: float = 60.0,
         batch_size: int = 10,
     ) -> None:
+        """保存供应商连接与批量限制，并在缺少密钥时立即拒绝无效配置。"""
         if not api_key:
             raise ValueError("QwenEmbeddingClient 需要 DASHSCOPE_API_KEY")
         self.api_key = api_key

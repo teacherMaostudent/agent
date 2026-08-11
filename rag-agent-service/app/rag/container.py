@@ -8,7 +8,10 @@ from app.retrieval.search_projection import build_search_projection
 
 
 class RagQueryContainer:
+    """组装只读 RAG 查询面；索引更新和文档解析属于摄取服务。"""
+
     def __init__(self) -> None:
+        """加载冻结配置并构建检索、精排、扫描和版本化索引依赖。"""
         self.settings = get_settings()
         self.repository = build_repository(self.settings)
         self.reranker = build_reranker(self.settings)
@@ -37,6 +40,7 @@ class RagQueryContainer:
         )
 
     def close(self) -> None:
+        """释放仓储连接；检索器和扫描器没有需关闭的持久资源。"""
         close = getattr(self.repository, "close", None)
         if close is not None:
             close()

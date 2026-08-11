@@ -9,6 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 def utc_now() -> datetime:
+    """处理 utc_now 对应的当前组件内部业务步骤。
+
+
+    Generate UTC timestamps so approvals and audit expiry are comparable across regions.
+    """
     return datetime.now(UTC)
 
 
@@ -51,6 +56,11 @@ class HttpTransport(StrictModel):
     @field_validator("allowed_hosts")
     @classmethod
     def normalize_hosts(cls, value: list[str]) -> list[str]:
+        """处理 normalize_hosts 对应的当前组件内部业务步骤。
+
+
+        Canonicalise allow-listed hosts before SSRF validation compares them.
+        """
         return sorted({item.strip().lower() for item in value if item.strip()})
 
 
@@ -67,6 +77,11 @@ class McpTransport(StrictModel):
     @field_validator("allowed_hosts")
     @classmethod
     def normalize_hosts(cls, value: list[str]) -> list[str]:
+        """处理 normalize_hosts 对应的当前组件内部业务步骤。
+
+
+        Canonicalise MCP server host allow-lists using the same SSRF-safe rule.
+        """
         return sorted({item.strip().lower() for item in value if item.strip()})
 
 
@@ -94,10 +109,20 @@ class ToolSpec(StrictModel):
     @field_validator("required_permissions", "enabled_tenants")
     @classmethod
     def unique_values(cls, value: list[str]) -> list[str]:
+        """处理 unique_values 对应的当前组件内部业务步骤。
+
+
+        Remove blank and duplicate permissions or tenant bindings at catalog load time.
+        """
         return sorted({item.strip() for item in value if item.strip()})
 
     @model_validator(mode="after")
     def validate_governance(self) -> ToolSpec:
+        """校验 validate_governance 对应的受控业务步骤。
+
+
+        Forbid unsafe retry and approval combinations before a tool reaches Runtime.
+        """
         high_risk = self.risk in {
             ToolRisk.WRITE_HIGH_RISK,
             ToolRisk.HUMAN_APPROVAL_REQUIRED,
@@ -110,13 +135,28 @@ class ToolSpec(StrictModel):
 
     @property
     def key(self) -> tuple[str, str]:
+        """处理 key 对应的当前组件内部业务步骤。
+
+
+        Return the immutable catalog identity used for version-safe lookup.
+        """
         return self.name, self.version
 
     @property
     def requires_idempotency_key(self) -> bool:
+        """处理 requires_idempotency_key 对应的当前组件内部业务步骤。
+
+
+        Require replay protection for every operation that can change business state.
+        """
         return self.risk != ToolRisk.READ_ONLY
 
     def is_enabled_for(self, tenant_id: str) -> bool:
+        """判断 is_enabled_for 对应的受控业务步骤。
+
+
+        Check the tenant allow-list before exposing a tool or invoking its adapter.
+        """
         return "*" in self.enabled_tenants or tenant_id in self.enabled_tenants
 
 
@@ -125,6 +165,11 @@ class ToolCatalog(StrictModel):
 
     @model_validator(mode="after")
     def unique_tool_versions(self) -> ToolCatalog:
+        """处理 unique_tool_versions 对应的当前组件内部业务步骤。
+
+
+        Reject duplicate logical versions so release selection stays unambiguous.
+        """
         keys = [tool.key for tool in self.tools]
         if len(keys) != len(set(keys)):
             raise ValueError("tool name and version must be unique")
@@ -143,6 +188,11 @@ class ToolManifest(StrictModel):
 
     @classmethod
     def from_spec(cls, spec: ToolSpec) -> ToolManifest:
+        """处理 from_spec 对应的当前组件内部业务步骤。
+
+
+        Project an executable catalog entry into the safe manifest visible to Runtime.
+        """
         return cls(
             name=spec.name,
             version=spec.version,

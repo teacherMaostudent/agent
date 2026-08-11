@@ -27,7 +27,7 @@ class ComplianceService:
     def __init__(
         self, repository: SqliteRepository, gateway: LlmGatewayClient, default_model: str
     ) -> None:
-        """Initialize ComplianceService dependencies and local state."""
+        """初始化该组件的依赖、配置与内部状态。"""
         self._repository = repository
         self._gateway = gateway
         self._default_model = default_model
@@ -38,7 +38,7 @@ class ComplianceService:
         user_id: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
-        """Perform create within the ComplianceService ownership boundary."""
+        """处理 create 对应的当前组件内部业务步骤。"""
         model = str(request.get("model") or self._default_model)
         response = await self._gateway.complete(
             tenant_id=tenant_id,
@@ -94,20 +94,20 @@ class ComplianceService:
         return result
 
     async def get(self, tenant_id: str, review_id: str) -> dict[str, Any]:
-        """Perform get within the ComplianceService ownership boundary."""
+        """处理 get 对应的当前组件内部业务步骤。"""
         result = await self._repository.get_document(tenant_id, REVIEW, review_id)
         if not result:
             raise NotFoundError(f"Unknown compliance review: {review_id}")
         return result
 
     async def list(self, tenant_id: str) -> list[dict[str, Any]]:
-        """Perform list within the ComplianceService ownership boundary."""
+        """处理 list 对应的当前组件内部业务步骤。"""
         return await self._repository.list_documents(tenant_id, REVIEW)
 
     async def confirm(
         self, tenant_id: str, review_id: str, request: dict[str, Any]
     ) -> dict[str, Any]:
-        """Perform confirm within the ComplianceService ownership boundary."""
+        """处理 confirm 对应的当前组件内部业务步骤。"""
         current = await self.get(tenant_id, review_id)
         now = _now()
         confirmed = {
@@ -139,7 +139,7 @@ class ComplianceService:
         return confirmed
 
     async def snapshot(self, tenant_id: str) -> dict[str, Any]:
-        """Perform snapshot within the ComplianceService ownership boundary."""
+        """处理 snapshot 对应的当前组件内部业务步骤。"""
         return {
             "store": "governance",
             "reviews": await self.list(tenant_id),
@@ -147,7 +147,7 @@ class ComplianceService:
         }
 
     async def audit_logs(self, tenant_id: str) -> list[dict[str, Any]]:
-        """Perform audit logs within the ComplianceService ownership boundary."""
+        """处理 audit_logs 对应的当前组件内部业务步骤。"""
         return await self._repository.list_documents(tenant_id, AUDIT, 200)
 
     async def _audit(
@@ -160,7 +160,7 @@ class ComplianceService:
         after: dict[str, Any],
         notes: str = "",
     ) -> None:
-        """Internal helper for ComplianceService; preserve its caller-facing invariant."""
+        """处理 _audit 对应的当前组件内部业务步骤。"""
         entry = {
             "id": uuid4().hex,
             "reviewId": review_id,
@@ -175,7 +175,7 @@ class ComplianceService:
 
 
 def _parse(raw: str) -> tuple[dict[str, Any], list[str]]:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _parse 对应的当前组件内部业务步骤。"""
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I)
     try:
         value = json.loads(text)
@@ -187,7 +187,7 @@ def _parse(raw: str) -> tuple[dict[str, Any], list[str]]:
 
 
 def _validate(value: dict[str, Any], errors: list[str]) -> None:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _validate 对应的当前组件内部业务步骤。"""
     if not isinstance(value.get("summary"), str):
         errors.append("summary must be a string.")
     if not isinstance(value.get("defects"), list):

@@ -20,6 +20,11 @@ class AgentDecision(BaseModel):
 
     @model_validator(mode="after")
     def validate_action_payload(self) -> "AgentDecision":
+        """确保模型每次只给出一个可执行动作所必需的字段。
+
+        该校验是模型输出进入图路由前的第一层；工具名称和最终回答仍会被发布快照、
+        工具目录及输出 Schema 继续约束。
+        """
         if self.action == AgentAction.RETRIEVE and not self.query.strip():
             raise ValueError("RETRIEVE requires query")
         if self.action == AgentAction.TOOL and not self.tool_name.strip():

@@ -29,6 +29,7 @@ class ControlledFileScanner:
         max_files: int = 200,
         max_results: int = 200,
     ) -> None:
+        """固定允许扫描的根目录、扩展名和资源上限，阻止请求越权读取文件系统。"""
         self.roots = {name: Path(value).resolve() for name, value in roots.items()}
         self.allowed_extensions = {
             item.lower()
@@ -56,7 +57,7 @@ class ControlledFileScanner:
     def scan(
         self, scope: str, pattern: str, *, regex: bool = False, glob: str = "**/*"
     ) -> list[ScanMatch]:
-        """Search only approved trees and return bounded, redacted excerpts."""
+        """仅扫描白名单目录，并返回数量受限、已脱敏的命中片段。"""
         # Scope is an allow-list key, never a caller-provided filesystem path.
         # This keeps source/log search useful without granting arbitrary reads.
         if scope not in self.roots:

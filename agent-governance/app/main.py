@@ -14,11 +14,13 @@ from app.core.config import Settings
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    """组装治理 HTTP 服务；OIDC 身份中间件覆盖除健康检查外的全部端点。"""
     resolved_settings = settings or Settings()
     container = AppContainer(resolved_settings)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
+        """在暴露治理 API 前初始化审计仓储，确保不会接受无法持久化的事件。"""
         await container.start()
         application.state.container = container
         yield
@@ -43,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.exception_handler(GovernanceError)
     async def governance_error_handler(_: Request, error: GovernanceError) -> JSONResponse:
+        """将治理领域错误稳定映射为 HTTP 状态，避免向调用方暴露内部异常。"""
         status_code = (
             404
             if isinstance(error, NotFoundError)

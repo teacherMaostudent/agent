@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 def utc_now() -> datetime:
+    """返回带 UTC 时区的统一时间，避免审计链在跨区域部署中出现本地时间歧义。"""
     return datetime.now(UTC)
 
 
@@ -35,6 +36,7 @@ class Identity(StrictModel):
     @field_validator("roles", mode="before")
     @classmethod
     def normalize_roles(cls, value: Any) -> frozenset[str]:
+        """将 OIDC 或兼容 Header 的角色表示规范化为不可变集合，便于权限判断。"""
         if value is None:
             return frozenset()
         if isinstance(value, str):
@@ -54,6 +56,7 @@ class GovernanceEvent(StrictModel):
 
     @model_validator(mode="after")
     def validate_canonical_payload(self) -> GovernanceEvent:
+        """校验关键事件的最小 Payload 契约，防止审计规则因字段漂移静默失效。"""
         required = {
             "agent.run.completed": {"run_id", "agent_id", "status"},
             "agent.run.interrupted": {"run_id", "agent_id", "status"},

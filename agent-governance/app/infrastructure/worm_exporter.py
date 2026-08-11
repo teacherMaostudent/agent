@@ -21,7 +21,7 @@ from app.core.config import Settings
 
 
 def _merkle_root(hashes: list[str]) -> str:
-    """Internal helper for module; preserve its caller-facing invariant."""
+    """处理 _merkle_root 对应的当前组件内部业务步骤。"""
     if not hashes:
         return hashlib.sha256(b"").hexdigest()
     level = [bytes.fromhex(value) for value in hashes]
@@ -36,7 +36,7 @@ def _merkle_root(hashes: list[str]) -> str:
 
 
 async def export_tenant(settings: Settings, tenant_id: str) -> dict:
-    """Create a signed WORM export only from an internally valid audit chain."""
+    """处理 export_tenant 对应的当前组件内部业务步骤。"""
     container = AppContainer(settings)
     await container.start()
     verification = await container.repository.verify_audit_chain(tenant_id)
@@ -98,7 +98,7 @@ async def export_tenant(settings: Settings, tenant_id: str) -> dict:
 
 
 def main() -> None:
-    """Perform main within the module ownership boundary."""
+    """处理 main 对应的当前组件内部业务步骤。"""
     import argparse
 
     parser = argparse.ArgumentParser(description="Export an audit chain to WORM storage")

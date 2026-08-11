@@ -46,7 +46,7 @@ class AgentContextService:
         default_token_budget: int,
         message_budget_ratio: float = 0.4,
     ) -> None:
-        """Initialize AgentContextService dependencies and local state."""
+        """注入会话存储、可选 RAG 客户端及上下文预算参数，初始化组装服务。"""
         self.store = store
         self.rag_client = rag_client
         self.max_messages = max_messages
@@ -60,9 +60,9 @@ class AgentContextService:
         tenant_id: str = "default",
         user_id: str = "anonymous",
     ) -> None:
+        """按租户、用户、会话三元键写入消息，避免仅靠 session_id 发生跨租户串话。"""
         # Tenant and user are part of the storage key; session ids alone are
         # not safe isolation boundaries in a multi-tenant runtime.
-        """Persist state while preserving the transaction and audit boundary."""
         self.store.append(self._session_key(tenant_id, user_id, session_id), message)
 
     def messages(
@@ -71,7 +71,7 @@ class AgentContextService:
         tenant_id: str = "default",
         user_id: str = "anonymous",
     ) -> list[ConversationMessage]:
-        """Perform messages within the AgentContextService ownership boundary."""
+        """读取属于当前租户和用户的会话历史，不向调用方暴露底层存储键。"""
         return self.store.list_messages(self._session_key(tenant_id, user_id, session_id))
 
     def delete_session(
@@ -80,11 +80,11 @@ class AgentContextService:
         tenant_id: str = "default",
         user_id: str = "anonymous",
     ) -> bool:
-        """Release or remove owned state without bypassing cleanup rules."""
+        """删除当前主体的会话记忆；未命中由 API 层转换为明确的 404。"""
         return self.store.delete(self._session_key(tenant_id, user_id, session_id))
 
     def assemble(self, request: ContextAssembleRequest) -> ContextPackage:
-        """Produce a deterministic, token-bounded prompt context package."""
+        """按确定性排序与 Token 上限组装历史消息和检索证据，并返回降级状态。"""
         budget = request.token_budget or self.default_token_budget
         with trace.get_tracer(__name__).start_as_current_span("context.assemble") as span:
             messages = self.messages(request.session_id, request.tenant_id, request.user_id)[
@@ -155,7 +155,7 @@ class AgentContextService:
 
     @staticmethod
     def _session_key(tenant_id: str, user_id: str, session_id: str) -> str:
-        """Internal helper for AgentContextService; preserve its caller-facing invariant."""
+        """生成稳定的存储隔离键；不要在外部接口直接接受或返回此内部格式。"""
         return f"{tenant_id}:{user_id}:{session_id}"
 
     def _rank_and_fit(
@@ -165,7 +165,7 @@ class AgentContextService:
         query: str,
         budget: int,
     ) -> tuple[list[ConversationMessage], list[Evidence], ContextBudgetReport]:
-        """Allocate token budget by ranked value while retaining both context types."""
+        """依据排序价值分配 Token 预算，并尽量同时保留会话连续性和事实证据。"""
         ranked_messages = self._rank_messages(messages, query)
         ranked_evidence = self._rank_evidence(evidence, query)
         if not ranked_evidence:
@@ -225,7 +225,7 @@ class AgentContextService:
 
     @staticmethod
     def _select(items, limit: int, text):
-        """Internal helper for AgentContextService; preserve its caller-facing invariant."""
+        """按已排序优先级装入预算；超出预算项目留待统一剩余额度竞争。"""
         selected, rejected, used = [], [], 0
         for item in items:
             tokens = AgentContextService._estimate(text(item))
@@ -240,7 +240,7 @@ class AgentContextService:
     def _rank_messages(
         messages: list[ConversationMessage], query: str
     ) -> list[ConversationMessage]:
-        """Internal helper for AgentContextService; preserve its caller-facing invariant."""
+        """综合角色、时效和查询词重合度排序记忆，并写入可解释的评分分解。"""
         now = datetime.now(UTC)
         ranked = []
         for item in messages:
@@ -272,7 +272,7 @@ class AgentContextService:
 
     @staticmethod
     def _rank_evidence(evidence: list[Evidence], query: str) -> list[Evidence]:
-        """Internal helper for AgentContextService; preserve its caller-facing invariant."""
+        """综合检索相关性、来源可信度和时效排序证据，并保留评分依据供审计。"""
         now = datetime.now(UTC)
         max_score = max((max(0.0, item.score) for item in evidence), default=1.0)
         ranked = []
@@ -311,7 +311,7 @@ class AgentContextService:
 
     @staticmethod
     def _bounded_score(value: object, *, default: float) -> float:
-        """Parse an external score without letting bad metadata break context assembly."""
+        """安全解析外部评分并截断至有效区间，避免坏元数据破坏上下文组装。"""
         try:
             score = float(value) if value is not None else default
         except (TypeError, ValueError):
@@ -320,7 +320,7 @@ class AgentContextService:
 
     @staticmethod
     def _timestamp(metadata: dict) -> datetime:
-        """Internal helper for AgentContextService; preserve its caller-facing invariant."""
+        """从受信任元数据解析时效时间；无效值回退当前时刻，避免排序流程失效。"""
         for name in ("updated_at", "published_at", "created_at"):
             value = metadata.get(name)
             if not value:
@@ -334,7 +334,7 @@ class AgentContextService:
 
     @staticmethod
     def _relevance(query: str, text: str) -> float:
-        """Internal helper for AgentContextService; preserve its caller-facing invariant."""
+        """计算轻量词项覆盖率，仅为上下文预算解释服务，不取代向量检索分数。"""
         query_tokens = {token.lower() for token in _TOKEN.findall(query)}
         if not query_tokens:
             return 0.0
@@ -343,5 +343,5 @@ class AgentContextService:
 
     @staticmethod
     def _estimate(text: str) -> int:
-        """Internal helper for AgentContextService; preserve its caller-facing invariant."""
+        """采用保守字符估算控制 Prompt 预算；真实模型 token 数以网关计量为准。"""
         return max(1, len(text) // 4)

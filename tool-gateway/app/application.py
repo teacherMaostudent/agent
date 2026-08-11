@@ -56,6 +56,7 @@ class ToolExecutionService:
         rate_limiter=None,
         policy_authorizer=None,
     ) -> None:
+        """注入目录、仓储和治理发布器, 并初始化限流与熔断执行保护。"""
         self.registry = registry
         self.repository = repository
         self.approval_ttl_seconds = approval_ttl_seconds
@@ -71,7 +72,11 @@ class ToolExecutionService:
         payload: InvocationRequest,
         context: InvocationContext,
     ) -> InvocationResponse:
-        """Execute only after policy, schema, approval and idempotency gates pass."""
+        """处理 invoke 对应的当前组件内部业务步骤。
+
+
+        Execute only after policy, schema, approval and idempotency gates pass.
+        """
         spec, adapter = self.registry.resolve(name, payload.version)
         preflight_started = monotonic()
         claimed = False
@@ -240,7 +245,11 @@ class ToolExecutionService:
         context: InvocationContext,
         request_hash: str,
     ) -> InvocationResponse | None:
-        """Create or atomically consume an approval bound to this exact request hash."""
+        """处理 _authorize_approval 对应的当前组件内部业务步骤。
+
+
+        Create or atomically consume an approval bound to this exact request hash.
+        """
         if not payload.approval_id:
             approval = self.repository.get_or_create_approval(
                 ApprovalRecord(
@@ -285,7 +294,11 @@ class ToolExecutionService:
         arguments: dict[str, Any],
         context: InvocationContext,
     ) -> tuple[Any, int]:
-        """Retry only declared-idempotent tools within the caller's remaining deadline."""
+        """执行 _execute_with_retry 对应的受控业务步骤。
+
+
+        Retry only declared-idempotent tools within the caller's remaining deadline.
+        """
         attempts = spec.retry_attempts if spec.idempotent else 1
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
@@ -320,6 +333,11 @@ class ToolExecutionService:
 
     @staticmethod
     def _authorize(spec: ToolSpec, context: InvocationContext) -> None:
+        """处理 _authorize 对应的当前组件内部业务步骤。
+
+
+        Reject before execution when the caller lacks any catalogued permission.
+        """
         missing = sorted(set(spec.required_permissions) - context.permissions)
         if missing:
             raise ToolPermissionError(
@@ -333,6 +351,11 @@ class ToolExecutionService:
         *,
         arguments: bool,
     ) -> None:
+        """校验 _validate_json 对应的受控业务步骤。
+
+
+        Validate untrusted input or adapter output and expose only bounded schema errors.
+        """
         if schema is None:
             return
         errors = sorted(
@@ -365,6 +388,11 @@ class ToolExecutionService:
         error_type: str = "",
         approval_granted: bool = False,
     ) -> None:
+        """处理 _audit 对应的当前组件内部业务步骤。
+
+
+        Persist the immutable invocation record before asynchronously publishing governance.
+        """
         self.repository.append_audit(
             AuditRecord(
                 invocation_id=invocation.invocation_id,
@@ -392,6 +420,11 @@ def _request_hash(
     arguments: dict[str, Any],
     context: InvocationContext,
 ) -> str:
+    """处理 _request_hash 对应的当前组件内部业务步骤。
+
+
+    Bind approval and idempotency to tenant, user, tool version and exact arguments.
+    """
     return _sha256_json(
         {
             "tenant_id": context.tenant_id,
@@ -404,9 +437,19 @@ def _request_hash(
 
 
 def _sha256_json(value: Any) -> str:
+    """处理 _sha256_json 对应的当前组件内部业务步骤。
+
+
+    Canonicalise JSON so semantically identical argument maps hash identically.
+    """
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return _sha256_text(encoded)
 
 
 def _sha256_text(value: str) -> str:
+    """处理 _sha256_text 对应的当前组件内部业务步骤。
+
+
+    Return a non-reversible audit correlation digest rather than raw sensitive data.
+    """
     return hashlib.sha256(value.encode("utf-8")).hexdigest()

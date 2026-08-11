@@ -25,6 +25,7 @@ class RagQueryService:
         index_version: str = "local",
         backend: str = "local",
     ) -> None:
+        """装配只读检索所需的仓储、索引、扫描、精排与版本选择依赖。"""
         self.repository = repository
         self.retriever = retriever
         self.chunker = TextChunker()
@@ -37,6 +38,7 @@ class RagQueryService:
         self.backend = backend
 
     def scan(self, scope: str, pattern: str, *, regex: bool = False, glob: str = "") -> list[dict]:
+        """执行受控文本扫描；scope 必须是服务配置的目录别名而不是客户端路径。"""
         if self.scanner is None:
             raise ValueError("controlled file scanning is not configured")
         return [
@@ -45,6 +47,7 @@ class RagQueryService:
         ]
 
     def search(self, request: RagSearchRequest) -> RagSearchResponse:
+        """返回经 ACL 约束的证据，不解析上传文件、不写知识库，也不规划 Agent 行为。"""
         with trace.get_tracer(__name__).start_as_current_span("rag.query.search") as span:
             if self.search_projection is not None and hasattr(self.search_projection, "search"):
                 result = self.search_projection.search(request)
@@ -85,7 +88,7 @@ class RagQueryService:
             )
 
     def _authorized(self, metadata: dict, tenant_id: str, user_id: str) -> bool:
-        """Apply ACL before retrieval and deny unowned legacy data by default."""
+        """在检索前执行租户与用户 ACL，并默认拒绝无归属的历史数据。"""
         owner_tenant = metadata.get("tenant_id")
         if not owner_tenant:
             return self.allow_legacy_public_documents

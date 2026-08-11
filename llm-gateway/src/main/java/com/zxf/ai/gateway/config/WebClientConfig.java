@@ -14,6 +14,9 @@ public class WebClientConfig {
     private static final Logger log = LoggerFactory.getLogger(WebClientConfig.class);
 
     @Bean
+    /**
+     * 执行 web client builder 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public WebClient.Builder webClientBuilder() {
         HttpClient httpClient = HttpClient.create();
         ProxyConfig proxy = proxyConfig();
@@ -30,6 +33,9 @@ public class WebClientConfig {
                 .clientConnector(new ReactorClientHttpConnector(httpClient));
     }
 
+    /**
+     * 执行 proxy config 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private ProxyConfig proxyConfig() {
         // 优先读取 JVM 参数，适合在 IDEA Run Configuration 的 VM options 中配置：
         // -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7897
@@ -58,6 +64,9 @@ public class WebClientConfig {
         }
     }
 
+    /**
+     * 执行 first non blank 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private String firstNonBlank(String... values) {
         for (String value : values) {
             if (value != null && !value.isBlank()) {
@@ -67,7 +76,13 @@ public class WebClientConfig {
         return null;
     }
 
+    /**
+     * 执行 proxy config 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private record ProxyConfig(boolean enabled, String host, int port) {
+        /**
+         * 执行 disabled 对应的受控业务步骤，并保持网关边界与状态约束。
+        */
         static ProxyConfig disabled() {
             return new ProxyConfig(false, "", 0);
         }

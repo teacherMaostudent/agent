@@ -12,12 +12,18 @@ public class ProductionConfigurationValidator implements InitializingBean {
     private final GatewayProperties properties;
     private final Environment environment;
 
+    /**
+     * 初始化 production configuration validator 所需的依赖与运行期状态。
+    */
     public ProductionConfigurationValidator(GatewayProperties properties, Environment environment) {
         this.properties = properties;
         this.environment = environment;
     }
 
     @Override
+    /**
+     * 执行 after properties set 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public void afterPropertiesSet() {
         String deployment = environment.getProperty("DEPLOYMENT_ENVIRONMENT", "local");
         if (!deployment.equalsIgnoreCase("production") && !deployment.equalsIgnoreCase("prod")) {

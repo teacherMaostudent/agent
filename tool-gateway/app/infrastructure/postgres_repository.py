@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS event_outbox(
 
 class PostgresRepository(SqliteRepository):
     def __init__(self, dsn: str, schema: str) -> None:
+        """校验 Schema 标识符后建立专属连接并幂等初始化工具执行表。"""
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", schema):
             raise ValueError("invalid PostgreSQL schema")
         self._lock = RLock()

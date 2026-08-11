@@ -9,10 +9,12 @@ from pydantic import BaseModel, Field
 
 
 def new_id(prefix: str) -> str:
+    """生成带领域前缀的短 UUID，用于日志关联而不是安全令牌。"""
     return f"{prefix}_{uuid4().hex[:16]}"
 
 
 def utc_now() -> datetime:
+    """返回带 UTC 时区的当前时间，避免跨服务持久化本地时间。"""
     return datetime.now(UTC)
 
 

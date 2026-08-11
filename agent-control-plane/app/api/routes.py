@@ -42,16 +42,19 @@ router = APIRouter()
 
 
 def service(container: AppContainer) -> ControlPlaneService:
+    """返回请求生命周期内的应用服务，避免路由层复制发布状态机规则。"""
     return container.service
 
 
 @router.get("/health/live", response_model=HealthStatus, tags=["health"])
 async def liveness() -> HealthStatus:
+    """报告进程存活；不访问数据库，因此不能代表依赖项已就绪。"""
     return HealthStatus(status="ok")
 
 
 @router.get("/health/ready", response_model=HealthStatus, tags=["health"])
 async def readiness(container: Container, response: Response) -> HealthStatus:
+    """检查持久化依赖；失败时返回 503，供编排器停止向实例分流。"""
     if not await container.repository.healthcheck():
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return HealthStatus(status="ok")
@@ -69,7 +72,11 @@ async def create_agent(
     container: Container,
     trace_id: TraceId,
 ) -> AgentDefinition:
-    """Create a tenant-scoped mutable draft; it is not Runtime-executable yet."""
+    """创建或构建 create_agent 对应的受控业务步骤。
+
+
+    Create a tenant-scoped mutable draft; it is not Runtime-executable yet.
+    """
     return await service(container).create_agent(identity, request, trace_id)
 
 
@@ -78,6 +85,7 @@ async def list_agents(
     identity: ManagementIdentity,
     container: Container,
 ) -> list[AgentDefinition]:
+    """仅列出管理身份所属租户的草稿，租户隔离由服务层再次保证。"""
     return await service(container).list_agents(identity)
 
 
@@ -87,6 +95,7 @@ async def get_agent(
     identity: ManagementIdentity,
     container: Container,
 ) -> AgentDefinition:
+    """读取一个可变草稿；发布快照不经此接口暴露给普通管理调用方。"""
     return await service(container).get_agent(identity, agent_id)
 
 
@@ -98,7 +107,10 @@ async def update_agent_draft(
     container: Container,
     trace_id: TraceId,
 ) -> AgentDefinition:
-    """Apply an optimistic-concurrency draft update using the supplied revision."""
+    """根据调用方提供的修订号执行乐观并发草稿更新。
+
+    Apply an optimistic-concurrency draft update using the supplied revision.
+    """
     return await service(container).update_draft(identity, agent_id, request, trace_id)
 
 
@@ -112,7 +124,10 @@ async def validate_agent_draft(
     identity: ManagementIdentity,
     container: Container,
 ) -> ValidationReport:
-    """Return deterministic validation findings without publishing the draft."""
+    """校验草稿在发布前的确定性规则，并返回可供修正的验证结果。
+
+    Return deterministic validation findings without publishing the draft.
+    """
     return await service(container).validate_draft(identity, agent_id)
 
 
@@ -129,6 +144,7 @@ async def publish_agent_version(
     container: Container,
     trace_id: TraceId,
 ) -> AgentVersion:
+    """将已校验草稿冻结为不可变版本，并写入同事务 Outbox 审计事件。"""
     return await service(container).publish_version(identity, agent_id, request, trace_id)
 
 
@@ -142,6 +158,7 @@ async def list_agent_versions(
     identity: ManagementIdentity,
     container: Container,
 ) -> list[AgentVersion]:
+    """列出指定 Agent 的不可变版本，不改变发布或流量状态。"""
     return await service(container).list_versions(identity, agent_id)
 
 
@@ -156,6 +173,7 @@ async def get_agent_version(
     identity: ManagementIdentity,
     container: Container,
 ) -> AgentVersion:
+    """按租户和 Agent 双重范围读取版本，防止跨 Agent 的版本枚举。"""
     return await service(container).get_version(identity, agent_id, version_id)
 
 
@@ -172,6 +190,7 @@ async def create_release(
     container: Container,
     trace_id: TraceId,
 ) -> ReleaseManifest:
+    """由冻结版本创建候选发布清单；尚未提升前 Runtime 不会选择它。"""
     return await service(container).create_release(identity, agent_id, request, trace_id)
 
 
@@ -186,6 +205,7 @@ async def list_releases(
     container: Container,
     environment: str | None = Query(default=None),
 ) -> list[ReleaseManifest]:
+    """查询环境内的发布记录；environment 过滤不会绕过租户授权。"""
     return await service(container).list_releases(identity, agent_id, environment)
 
 
@@ -195,6 +215,7 @@ async def get_release(
     identity: ManagementIdentity,
     container: Container,
 ) -> ReleaseManifest:
+    """读取发布状态及不可变快照引用，供审批和故障诊断使用。"""
     return await service(container).get_release(identity, release_id)
 
 
@@ -210,6 +231,7 @@ async def promote_release(
     container: Container,
     trace_id: TraceId,
 ) -> ReleaseManifest:
+    """推进已审批发布；服务层校验状态转换、质量门禁与并发版本约束。"""
     return await service(container).promote_release(identity, release_id, request, trace_id)
 
 
@@ -224,6 +246,7 @@ async def pause_release(
     container: Container,
     trace_id: TraceId,
 ) -> ReleaseManifest:
+    """暂停生效发布的流量选择，不修改其冻结快照，便于后续审计恢复。"""
     return await service(container).pause_release(identity, release_id, trace_id)
 
 
@@ -238,6 +261,7 @@ async def rollback_release(
     container: Container,
     trace_id: TraceId,
 ) -> ReleaseManifest:
+    """执行受控回滚；服务层选择兼容的历史版本并记录可追溯事件。"""
     return await service(container).rollback_release(identity, release_id, trace_id)
 
 
@@ -253,7 +277,11 @@ async def resolve_runtime(
     environment: str = Query(default="production"),
     session_id: str = Query(min_length=1, max_length=200),
 ) -> RuntimeResolution:
-    """Return the published snapshot selected for one authenticated Runtime run."""
+    """处理 resolve_runtime 对应的当前组件内部业务步骤。
+
+
+    Return the published snapshot selected for one authenticated Runtime run.
+    """
     return await service(container).resolve_runtime(identity, agent_id, environment, session_id)
 
 
@@ -267,6 +295,7 @@ async def get_runtime_snapshot(
     identity: RuntimeIdentity,
     container: Container,
 ) -> PublishedSnapshot:
+    """仅向 Runtime 身份返回执行快照，避免管理草稿进入运行路径。"""
     return await service(container).get_release_snapshot(identity, release_id)
 
 
@@ -275,6 +304,7 @@ async def get_tenant_policy(
     identity: ManagementIdentity,
     container: Container,
 ) -> TenantPolicy:
+    """读取当前租户发布策略，策略变更必须走受鉴权的管理边界。"""
     return await service(container).get_tenant_policy(identity)
 
 
@@ -285,6 +315,7 @@ async def update_tenant_policy(
     container: Container,
     trace_id: TraceId,
 ) -> TenantPolicy:
+    """更新租户策略并写入审计 Outbox；策略在后续发布校验中生效。"""
     return await service(container).update_tenant_policy(identity, request, trace_id)
 
 
@@ -295,6 +326,7 @@ async def list_outbox(
     after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1_000),
 ) -> OutboxList:
+    """按单调序号读取事务 Outbox，供 CDC 或受控 Relay 断点续传。"""
     return await service(container).list_outbox(identity, after_sequence, limit)
 
 
@@ -304,6 +336,7 @@ async def start_model_route_release(
     identity: ManagementIdentity,
     container: Container,
 ) -> dict[str, Any]:
+    """启动模型路由灰度发布；编排器只在候选状态有效时创建监控工作流。"""
     release = await container.model_releases.start(identity.tenant_id, request)
     if container.release_orchestrator is not None and release.get("status") in {
         "CANARY_ACTIVE",
@@ -321,6 +354,7 @@ async def start_model_route_release(
 async def list_model_route_releases(
     identity: ManagementIdentity, container: Container
 ) -> list[dict[str, Any]]:
+    """列出租户模型路由发布，避免跨租户查看供应商或模型策略。"""
     return await container.model_releases.list(identity.tenant_id)
 
 
@@ -328,6 +362,7 @@ async def list_model_route_releases(
 async def get_model_route_release(
     release_id: str, identity: ManagementIdentity, container: Container
 ) -> dict[str, Any]:
+    """读取一个模型路由发布及其当前监控决策。"""
     return await container.model_releases.get(identity.tenant_id, release_id)
 
 
@@ -335,6 +370,7 @@ async def get_model_route_release(
 async def monitor_model_route_release(
     release_id: str, identity: ManagementIdentity, container: Container
 ) -> dict[str, Any]:
+    """立即执行一次灰度指标评估；失败策略由模型发布服务集中决定。"""
     return await container.model_releases.monitor(identity.tenant_id, release_id)
 
 
@@ -345,5 +381,6 @@ async def rollback_model_route_release(
     container: Container,
     request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """以人工提供原因回滚模型路由，保留原因以支持后续合规复盘。"""
     reason = str((request or {}).get("reason") or "manual rollback")
     return await container.model_releases.rollback(identity.tenant_id, release_id, reason)

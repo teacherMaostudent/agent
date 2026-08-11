@@ -60,7 +60,7 @@ class ControlPlaneService:
         require_quality_gate: bool = False,
         tool_catalog_validator=None,
     ) -> None:
-        """Internal helper that preserves Control Plane lifecycle invariants."""
+        """注入持久化和发布前置校验依赖；依赖失效时拒绝产生不可审计发布。"""
         self._repository = repository
         self._governance = governance
         self._require_quality_gate = require_quality_gate
@@ -72,7 +72,11 @@ class ControlPlaneService:
         request: AgentCreate,
         trace_id: str,
     ) -> AgentDefinition:
-        """Create an initial draft and its outbox fact in the same transaction."""
+        """创建或构建 create_agent 对应的受控业务步骤。
+
+
+        Create an initial draft and its outbox fact in the same transaction.
+        """
         now = utc_now()
         agent = AgentDefinition(
             tenant_id=identity.tenant_id,
@@ -99,14 +103,22 @@ class ControlPlaneService:
         return agent
 
     async def get_agent(self, identity: Identity, agent_id: str) -> AgentDefinition:
-        """Return the tenant-scoped record or raise the domain not-found error."""
+        """读取或查询 get_agent 对应的受控业务步骤。
+
+
+        Return the tenant-scoped record or raise the domain not-found error.
+        """
         agent = await self._repository.get_agent(identity.tenant_id, agent_id)
         if not agent:
             raise NotFoundError(f"Agent '{agent_id}' was not found.")
         return agent
 
     async def list_agents(self, identity: Identity) -> list[AgentDefinition]:
-        """List records within the caller tenant without changing release state."""
+        """读取或查询 list_agents 对应的受控业务步骤。
+
+
+        List records within the caller tenant without changing release state.
+        """
         return await self._repository.list_agents(identity.tenant_id)
 
     async def update_draft(
@@ -116,7 +128,11 @@ class ControlPlaneService:
         request: AgentDraftUpdate,
         trace_id: str,
     ) -> AgentDefinition:
-        """Reject stale revisions so concurrent editors cannot overwrite each other."""
+        """更新 update_draft 对应的受控业务步骤。
+
+
+        Reject stale revisions so concurrent editors cannot overwrite each other.
+        """
         current = await self.get_agent(identity, agent_id)
         if current.revision != request.expected_revision:
             raise ConflictError(
@@ -155,7 +171,11 @@ class ControlPlaneService:
         return updated
 
     async def validate_draft(self, identity: Identity, agent_id: str) -> ValidationReport:
-        """Validate release inputs against tenant policy without mutating the draft."""
+        """校验 validate_draft 对应的受控业务步骤。
+
+
+        Validate release inputs against tenant policy without mutating the draft.
+        """
         agent = await self.get_agent(identity, agent_id)
         policy = await self.get_tenant_policy(identity)
         return validate_agent_spec(agent.draft, policy)
@@ -167,7 +187,11 @@ class ControlPlaneService:
         request: AgentVersionPublish,
         trace_id: str,
     ) -> AgentVersion:
-        """Freeze a validated draft only after its bound tool versions are verified."""
+        """发布或投递 publish_version 对应的受控业务步骤。
+
+
+        Freeze a validated draft only after its bound tool versions are verified.
+        """
         agent = await self.get_agent(identity, agent_id)
         policy = await self.get_tenant_policy(identity)
         report = validate_agent_spec(agent.draft, policy)
@@ -245,7 +269,7 @@ class ControlPlaneService:
         return version
 
     async def list_versions(self, identity: Identity, agent_id: str) -> list[AgentVersion]:
-        """List records within the caller tenant without changing release state."""
+        """确认 Agent 属于调用方租户后列出其冻结版本，不触发任何状态变化。"""
         await self.get_agent(identity, agent_id)
         return await self._repository.list_versions(identity.tenant_id, agent_id)
 
@@ -255,7 +279,7 @@ class ControlPlaneService:
         agent_id: str,
         version_id: str,
     ) -> AgentVersion:
-        """Return the tenant-scoped record or raise the domain not-found error."""
+        """按租户与 Agent 双重约束读取版本，避免仅凭全局 ID 跨域访问。"""
         version = await self._repository.get_version(identity.tenant_id, agent_id, version_id)
         if not version:
             raise NotFoundError(f"Version '{version_id}' was not found for agent '{agent_id}'.")
@@ -268,7 +292,7 @@ class ControlPlaneService:
         request: ReleaseCreate,
         trace_id: str,
     ) -> ReleaseManifest:
-        """Persist a new immutable lifecycle record and its transactional outbox event."""
+        """创建发布记录并原子写入 Outbox，且在可见前通过质量门禁与灰度约束。"""
         version = await self.get_version(identity, agent_id, request.version_id)
         gate: dict[str, Any] = {}
         if self._require_quality_gate and not request.quality_gate_run_id:
@@ -363,12 +387,12 @@ class ControlPlaneService:
         agent_id: str,
         environment: str | None = None,
     ) -> list[ReleaseManifest]:
-        """List records within the caller tenant without changing release state."""
+        """在租户范围内查询 Agent 的发布历史，环境过滤不影响授权边界。"""
         await self.get_agent(identity, agent_id)
         return await self._repository.list_releases(identity.tenant_id, agent_id, environment)
 
     async def get_release(self, identity: Identity, release_id: str) -> ReleaseManifest:
-        """Return the tenant-scoped record or raise the domain not-found error."""
+        """读取租户发布记录；缺失时显式拒绝而不泄漏其他租户的存在性。"""
         release = await self._repository.get_release(identity.tenant_id, release_id)
         if not release:
             raise NotFoundError(f"Release '{release_id}' was not found.")
@@ -381,7 +405,7 @@ class ControlPlaneService:
         request: ReleasePromote,
         trace_id: str,
     ) -> ReleaseManifest:
-        """Apply the requested release transition only from an allowed prior state."""
+        """以乐观并发控制提升灰度比例，禁止将提升接口用于降级流量。"""
         release = await self.get_release(identity, release_id)
         if release.status != ReleaseStatus.ACTIVE:
             raise InvalidStateError(
@@ -446,7 +470,7 @@ class ControlPlaneService:
         release_id: str,
         trace_id: str,
     ) -> ReleaseManifest:
-        """Apply the requested release transition only from an allowed prior state."""
+        """暂停具有回退基线的活动发布；首个稳定版本不能被暂停以免无可用版本。"""
         release = await self.get_release(identity, release_id)
         if release.status != ReleaseStatus.ACTIVE:
             raise InvalidStateError(
@@ -480,7 +504,7 @@ class ControlPlaneService:
         release_id: str,
         trace_id: str,
     ) -> ReleaseManifest:
-        """Apply the requested release transition only from an allowed prior state."""
+        """原子标记当前发布回滚并恢复基线发布；并发修改会要求调用方重试。"""
         release = await self.get_release(identity, release_id)
         if release.status not in {ReleaseStatus.ACTIVE, ReleaseStatus.PAUSED}:
             raise InvalidStateError(
@@ -523,7 +547,11 @@ class ControlPlaneService:
         environment: str,
         session_id: str,
     ) -> RuntimeResolution:
-        """Resolve a stable execution snapshot for one tenant and session binding."""
+        """处理 resolve_runtime 对应的当前组件内部业务步骤。
+
+
+        Resolve a stable execution snapshot for one tenant and session binding.
+        """
         await self.get_agent(identity, agent_id)
         binding = await self._repository.get_session_binding(
             identity.tenant_id,
@@ -604,13 +632,13 @@ class ControlPlaneService:
         identity: Identity,
         release_id: str,
     ) -> PublishedSnapshot:
-        """Return the tenant-scoped record or raise the domain not-found error."""
+        """由租户受限的发布与版本关系返回冻结快照，运行时绝不读取草稿。"""
         release = await self.get_release(identity, release_id)
         version = await self.get_version(identity, release.agent_id, release.version_id)
         return version.snapshot
 
     async def get_tenant_policy(self, identity: Identity) -> TenantPolicy:
-        """Return the tenant-scoped record or raise the domain not-found error."""
+        """读取租户策略；尚未配置时返回显式默认值而非共享全局策略。"""
         policy = await self._repository.get_tenant_policy(identity.tenant_id)
         return policy or TenantPolicy(tenant_id=identity.tenant_id)
 
@@ -620,7 +648,11 @@ class ControlPlaneService:
         request: TenantPolicyUpdate,
         trace_id: str,
     ) -> TenantPolicy:
-        """Apply a concurrency-safe update and publish its auditable state transition."""
+        """更新 update_tenant_policy 对应的受控业务步骤。
+
+
+        Apply a concurrency-safe update and publish its auditable state transition.
+        """
         policy = TenantPolicy(
             tenant_id=identity.tenant_id,
             **request.model_dump(),
@@ -648,7 +680,7 @@ class ControlPlaneService:
         after_sequence: int,
         limit: int,
     ) -> OutboxList:
-        """List records within the caller tenant without changing release state."""
+        """按顺序游标读取租户 Outbox，支持 CDC/Relay 的幂等断点续传。"""
         items, next_cursor = await self._repository.list_outbox(
             identity.tenant_id,
             after_sequence,
@@ -665,7 +697,7 @@ class ControlPlaneService:
         assignment: str,
         pinned: bool,
     ) -> RuntimeResolution:
-        """Internal helper that preserves Control Plane lifecycle invariants."""
+        """将已选择发布转换为 Runtime 解析结果，保留会话绑定与分流来源。"""
         version = await self.get_version(identity, release.agent_id, release.version_id)
         return RuntimeResolution(
             tenant_id=identity.tenant_id,
@@ -688,7 +720,7 @@ class ControlPlaneService:
         aggregate_id: str,
         payload: dict[str, Any],
     ) -> OutboxEvent:
-        """Internal helper that preserves Control Plane lifecycle invariants."""
+        """构造带 Trace 与聚合键的领域事件，调用方必须与业务写入同事务提交。"""
         return OutboxEvent(
             event_id=f"evt_{uuid4().hex}",
             event_type=event_type,
@@ -702,7 +734,7 @@ class ControlPlaneService:
 
 
 def _hash(value: Any) -> str:
-    """Internal helper that preserves Control Plane lifecycle invariants."""
+    """对规范化 JSON 求哈希，使跨进程的冻结组件变更可被确定性检测。"""
     canonical = json.dumps(
         value,
         ensure_ascii=False,
@@ -714,7 +746,7 @@ def _hash(value: Any) -> str:
 
 
 def _component_hashes(spec: dict[str, Any]) -> dict[str, str]:
-    """Internal helper that preserves Control Plane lifecycle invariants."""
+    """分别计算知识与工具绑定哈希，避免仅靠版本号掩盖组件内容漂移。"""
     return {
         "knowledge": _hash(spec["knowledge"]),
         "tools": _hash(spec["tools"]),
@@ -722,6 +754,6 @@ def _component_hashes(spec: dict[str, Any]) -> dict[str, str]:
 
 
 def _bucket(tenant_id: str, agent_id: str, environment: str, session_id: str) -> int:
-    """Internal helper that preserves Control Plane lifecycle invariants."""
+    """用稳定哈希将同一会话固定分桶，确保灰度期间请求不会随机跳版本。"""
     key = f"{tenant_id}:{agent_id}:{environment}:{session_id}".encode()
     return int.from_bytes(hashlib.sha256(key).digest()[:8], "big") % 100

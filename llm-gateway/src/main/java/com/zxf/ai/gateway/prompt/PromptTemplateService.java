@@ -17,6 +17,7 @@ public class PromptTemplateService {
     private final GatewayProperties properties;
     private final ObjectMapper objectMapper;
 
+    /** 注入发布配置中的模板定义与 JSON 工具，避免控制器自行渲染 Prompt。 */
     public PromptTemplateService(GatewayProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
         this.objectMapper = objectMapper;

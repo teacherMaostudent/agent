@@ -24,6 +24,11 @@ def run_agent(
     x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
     x_run_id: str | None = Header(default=None, alias="X-Run-Id"),
 ) -> dict:
+    """同步执行一个受发布快照约束的 Agent Run。
+
+    调用方可缩小但不能扩大快照的步骤、时间、成本与工具输出限制。先持久化 Run，再
+    写入用户消息并执行；终态与治理事件在同一事务入 Outbox，避免结果成功而审计丢失。
+    """
     started = monotonic()
     container = request.app.state.container
     if not container.settings.agent_enabled:
@@ -224,6 +229,7 @@ def submit_agent_run(
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
     x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
 ) -> dict:
+    """把运行提交给持久化异步队列并返回 202；同租户 request_id 重试保持幂等。"""
     request_id = x_request_id or f"agent-{uuid4().hex}"
     return request.app.state.container.async_runs.submit(
         {
@@ -245,6 +251,11 @@ def resume_run(
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
 ) -> dict:
+    """恢复等待审批的检查点。
+
+    只允许原租户且状态为 WAITING_APPROVAL 的运行恢复；批准/拒绝都会生成新的治理
+    事件并在终态时写回会话记忆。
+    """
     container = request.app.state.container
     run = container.run_store.get(x_tenant_id, run_id)
     if run is None:
@@ -298,6 +309,7 @@ def get_run(
     request: Request,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
 ) -> dict:
+    """读取租户范围内的运行或异步队列状态，不返回其他租户的检查点/提交内容。"""
     run = request.app.state.container.run_store.get(x_tenant_id, run_id)
     if run is None:
         queued = request.app.state.container.async_runs.get(x_tenant_id, run_id)
@@ -313,6 +325,7 @@ def cancel_run(
     request: Request,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
 ) -> dict:
+    """请求协作取消；运行中的外部调用将在下一守卫节点停止，队列任务立即标记。"""
     run = request.app.state.container.run_store.cancel(x_tenant_id, run_id)
     if run is None:
         queued = request.app.state.container.async_runs.cancel(x_tenant_id, run_id)

@@ -62,6 +62,7 @@ public class SimpleKnowledgeBase implements ContentRetriever {
                 .toList();
     }
 
+    /** 将召回内容合成为可展示上下文，并对返回条数施加调用方给定上限。 */
     public String retrieveContext(String question, int limit) {
         List<Content> contents = retrieve(Query.from(question)).stream()
                 .limit(limit)
@@ -75,6 +76,7 @@ public class SimpleKnowledgeBase implements ContentRetriever {
                 .orElse("");
     }
 
+    /** 按归一化关键词重合计算演示检索分数，不作为生产语义相关性算法。 */
     private int score(String question, KnowledgeDocument document) {
         String content = normalize(document.content());
         int score = 0;
@@ -89,6 +91,7 @@ public class SimpleKnowledgeBase implements ContentRetriever {
         return score;
     }
 
+    /** 归一化文本以消除大小写和常见标点对演示检索的影响。 */
     private String normalize(String text) {
         return text == null ? "" : text.toLowerCase(Locale.ROOT)
                 .replaceAll("[，。！？、；：,.!?;:()（）/\\\\-]", " ")

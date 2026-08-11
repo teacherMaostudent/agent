@@ -14,7 +14,10 @@ from pathlib import Path
 
 
 class SqliteKv:
+    """开发/单机环境的 JSON KV 适配器，不替代生产数据库的高可用能力。"""
+
     def __init__(self, db_path: Path) -> None:
+        """创建表和乐观锁版本列；调用方必须以 kind 隔离不同业务实体。"""
         db_path.parent.mkdir(parents=True, exist_ok=True)
         # check_same_thread=False + 锁：FastAPI 多线程下安全共享一个连接。
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -30,6 +33,7 @@ class SqliteKv:
         self._conn.commit()
 
     def put(self, kind: str, id: str, payload: dict) -> None:
+        """覆盖写入对象并递增版本；不提供跨多条记录的事务语义。"""
         with self._lock:
             self._conn.execute(
                 "INSERT INTO kv (kind, id, payload) VALUES (?, ?, ?) "
@@ -39,6 +43,7 @@ class SqliteKv:
             self._conn.commit()
 
     def get(self, kind: str, id: str) -> dict | None:
+        """读取单个 JSON 快照；未命中返回 None，由上层决定 404 或降级。"""
         with self._lock:
             row = self._conn.execute(
                 "SELECT payload FROM kv WHERE kind = ? AND id = ?", (kind, id)
@@ -46,6 +51,7 @@ class SqliteKv:
         return json.loads(row[0]) if row else None
 
     def get_with_version(self, kind: str, id: str) -> tuple[dict | None, int]:
+        """读取对象及版本，供上下文等读改写流程实现乐观并发控制。"""
         with self._lock:
             row = self._conn.execute(
                 "SELECT payload, version FROM kv WHERE kind = ? AND id = ?",
@@ -54,6 +60,7 @@ class SqliteKv:
         return (json.loads(row[0]), int(row[1])) if row else (None, 0)
 
     def put_if_version(self, kind: str, id: str, payload: dict, expected_version: int) -> bool:
+        """仅在版本仍匹配时写入，避免并发请求最后写入者无声覆盖。"""
         encoded = json.dumps(payload, ensure_ascii=False)
         with self._lock:
             if expected_version == 0:
@@ -71,10 +78,10 @@ class SqliteKv:
             return cursor.rowcount == 1
 
     def put_many(self, kind: str, items: list[tuple[str, dict]]) -> None:
-        """Persist a batch in one transaction.
+        """在单个事务中持久化一批记录，避免逐条提交放大数据库开销。
 
-        The lightweight compliance pilot uses this for thousands of documents;
-        committing once per document would dominate the actual rule evaluation.
+        轻量级批处理可能包含数千份文档；若每份文档单独提交，事务提交成本会
+        超过实际处理成本。
         """
         if not items:
             return
@@ -90,16 +97,19 @@ class SqliteKv:
             self._conn.commit()
 
     def all(self, kind: str) -> list[dict]:
+        """返回同类所有快照；仅用于启动重建，不能替代带 ACL 的在线查询。"""
         with self._lock:
             rows = self._conn.execute("SELECT payload FROM kv WHERE kind = ?", (kind,)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
     def delete(self, kind: str, id: str) -> bool:
+        """删除精确实体并返回是否实际删除，供上层保持幂等删除语义。"""
         with self._lock:
             cursor = self._conn.execute("DELETE FROM kv WHERE kind = ? AND id = ?", (kind, id))
             self._conn.commit()
             return cursor.rowcount == 1
 
     def close(self) -> None:
+        """关闭 SQLite 连接；容器停止后不应继续使用此适配器。"""
         with self._lock:
             self._conn.close()

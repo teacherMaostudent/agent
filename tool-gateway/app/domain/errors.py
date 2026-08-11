@@ -6,6 +6,7 @@ class GatewayError(RuntimeError):
     code = "tool_gateway_error"
 
     def __init__(self, message: str, *, details: object | None = None) -> None:
+        """保留稳定错误代码对应的消息和经过调用方控制的错误细节。"""
         super().__init__(message)
         self.details = details
 
@@ -71,6 +72,7 @@ class ToolUpstreamError(GatewayError):
         retryable: bool = False,
         details: object | None = None,
     ) -> None:
+        """标记上游失败是否允许在工具声明的重试预算内重试。"""
         super().__init__(message, details=details)
         self.retryable = retryable
 

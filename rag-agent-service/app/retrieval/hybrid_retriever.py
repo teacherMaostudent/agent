@@ -4,6 +4,8 @@ from app.retrieval.vector_retriever import HashEmbeddingRetriever
 
 
 class HybridRetriever:
+    """融合关键词与向量召回，并可在候选集上执行可替换的精排。"""
+
     def __init__(
         self,
         bm25_weight: float,
@@ -12,6 +14,7 @@ class HybridRetriever:
         reranker=None,
         candidate_k: int | None = None,
     ) -> None:
+        """注入各通道权重；权重由发布配置管理而不是由请求方任意指定。"""
         self.bm25 = BM25Retriever()
         self.vector = HashEmbeddingRetriever(embedding_dim)
         self.bm25_weight = bm25_weight
@@ -20,6 +23,7 @@ class HybridRetriever:
         self.candidate_k = candidate_k
 
     def search(self, query: str, chunks: list[Chunk], top_k: int) -> list[Evidence]:
+        """先扩大召回候选再归一化融合；精排只改变排序，不突破传入候选边界。"""
         candidate_k = max(top_k, self.candidate_k or top_k * 4)
         bm25_hits = self.bm25.search(query, chunks, candidate_k)
         vector_hits = self.vector.search(query, chunks, candidate_k)
@@ -43,5 +47,6 @@ class HybridRetriever:
 
     @staticmethod
     def _normalize(score: float, hits: list[Evidence]) -> float:
+        """在单通道内做最大值归一化，避免不同打分尺度直接相加。"""
         max_score = max((hit.score for hit in hits), default=1.0)
         return score / max(max_score, 1e-9)

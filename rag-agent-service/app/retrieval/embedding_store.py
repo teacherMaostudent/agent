@@ -14,7 +14,10 @@ from app.domain.models import Chunk, Evidence
 
 
 class EmbeddingStore:
+    """保存片段及其同源向量的轻量存储；生产索引由 OpenSearch 投影承担。"""
+
     def __init__(self) -> None:
+        """初始化空索引，并记录创建索引所用 embedder 以防混用向量空间。"""
         self._chunks: list[Chunk] = []
         self._vectors: list[list[float]] = []
         # 建这个库用的 embedder 名(hash/qwen)。检索时须与当前 embedder 一致，
@@ -23,12 +26,15 @@ class EmbeddingStore:
 
     @property
     def dim(self) -> int:
+        """返回当前索引向量维度；空索引返回零而非猜测模型默认维度。"""
         return len(self._vectors[0]) if self._vectors else 0
 
     def __len__(self) -> int:
+        """返回可检索片段总数，供调用方判断索引是否具备查询条件。"""
         return len(self._chunks)
 
     def add(self, chunks: list[Chunk], vectors: list[list[float]], embedder_name: str = "") -> None:
+        """追加等长片段和向量；不匹配立即拒绝，避免索引位置错位造成错误证据。"""
         if len(chunks) != len(vectors):
             raise ValueError("chunks 与 vectors 数量不一致")
         self._chunks.extend(chunks)
@@ -37,6 +43,7 @@ class EmbeddingStore:
             self.embedder_name = embedder_name
 
     def clear(self) -> None:
+        """清空可重建索引及其模型标识，不影响权威文档数据。"""
         self._chunks = []
         self._vectors = []
         self.embedder_name = ""
@@ -47,6 +54,7 @@ class EmbeddingStore:
         top_k: int,
         metadata_filter: dict | None = None,
     ) -> list[Evidence]:
+        """在可选元数据过滤后计算相似度；调用者需在此之前已完成 ACL 约束。"""
         scored: list[tuple[float, Chunk]] = []
         for chunk, vec in zip(self._chunks, self._vectors, strict=False):
             if metadata_filter and not self._matches(chunk, metadata_filter):
@@ -68,10 +76,12 @@ class EmbeddingStore:
 
     @staticmethod
     def _matches(chunk: Chunk, metadata_filter: dict) -> bool:
+        """要求所有过滤字段严格匹配，避免宽松匹配混入错误业务域。"""
         return all(chunk.metadata.get(k) == v for k, v in metadata_filter.items())
 
     @staticmethod
     def _cosine(a: list[float], b: list[float]) -> float:
+        """计算向量相似度；任一零向量无可用语义信号，返回零。"""
         dot = sum(x * y for x, y in zip(a, b, strict=False))
         na = math.sqrt(sum(x * x for x in a))
         nb = math.sqrt(sum(x * x for x in b))
@@ -82,6 +92,7 @@ class EmbeddingStore:
     # --- 持久化:embedding 建一次存本地，重启直接加载 ---
 
     def save(self, path: Path) -> None:
+        """持久化可重建索引缓存；文件必须与 embedder 版本一同管理。"""
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "embedder": self.embedder_name,
@@ -91,6 +102,7 @@ class EmbeddingStore:
         path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     def load(self, path: Path) -> bool:
+        """加载本地缓存；不存在时返回 False，让调用方选择重建而非默默空检索。"""
         if not path.exists():
             return False
         data = json.loads(path.read_text(encoding="utf-8"))

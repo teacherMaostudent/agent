@@ -18,6 +18,11 @@ def configure_telemetry(
     environment: str,
     endpoint: str,
 ) -> None:
+    """按服务/环境创建 OTLP Trace Provider 并装配 FastAPI、HTTPX 自动埋点。
+
+    关闭时完全不修改全局 provider，便于本地测试；生产端点必须由部署层提供，避免
+    应用代码把追踪数据发送到未经批准的地址。
+    """
     if not enabled:
         return
     provider = TracerProvider(

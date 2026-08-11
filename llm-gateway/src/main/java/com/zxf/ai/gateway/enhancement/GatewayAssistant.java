@@ -16,5 +16,8 @@ public interface GatewayAssistant {
             如果问题涉及时间、成本、限额、模型路由或网关状态，可以调用可用工具。
             回答要具体，尽量结合 LLM Gateway、Spring Boot、WebFlux、RAG、Tool Calling 场景。
             """)
+    /**
+     * 将用户问题交给受系统提示词和工具约束的 LangChain4j 服务执行。
+     */
     String chat(@UserMessage String message);
 }

@@ -35,6 +35,7 @@ RUNS = 3  # temp=0 也可能有微小波动,跑多次看方差(Q4)
 
 
 def _load_case_files(case_dir: Path) -> list[tuple[str, str, str]]:
+    """读取一个黄金用例目录中的文本文件，并保留稳定的文件排序。"""
     files = []
     for txt in sorted(case_dir.glob("*.txt")):
         files.append((txt.stem, txt.name, txt.read_text(encoding="utf-8")))
@@ -76,6 +77,7 @@ def _prediction_from_report(report) -> dict:
 
 
 def main() -> None:
+    """运行真实 Judge 的重复校准，并输出跨轮次稳定性与误差指标。"""
     reviewer = _build_reviewer()
     numeric_topics = load_numeric_topics()
     responsibility_topics = load_responsibility_topics()

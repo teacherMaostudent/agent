@@ -31,6 +31,9 @@ public class AgentController {
     private final ApplicationEventPublisher eventPublisher;
     private final ObjectMapper objectMapper;
 
+    /**
+     * 初始化 agent controller 所需的依赖与运行期状态。
+    */
     public AgentController(RagAgentClient ragAgentClient, ApiKeyService apiKeyService,
                            GatewayProperties properties, ApplicationEventPublisher eventPublisher,
                            ObjectMapper objectMapper) {
@@ -42,6 +45,9 @@ public class AgentController {
     }
 
     @PostMapping("/run")
+    /**
+     * 执行 run 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     public Mono<JsonNode> run(
             @RequestHeader(value = "X-User-Id", required = false) String userId,
             @RequestHeader(value = "X-Request-Id", required = false) String requestId,
@@ -60,6 +66,9 @@ public class AgentController {
                         objectMapper.createObjectNode(), started, error));
     }
 
+    /**
+     * 执行 publish trace 对应的受控业务步骤，并保持网关边界与状态约束。
+    */
     private void publishTrace(String requestId, ApiKeyService.AuthResult auth, JsonNode request,
                               JsonNode response, Instant started, Throwable error) {
         eventPublisher.publishEvent(new GatewayTraceEvent(

@@ -8,4 +8,5 @@ class SqliteRepository(DurableRepository):
     """Development-only durable repository."""
 
     def __init__(self, db_path: Path) -> None:
+        """以 SQLite KV 构建开发用持久化仓储。"""
         super().__init__(SqliteKv(db_path))

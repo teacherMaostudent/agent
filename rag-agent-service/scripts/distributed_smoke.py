@@ -12,6 +12,7 @@ import uvicorn
 
 
 def main() -> None:
+    """启动拆分后的服务并覆盖查询、运行与摄取的最小端到端链路。"""
     with tempfile.TemporaryDirectory(prefix="rag-agent-smoke-") as data_dir:
         os.environ.update(
             {
@@ -26,9 +27,10 @@ def main() -> None:
 
         # Imports intentionally happen after environment setup because each module
         # constructs its own process-level composition root.
+        from agent_runtime_service.main import app as runtime_app
+
         from app.ingestion.worker import IngestionWorker
         from apps.agent_context_service.main import app as context_app
-        from agent_runtime_service.main import app as runtime_app
         from apps.ingestion_api.main import app as ingestion_app
         from apps.rag_query_api.main import app as query_app
 
@@ -101,20 +103,24 @@ def main() -> None:
 
 class _Server:
     def __init__(self, app, port: int) -> None:
+        """为指定 ASGI 应用创建后台 Uvicorn 服务器，供冒烟测试独占使用。"""
         self.server = uvicorn.Server(
             uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
         )
         self.thread = threading.Thread(target=self.server.run, daemon=True)
 
     def start(self) -> None:
+        """在守护线程中启动服务器，避免阻塞后续跨服务校验。"""
         self.thread.start()
 
     def stop(self) -> None:
+        """请求服务器退出并有界等待，防止测试遗留后台线程。"""
         self.server.should_exit = True
         self.thread.join(timeout=5)
 
 
 def _wait_ready(port: int) -> None:
+    """轮询健康检查端点，直到服务就绪或超过测试允许的等待时限。"""
     url = f"http://127.0.0.1:{port}/api/v1/health"
     for _ in range(50):
         try:

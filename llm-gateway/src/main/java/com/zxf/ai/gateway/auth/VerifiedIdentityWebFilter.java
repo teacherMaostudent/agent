@@ -25,11 +25,17 @@ import java.util.List;
 public class VerifiedIdentityWebFilter implements WebFilter, Ordered {
     private final GatewayProperties properties;
 
+    /**
+     * 初始化 verified identity web filter 所需的依赖与运行期状态。
+    */
     public VerifiedIdentityWebFilter(GatewayProperties properties) {
         this.properties = properties;
     }
 
     @Override
+    /**
+     * 在请求进入后续链路前执行 filter，确保身份和授权边界得到落实。
+    */
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         if (!properties.getOidc().isEnabled()) {
             return chain.filter(exchange);
@@ -70,6 +76,9 @@ public class VerifiedIdentityWebFilter implements WebFilter, Ordered {
     }
 
     @Override
+    /**
+     * 读取当前配置或运行状态字段 get order 的值，供调用方进行受控决策。
+    */
     public int getOrder() {
         return SecurityWebFiltersOrder.AUTHENTICATION.getOrder() + 1;
     }

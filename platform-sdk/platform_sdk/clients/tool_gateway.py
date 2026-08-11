@@ -30,6 +30,11 @@ class ToolGatewayClient:
         client: httpx.Client | None = None,
         workload_identity: WorkloadTokenProvider | None = None,
     ) -> None:
+        """初始化 Tool Gateway 传输边界和版本缓存。
+
+        缓存只帮助在一次运行内复用目录版本，最终允许性仍由 Gateway 以快照、权限、
+        审批和幂等键校验，客户端从不承担本地授权。
+        """
         self.base_url = base_url.rstrip("/")
         self.service_api_key = service_api_key
         self.timeout = timeout
@@ -47,6 +52,7 @@ class ToolGatewayClient:
         user_id: str = "agent-runtime",
         request_id: str = "",
     ) -> list[dict]:
+        """发现当前身份可见的工具清单并缓存其版本，供后续显式版本调用。"""
         with trace.get_tracer(__name__).start_as_current_span("runtime.tool_discovery"):
             response = self.client.get(
                 f"{self.base_url}/api/v1/tools",
@@ -71,7 +77,11 @@ class ToolGatewayClient:
         return payload
 
     def execute(self, name: str, arguments: dict, context: ToolContext):
-        """Invoke one catalogued version with a deterministic replay key."""
+        """以确定性幂等键调用一个目录工具版本。
+
+        执行上下文携带租户、审批、发布快照及剩余尝试数；Gateway 返回待审批不会被
+        误当作成功输出，而是交给 Runtime 状态机中断。
+        """
         idempotency_key = _idempotency_key(context.request_id, name, arguments)
         headers = self._headers(
             context.tenant_id,
@@ -111,6 +121,7 @@ class ToolGatewayClient:
         return payload.get("output")
 
     def healthcheck(self) -> None:
+        """探测 Gateway 就绪性；不携带业务请求或触发任何工具副作用。"""
         response = self.client.get(
             f"{self.base_url}/api/v1/health/ready",
             timeout=min(self.timeout, 5),
@@ -118,6 +129,7 @@ class ToolGatewayClient:
         response.raise_for_status()
 
     def close(self) -> None:
+        """仅关闭由本实例创建的客户端，避免误关闭注入的共享连接池。"""
         if self._owns_client:
             self.client.close()
 
@@ -128,6 +140,7 @@ class ToolGatewayClient:
         permissions: frozenset[str],
         request_id: str,
     ) -> dict[str, str]:
+        """生成最小身份与权限头；权限排序保证审计与缓存输入稳定。"""
         headers = {
             "X-Tenant-Id": tenant_id,
             "X-User-Id": user_id,
@@ -142,6 +155,7 @@ class ToolGatewayClient:
 
     @staticmethod
     def _raise_for_gateway_error(response: httpx.Response) -> None:
+        """将 Gateway 的结构化错误收敛为 SDK 异常，避免泄露非 JSON 响应内容。"""
         if response.status_code < 400:
             return
         try:
@@ -155,6 +169,7 @@ class ToolGatewayClient:
 
 
 def _idempotency_key(request_id: str, tool_name: str, arguments: dict) -> str:
+    """对同一请求、工具和参数生成稳定哈希，安全支持网络重试而不重复副作用。"""
     canonical = json.dumps(
         {
             "request_id": request_id,
@@ -170,6 +185,7 @@ def _idempotency_key(request_id: str, tool_name: str, arguments: dict) -> str:
 
 
 def _execution_headers(context: ToolContext) -> dict[str, str]:
+    """提取 Gateway 审计和预算执行头，剔除空值避免覆盖下游默认。"""
     values = {
         "X-Trace-Id": context.trace_id,
         "X-Run-Id": context.run_id,

@@ -15,17 +15,21 @@ class BudgetGuard:
     """Deterministic hard limits enforced outside model decisions."""
 
     def __init__(self, llm_call_reservation_usd: float, tool_call_reservation_usd: float) -> None:
-        """Initialize BudgetGuard dependencies and local state."""
+        """保存单次调用的保守预留成本。
+
+        预留发生在下游请求之前；即使供应商失败或不返回计费，也不会让随机规划绕过
+        已发布预算。真实账单随后由 ``reconcile_cost`` 覆盖预留值。
+        """
         self.llm_call_reservation_usd = llm_call_reservation_usd
         self.tool_call_reservation_usd = tool_call_reservation_usd
 
     def ensure_active(self, budget: RuntimeBudget) -> None:
-        """Validate the required invariant before dependent execution can continue."""
+        """检查绝对截止时间；超时必须在发起下一次外部调用前失败关闭。"""
         if datetime.now(UTC) >= budget.deadline_at:
             raise RuntimeLimitExceeded("DEADLINE_EXCEEDED", "The run deadline has expired.")
 
     def reserve_llm(self, budget: RuntimeBudget) -> RuntimeBudget:
-        """Perform reserve llm within the BudgetGuard ownership boundary."""
+        """为一次 LLM 调用原子递增调用数、尝试数与成本预留。"""
         self.ensure_active(budget)
         if budget.llm_calls >= budget.max_llm_calls:
             raise RuntimeLimitExceeded("MAX_LLM_CALLS", "The LLM call budget is exhausted.")
@@ -36,7 +40,7 @@ class BudgetGuard:
         )
 
     def reserve_tool(self, budget: RuntimeBudget) -> RuntimeBudget:
-        """Perform reserve tool within the BudgetGuard ownership boundary."""
+        """为一次工具调用预留费用；审批并不免除工具预算。"""
         self.ensure_active(budget)
         if budget.tool_calls >= budget.max_tool_calls:
             raise RuntimeLimitExceeded("MAX_TOOL_CALLS", "The tool call budget is exhausted.")
@@ -47,7 +51,7 @@ class BudgetGuard:
         )
 
     def reserve_retrieval(self, budget: RuntimeBudget) -> RuntimeBudget:
-        """Perform reserve retrieval within the BudgetGuard ownership boundary."""
+        """消耗一轮检索及一次下游尝试，不按零费用无限循环检索。"""
         self.ensure_active(budget)
         if budget.retrieval_rounds >= budget.max_retrieval_rounds:
             raise RuntimeLimitExceeded(
@@ -63,7 +67,7 @@ class BudgetGuard:
         )
 
     def count_step(self, budget: RuntimeBudget) -> RuntimeBudget:
-        """Perform count step within the BudgetGuard ownership boundary."""
+        """在决策前消耗一个 Agent 步，防止模型反复选择无副作用动作。"""
         self.ensure_active(budget)
         if budget.step_count >= budget.max_steps:
             raise RuntimeLimitExceeded("MAX_STEPS", "The agent step budget is exhausted.")
@@ -76,7 +80,7 @@ class BudgetGuard:
         reserved_usd: float,
         actual_usd: float | None,
     ) -> RuntimeBudget:
-        """Replace an estimate with reported cost and fail closed on overrun."""
+        """以网关报告的实际成本替换预留；实际超支也必须拒绝继续执行。"""
         if actual_usd is None:
             return budget
         next_cost = max(0.0, budget.spent_cost_usd - reserved_usd + actual_usd)
@@ -95,7 +99,7 @@ class BudgetGuard:
         tool_calls: int | None = None,
         cost: float,
     ) -> RuntimeBudget:
-        """Internal helper for BudgetGuard; preserve its caller-facing invariant."""
+        """统一执行成本与尝试预留，返回新模型而不原地修改检查点状态。"""
         next_cost = budget.spent_cost_usd + cost
         if next_cost > budget.max_cost_usd:
             raise RuntimeLimitExceeded("COST_BUDGET_EXCEEDED", "The run cost budget is exhausted.")
@@ -112,7 +116,7 @@ class BudgetGuard:
 
     @staticmethod
     def _ensure_attempt(budget: RuntimeBudget) -> None:
-        """Internal helper for BudgetGuard; preserve its caller-facing invariant."""
+        """确保每次跨服务尝试都未耗尽发布的总尝试额度。"""
         if budget.attempts_used >= budget.max_attempts:
             raise RuntimeLimitExceeded(
                 "ATTEMPT_BUDGET_EXCEEDED",

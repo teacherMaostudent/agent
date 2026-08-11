@@ -29,7 +29,7 @@ class ControlPlaneClient:
         workload_identity: WorkloadTokenProvider | None = None,
         mtls: dict[str, Any] | None = None,
     ) -> None:
-        """Initialize ControlPlaneClient dependencies and local state."""
+        """配置 Control Plane 解析客户端；快照身份由服务认证与可选 mTLS 保护。"""
         self.base_url = base_url.rstrip("/")
         self.runtime_key = runtime_key
         self.timeout = timeout
@@ -46,7 +46,7 @@ class ControlPlaneClient:
         session_id: str,
         trace_id: str,
     ) -> dict[str, Any]:
-        """Resolve the immutable execution snapshot for one tenant-scoped run."""
+        """解析租户运行的不可变快照；HTTP 失败必须阻止运行而非回退草稿。"""
         headers = {
             "X-Tenant-Id": tenant_id,
             "X-User-Id": user_id,
@@ -71,7 +71,7 @@ class RuntimeStore:
     """Small durable Run + transactional-outbox store; PostgreSQL is the production adapter."""
 
     def __init__(self, path: Path) -> None:
-        """Initialize RuntimeStore dependencies and local state."""
+        """初始化本地 Run 与 Transactional Outbox 存储，仅作 PostgreSQL 的开发替身。"""
         path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
@@ -127,7 +127,7 @@ class RuntimeStore:
             self._connection.commit()
 
     def create(self, context: ExecutionContext) -> RuntimeRun:
-        """Perform create within the RuntimeStore ownership boundary."""
+        """以 ``tenant_id + request_id`` 幂等创建运行，重复请求返回原运行不重执行。"""
         now = datetime.now(UTC)
         run = RuntimeRun(
             run_id=context.run_id,
@@ -174,7 +174,7 @@ class RuntimeStore:
         return run
 
     def get(self, tenant_id: str, run_id: str) -> RuntimeRun | None:
-        """Perform get within the RuntimeStore ownership boundary."""
+        """按租户读取运行，防止 run_id 碰撞或越权查询。"""
         with self._lock:
             row = self._connection.execute(
                 "SELECT * FROM runtime_runs WHERE tenant_id = ? AND run_id = ?",
@@ -183,7 +183,7 @@ class RuntimeStore:
         return self._from_row(row) if row else None
 
     def cancel(self, tenant_id: str, run_id: str) -> RuntimeRun | None:
-        """Perform cancel within the RuntimeStore ownership boundary."""
+        """仅对活动/待审批运行写协作取消标记，终态不可被取消改写。"""
         now = datetime.now(UTC).isoformat()
         with self._lock:
             self._connection.execute(
@@ -197,7 +197,7 @@ class RuntimeStore:
         return self.get(tenant_id, run_id)
 
     def finish(self, run_id: str, status: str, result: dict, error_code: str = "") -> None:
-        """Perform finish within the RuntimeStore ownership boundary."""
+        """持久化运行结果；需治理事件时应优先用原子 ``finish_and_enqueue``。"""
         with self._lock:
             self._connection.execute(
                 "UPDATE runtime_runs SET status = ?, result_json = ?, error_code = ?, updated_at = ? WHERE run_id = ?",
@@ -219,7 +219,7 @@ class RuntimeStore:
         event: dict[str, Any],
         error_code: str = "",
     ) -> None:
-        """Persist terminal/interrupted state and its governance event atomically."""
+        """原子持久化终态或中断态及对应治理事件，避免状态成功但审计事件丢失。"""
         now = datetime.now(UTC).isoformat()
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
@@ -251,7 +251,7 @@ class RuntimeStore:
                 raise
 
     def enqueue_governance(self, event: dict[str, Any]) -> None:
-        """Persist state while preserving the transaction and audit boundary."""
+        """写入幂等治理 Outbox；业务事务内不直接同步调用 Kafka/HTTP。"""
         with self._lock:
             self._connection.execute(
                 "INSERT INTO runtime_outbox(event_id, payload_json, created_at) "
@@ -265,7 +265,7 @@ class RuntimeStore:
             self._connection.commit()
 
     def pending_events(self, limit: int = 100) -> list[dict[str, Any]]:
-        """Perform pending events within the RuntimeStore ownership boundary."""
+        """读取到期未投递事件，供 Relay 或直连发布器批量处理。"""
         now = datetime.now(UTC).isoformat()
         with self._lock:
             rows = self._connection.execute(
@@ -277,7 +277,7 @@ class RuntimeStore:
         return [json.loads(row["payload_json"]) for row in rows]
 
     def mark_delivered(self, event_id: str) -> None:
-        """Perform mark delivered within the RuntimeStore ownership boundary."""
+        """标记已投递；写入幂等以支持至少一次传输语义。"""
         with self._lock:
             self._connection.execute(
                 "UPDATE runtime_outbox SET delivered_at = ? WHERE event_id = ?",
@@ -286,7 +286,7 @@ class RuntimeStore:
             self._connection.commit()
 
     def mark_delivery_failed(self, event_id: str, error: str) -> None:
-        """Perform mark delivery failed within the RuntimeStore ownership boundary."""
+        """记录 Outbox 投递失败并计算指数退避时间，不在业务事务中同步重试下游。"""
         with self._lock:
             row = self._connection.execute(
                 "SELECT attempts FROM runtime_outbox WHERE event_id = ?", (event_id,)
@@ -305,13 +305,13 @@ class RuntimeStore:
             self._connection.commit()
 
     def close(self) -> None:
-        """Perform close within the RuntimeStore ownership boundary."""
+        """关闭开发 SQLite 连接；生产 PostgreSQL 适配器拥有独立生命周期。"""
         with self._lock:
             self._connection.close()
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> RuntimeRun:
-        """Internal helper for RuntimeStore; preserve its caller-facing invariant."""
+        """反序列化持久化行并恢复强类型上下文，避免裸字典进入执行层。"""
         return RuntimeRun(
             run_id=row["run_id"],
             tenant_id=row["tenant_id"],
@@ -338,7 +338,7 @@ class GovernanceOutboxPublisher:
         workload_identity: WorkloadTokenProvider | None = None,
         delivery_mode: str = "direct",
     ) -> None:
-        """Initialize GovernanceOutboxPublisher dependencies and local state."""
+        """配置 Outbox 交付器；CDC 模式不发 HTTP，避免 Connect 与直连双投递。"""
         self.store, self.base_url, self.event_key, self.timeout = (
             store,
             base_url.rstrip("/"),
@@ -355,7 +355,7 @@ class GovernanceOutboxPublisher:
         result: dict[str, Any],
         error_code: str = "",
     ) -> None:
-        """Perform publish run within the GovernanceOutboxPublisher ownership boundary."""
+        """为运行状态生成治理事件并先写入 Outbox，不阻塞主业务流。"""
         self.store.enqueue_governance(self.event_for_run(context, status, result, error_code))
 
     @staticmethod
@@ -365,7 +365,7 @@ class GovernanceOutboxPublisher:
         result: dict[str, Any],
         error_code: str = "",
     ) -> dict[str, Any]:
-        """Perform event for run within the GovernanceOutboxPublisher ownership boundary."""
+        """构造关联快照、路由、证据与成本摘要的治理事件。"""
         plan = result.get("execution_plan", {})
         complexity = plan.get("complexity", {}) if isinstance(plan, dict) else {}
         route = plan.get("route", {}) if isinstance(plan, dict) else {}
@@ -399,7 +399,7 @@ class GovernanceOutboxPublisher:
         }
 
     def flush(self) -> None:
-        """Perform flush within the GovernanceOutboxPublisher ownership boundary."""
+        """direct 模式重试 HTTP 投递；CDC 模式保留事件供 Connect 独占读取。"""
         # In CDC mode Kafka Connect is the sole transport owner.  Keeping the
         # row untouched preserves an immutable audit source and avoids HTTP/
         # CDC double delivery from the same completed runtime transaction.

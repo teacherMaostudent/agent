@@ -7,6 +7,7 @@ from app.retrieval.tokenizer import tokenize
 
 class BM25Retriever:
     def search(self, query: str, chunks: list[Chunk], top_k: int) -> list[Evidence]:
+        """以词项统计召回候选片段；该层只计算相关性，不负责 ACL 或最终决策。"""
         query_terms = tokenize(query)
         if not query_terms or not chunks:
             return []
@@ -34,6 +35,7 @@ class BM25Retriever:
 
 
 def _to_evidence(chunk: Chunk, score: float) -> Evidence:
+    """将内部片段转换为统一证据契约，保留原始元数据以支持后续引用和审计。"""
     return Evidence(
         source_id=chunk.source_id,
         source_type=chunk.source_type,

@@ -17,11 +17,13 @@ public class EnhancedChatService {
     private final GatewayAssistant gatewayAssistant;
     private final SimpleKnowledgeBase knowledgeBase;
 
+    /** 注入 AI Service 与知识检索器，保持增强层依赖可替换。 */
     public EnhancedChatService(GatewayAssistant gatewayAssistant, SimpleKnowledgeBase knowledgeBase) {
         this.gatewayAssistant = gatewayAssistant;
         this.knowledgeBase = knowledgeBase;
     }
 
+    /** 在线程隔离池中执行同步 AI Service 调用，避免阻塞 WebFlux 事件循环。 */
     public Mono<EnhancedChatResponse> chat(EnhancedChatRequest request) {
         return Mono.fromCallable(() -> {
                     String context = knowledgeBase.retrieveContext(request.message(), 3);

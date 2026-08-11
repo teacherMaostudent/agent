@@ -16,13 +16,18 @@ from app.domain.models import (
 
 
 def evaluate(event: GovernanceEvent, policy: TenantPolicy) -> list[Finding]:
-    """Evaluate only the received event; this never calls back into the runtime."""
+    """处理 evaluate 对应的当前组件内部业务步骤。
+
+
+    Evaluate only the received event; this never calls back into the runtime.
+    """
     payload = event.payload
     subject_type = str(payload.get("subject_type", event.source_service))
     subject_id = str(payload.get("subject_id", payload.get("run_id", event.event_id)))
     findings: list[Finding] = []
 
     def add(rule_id: str, severity: Severity, summary: str, evidence: dict[str, Any]) -> None:
+        """构造绑定原事件与租户的开放发现项，避免规则命中脱离审计证据。"""
         findings.append(
             Finding(
                 finding_id=f"fdg_{uuid4().hex}",
@@ -114,5 +119,6 @@ def _limit_finding(
     limit: int | float | None,
     summary: str,
 ) -> None:
+    """仅在数值指标超过已配置限额时追加中风险发现，缺失数据不臆测违规。"""
     if limit is not None and isinstance(actual, (int, float)) and actual > limit:
         add(rule_id, Severity.MEDIUM, summary, {metric: actual, "limit": limit})
