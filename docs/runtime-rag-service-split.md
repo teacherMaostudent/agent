@@ -21,12 +21,15 @@ Runtime 不得导入 RAG 的仓储、检索器、切块器或索引实现。它�
 
 `RagSearchResponse.index_version` 与 `/index-version` 都是公开契约的一部分。后续 Control Plane 可在发布时校验 Agent 绑定的知识索引版本是否存在，Runtime 可在执行前拒绝知识版本漂移。
 
-## 迁移阶段
+## 当前完成状态
 
-1. **当前阶段：物理迁出、单实现。** `agent-runtime/src/agent_runtime_service` 持有 Agent、Planner、Harness、预算、审批、运行状态、Runtime API 与 Temporal Worker。RAG 镜像只提供共享契约/Context 客户端及知识服务实现，确保没有复制出的第二套状态机。
-2. **双运行验证。** 老入口 `apps.agent_runtime.main` 仍保留，供现有测试、回滚和集成方使用；新镜像的入口 `agent_runtime_service.main` 复用同一 ASGI 应用。两者处理相同请求时，应产生相同的发布快照、计划、状态和幂等结果。
-3. **流量切换。** 通过网关/部署清单将 Runtime 流量和 Temporal Worker 切到 `agent-runtime` 镜像；RAG Query、摄取 Worker 保持使用 `rag-agent-service` 镜像。此时不允许一个 Pod 同时承载 Runtime 与 RAG API。
-4. **物理迁包。** 当所有调用方、部署脚本和回滚流程均稳定后，将 `app/agent`、`app/runtime` 及其专属 API/Worker 物理迁入 `agent-runtime`，共享 Contracts/身份/可观测性模块改为独立共享包。完成前不得删除兼容入口。
+拆分已完成，线上状态机只有一份：`agent-runtime/src/agent_runtime_service` 持有 Agent、Planner、
+Harness、预算、审批、运行状态、Runtime API 与 Temporal Worker。RAG 服务只保留 Context、RAG
+Query、摄取 API/Worker 和索引实现；不存在可接收线上 Runtime 流量的旧入口。
+
+Runtime、Context、RAG 与摄取工作负载只共同依赖 `platform-sdk`、`platform-infra`，不互相安装或
+import 应用包。部署清单为 Runtime、Context、RAG Query、摄取 API 与摄取 Worker 分配独立镜像、
+OIDC 工作负载身份和 mTLS 证书；它们不应合并到同一 Pod。
 
 ## 非目标与安全边界
 

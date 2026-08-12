@@ -51,6 +51,7 @@ class AgentState(TypedDict, total=False):
     snapshot_id: str
     agent_snapshot: dict[str, Any]
     compiled_plan: dict[str, Any]
+    executor_profile: str
     graph_version: str
     flow_version: int
     deadline_at: str
@@ -60,6 +61,7 @@ class AgentState(TypedDict, total=False):
     entities: list[dict[str, Any]]
     source_plan: dict[str, Any]
     execution_plan: dict[str, Any]
+    workflow_cursor: str
     execution_trace: list[dict[str, Any]]
     pending_approval: dict[str, Any]
     step_count: int

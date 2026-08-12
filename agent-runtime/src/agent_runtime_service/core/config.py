@@ -1,19 +1,22 @@
-"""Configuration owned by the execution plane, not by the RAG service."""
+"""Runtime 独立配置：执行平面不接受或继承 RAG 服务的环境变量。"""
+
+from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class RuntimeSettings(BaseSettings):
-    """Only settings required to execute a published Agent run."""
+    """只声明执行已发布 Agent 所需的配置，统一由 ``RUNTIME_`` 前缀提供。"""
 
+    environment: str = "local"
     persistence: str = "memory"
     data_dir: Path = Path("data")
     database_url: str = Field(default="", repr=False)
-    database_schema: str = "rag_platform"
+    database_schema: str = "runtime_platform"
     temporal_enabled: bool = False
     temporal_target: str = "localhost:7233"
     temporal_namespace: str = "default"
@@ -44,7 +47,8 @@ class RuntimeSettings(BaseSettings):
     agent_tool_timeout: float = 20.0
     agent_tool_result_max_chars: int = 12_000
     runtime_flow_version: int = 1
-    runtime_snapshot_required: bool = False
+    snapshot_required: bool = False
+    executor_catalog_version: str = "runtime-executor-catalog/v1"
     control_plane_base_url: str = ""
     control_plane_runtime_key: str = Field(default="", repr=False)
     governance_base_url: str = ""
@@ -73,9 +77,36 @@ class RuntimeSettings(BaseSettings):
     opa_base_url: str = "http://localhost:8181"
     opa_decision_path: str = "agent_platform/allow"
 
-    # RAG_ remains accepted during the deployment migration; the class itself
-    # owns no RAG implementation and can switch to RUNTIME_ in one release.
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="RAG_", extra="ignore")
+    # 执行平面已完成与检索应用的拆分. 接受旧前缀会让部署配置重新形成隐式耦合。
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="RUNTIME_", extra="ignore")
+
+    @model_validator(mode="after")
+    def validate_production_boundary(self) -> RuntimeSettings:
+        """生产启动时强制独立执行平面的持久化、身份与调度边界，禁止隐式本地降级。"""
+        if self.environment.lower() not in {"production", "prod"}:
+            return self
+        unsafe: list[str] = []
+        if self.persistence != "postgres" or not self.database_url:
+            unsafe.append("RUNTIME_PERSISTENCE must be postgres and DATABASE_URL is required")
+        if not self.snapshot_required:
+            unsafe.append("RUNTIME_SNAPSHOT_REQUIRED must be true")
+        if not self.temporal_enabled:
+            unsafe.append("RUNTIME_TEMPORAL_ENABLED must be true")
+        if not self.oidc_enabled or not self.oidc_issuer or not self.oidc_jwks_url:
+            unsafe.append("RUNTIME OIDC issuer and JWKS configuration are required")
+        if not self.workload_token_url or not self.workload_client_secret:
+            unsafe.append("RUNTIME workload client credentials are required")
+        if not self.require_service_auth or not self.service_api_key:
+            unsafe.append("RUNTIME service authentication must be enabled")
+        if not self.mtls_enabled or not all(
+            (self.mtls_ca_file, self.mtls_cert_file, self.mtls_key_file)
+        ):
+            unsafe.append("RUNTIME mTLS certificate paths are required")
+        if not self.control_plane_base_url or not self.governance_base_url:
+            unsafe.append("RUNTIME Control Plane and Governance endpoints are required")
+        if unsafe:
+            raise ValueError("Unsafe production configuration: " + "; ".join(unsafe))
+        return self
 
     @property
     def runtime_store_path(self) -> Path:

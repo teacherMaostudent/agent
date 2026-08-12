@@ -21,9 +21,12 @@ RUN pip install /platform-infra . \
 USER governance
 
 ENV GOVERNANCE_DATABASE_PATH=/data/governance.db
+ENV PLATFORM_ASGI_APP=app.main:app \
+    PLATFORM_ASGI_PORT=8081 \
+    PLATFORM_HEALTHCHECK_URL=http://127.0.0.1:8081/health/ready
 EXPOSE 8081
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health/ready', timeout=2)"]
+    CMD ["python", "-m", "platform_infra.healthcheck"]
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8081"]
+CMD ["python", "-m", "platform_infra.asgi_runner"]

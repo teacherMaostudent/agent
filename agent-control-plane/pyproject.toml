@@ -9,6 +9,8 @@ description = "Versioned configuration and release control plane for enterprise 
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "agent-platform-sdk>=0.1.0",
+  "agent-platform-sdk>=0.1.0",
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
   "pydantic>=2.11,<3",
@@ -32,6 +34,7 @@ packages = ["app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["../platform-sdk", "../platform-infra"]
 addopts = "-ra --strict-markers"
 
 [tool.ruff]

@@ -33,8 +33,12 @@ def spec() -> dict[str, Any]:
         "display_name": "E2E General Agent",
         "description": "Controlled integration fixture",
         "graph": {
-            "graph_id": "e2e-graph", "entrypoint": "answer", "terminal_nodes": ["answer"],
-            "nodes": [{"node_id": "answer", "kind": "answer", "config": {}}], "edges": [],
+            "graph_id": "e2e-graph", "entrypoint": "decide", "terminal_nodes": ["answer"],
+            "nodes": [
+                {"node_id": "decide", "kind": "decision", "config": {}},
+                {"node_id": "answer", "kind": "answer", "config": {}},
+            ],
+            "edges": [{"from_node": "decide", "to_node": "answer"}],
         },
         "prompt": {"prompt_id": "e2e-prompt", "system_template": "Answer from evidence.", "variables": []},
         "tools": [], "knowledge": [],

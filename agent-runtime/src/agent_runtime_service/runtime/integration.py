@@ -337,6 +337,7 @@ class GovernanceOutboxPublisher:
         timeout: float,
         workload_identity: WorkloadTokenProvider | None = None,
         delivery_mode: str = "direct",
+        mtls: dict[str, Any] | None = None,
     ) -> None:
         """配置 Outbox 交付器；CDC 模式不发 HTTP，避免 Connect 与直连双投递。"""
         self.store, self.base_url, self.event_key, self.timeout = (
@@ -347,6 +348,7 @@ class GovernanceOutboxPublisher:
         )
         self.workload_identity = workload_identity
         self.delivery_mode = delivery_mode
+        self.mtls = mtls or {}
 
     def publish_run(
         self,
@@ -393,6 +395,12 @@ class GovernanceOutboxPublisher:
                 "intent": plan.get("intent", {}).get("name") if isinstance(plan, dict) else None,
                 "route": route.get("route"),
                 "complexity_score": complexity.get("score"),
+                "execution_plan_id": plan.get("plan_id") if isinstance(plan, dict) else None,
+                "execution_plan_hash": plan.get("plan_hash") if isinstance(plan, dict) else None,
+                "planner_version": plan.get("planner_version") if isinstance(plan, dict) else None,
+                "analyzer_version": plan.get("analyzer_version") if isinstance(plan, dict) else None,
+                "input_fingerprint": plan.get("input_fingerprint") if isinstance(plan, dict) else None,
+                "policy_fingerprint": plan.get("policy_fingerprint") if isinstance(plan, dict) else None,
                 "cost_usd": budget.get("spent_cost_usd", 0),
                 "latency_ms": result.get("latency_ms", 0),
             },
@@ -415,6 +423,7 @@ class GovernanceOutboxPublisher:
                     json=event,
                     headers=headers,
                     timeout=self.timeout,
+                    **self.mtls,
                 )
                 response.raise_for_status()
                 self.store.mark_delivered(event["event_id"])

@@ -11,11 +11,13 @@ from app.application.control_plane_service import ControlPlaneService
 from app.application.model_release_service import ModelReleaseService
 from app.core.config import Settings
 from app.infrastructure.platform_clients import (
+    AgentLabClient,
     GatewayPolicyClient,
     GovernanceQualityClient,
     ModelLabClient,
 )
 from app.infrastructure.postgres_repository import PostgresRepository
+from app.infrastructure.runtime_executor_catalog import RuntimeExecutorCatalog
 from app.infrastructure.sqlite_repository import SqliteRepository
 from app.infrastructure.temporal_release import TemporalReleaseOrchestrator
 from app.infrastructure.tool_catalog import ToolCatalogValidator
@@ -39,14 +41,23 @@ class AppContainer:
         self.gateway_policy = GatewayPolicyClient(settings)
         self.governance_quality = GovernanceQualityClient(settings)
         self.model_lab = ModelLabClient(settings)
+        self.agent_lab = AgentLabClient(settings)
         self.service = ControlPlaneService(
             self.repository,
             governance=self.governance_quality,
             require_quality_gate=settings.agent_release_quality_gate_required,
+            agent_lab=self.agent_lab,
+            require_agent_lab=settings.agent_lab_required,
             tool_catalog_validator=ToolCatalogValidator(
                 settings.tool_catalog_path,
                 settings.contracts_schema_dir,
                 required=settings.tool_catalog_required,
+            ),
+            runtime_executor_catalog=RuntimeExecutorCatalog(
+                settings.runtime_executor_catalog_path,
+                required=settings.runtime_executor_catalog_required,
+                timeout=settings.runtime_executor_catalog_timeout_seconds,
+                service_key=settings.runtime_executor_catalog_service_api_key,
             ),
         )
         self.model_releases = ModelReleaseService(

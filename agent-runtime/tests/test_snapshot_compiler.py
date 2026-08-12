@@ -74,6 +74,8 @@ def test_snapshot_compiles_every_runtime_binding() -> None:
     )
 
     assert plan.graph_execution_order == ["retrieve", "answer"]
+    assert plan.workflow_policy["node_roles"] == {"retrieve": "retrieval", "answer": "answer"}
+    assert plan.executor_profile == "declarative-langgraph/v1"
     assert plan.retrieval_top_k == 12
     assert plan.logical_model == "model-a"
     assert plan.fallback_models == ["model-b"]
@@ -132,3 +134,48 @@ def test_snapshot_identity_and_tool_policy_drift_fail_closed() -> None:
                 }
             ],
         )
+
+
+def test_snapshot_rejects_graph_that_cannot_be_mapped_to_safe_runtime_nodes() -> None:
+    data = snapshot()
+    data["spec"]["graph"]["nodes"][0]["kind"] = "python_callback"
+    with pytest.raises(SnapshotCompileError, match="unsupported"):
+        compile_snapshot(
+            data, tenant_id="tenant-a", agent_id="review-agent", fallback_model="fallback"
+        )
+
+
+def test_snapshot_compiles_auditable_branch_conditions() -> None:
+    data = snapshot()
+    data["spec"]["graph"] = {
+        "graph_id": "branch-v1",
+        "entrypoint": "decide",
+        "terminal_nodes": ["answer", "clarify"],
+        "nodes": [
+            {"node_id": "decide", "kind": "decision"},
+            {"node_id": "answer", "kind": "answer"},
+            {"node_id": "clarify", "kind": "clarify"},
+        ],
+        "edges": [
+            {
+                "from_node": "decide",
+                "to_node": "answer",
+                "condition": 'decision.action == "ANSWER"',
+            },
+            {
+                "from_node": "decide",
+                "to_node": "clarify",
+                "condition": 'decision.action == "RETRIEVE"',
+            },
+        ],
+    }
+
+    plan = compile_snapshot(
+        data, tenant_id="tenant-a", agent_id="review-agent", fallback_model="fallback"
+    )
+
+    assert plan.workflow_policy["adjacency"]["decide"][0]["condition"] == {
+        "field": "decision.action",
+        "operator": "==",
+        "value": "ANSWER",
+    }

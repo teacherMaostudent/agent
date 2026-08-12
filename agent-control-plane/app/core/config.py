@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     contracts_schema_dir: Path = _PROJECT_ROOT.parent / "platform-contracts" / "schemas"
     tool_catalog_path: Path = _PROJECT_ROOT.parent / "tool-gateway" / "config" / "tools.json"
     tool_catalog_required: bool = False
+    runtime_executor_catalog_path: Path = _PROJECT_ROOT / "config" / "runtime-executors.json"
+    runtime_executor_catalog_required: bool = False
+    runtime_executor_catalog_timeout_seconds: float = 5.0
+    runtime_executor_catalog_service_api_key: str = Field(default="", repr=False)
     oidc_enabled: bool = False
     oidc_issuer: str = ""
     oidc_audience: str = "agent-platform"
@@ -57,6 +61,9 @@ class Settings(BaseSettings):
     governance_auditor_api_key: str | None = Field(default=None, repr=False)
     model_lab_base_url: str = "http://localhost:8091"
     model_lab_required: bool = False
+    agent_lab_base_url: str = "http://localhost:8092"
+    agent_lab_service_api_key: str | None = Field(default=None, repr=False)
+    agent_lab_required: bool = False
     model_release_min_canary_requests: int = Field(default=20, ge=1)
     model_release_max_error_rate: float = Field(default=0.05, ge=0, le=1)
     model_release_max_timeout_rate: float = Field(default=0.02, ge=0, le=1)
@@ -84,6 +91,10 @@ class Settings(BaseSettings):
                 unsafe.append("CONTROL_PLANE_AGENT_RELEASE_QUALITY_GATE_REQUIRED must be true")
             if not self.model_lab_required:
                 unsafe.append("CONTROL_PLANE_MODEL_LAB_REQUIRED must be true")
+            if not self.agent_lab_required:
+                unsafe.append("CONTROL_PLANE_AGENT_LAB_REQUIRED must be true")
+            if not self.agent_lab_service_api_key:
+                unsafe.append("CONTROL_PLANE_AGENT_LAB_SERVICE_API_KEY is required")
             if self.database_backend != "postgres" or not self.database_url:
                 unsafe.append("CONTROL_PLANE_DATABASE_BACKEND must be postgres")
             if not self.oidc_enabled or not self.oidc_issuer or not self.oidc_jwks_url:
@@ -98,7 +109,13 @@ class Settings(BaseSettings):
                 unsafe.append("CONTROL_PLANE_TEMPORAL_ENABLED must be true")
             if not self.tool_catalog_required:
                 unsafe.append("CONTROL_PLANE_TOOL_CATALOG_REQUIRED must be true")
-            if self.mtls_enabled and not all(
+            if not self.runtime_executor_catalog_required:
+                unsafe.append("CONTROL_PLANE_RUNTIME_EXECUTOR_CATALOG_REQUIRED must be true")
+            if not self.runtime_executor_catalog_service_api_key:
+                unsafe.append("CONTROL_PLANE_RUNTIME_EXECUTOR_CATALOG_SERVICE_API_KEY is required")
+            if not self.mtls_enabled:
+                unsafe.append("CONTROL_PLANE_MTLS_ENABLED must be true")
+            elif not all(
                 (self.mtls_ca_file, self.mtls_cert_file, self.mtls_key_file)
             ):
                 unsafe.append("CONTROL_PLANE mTLS certificate paths are required")

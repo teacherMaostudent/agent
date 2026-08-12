@@ -14,6 +14,7 @@ from collections import deque
 from typing import Any
 
 from jsonschema import Draft202012Validator
+from platform_sdk.contracts.workflow import WorkflowConditionError, compile_workflow_condition
 from pydantic import BaseModel, Field
 
 _VARIABLE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
@@ -31,6 +32,8 @@ class CompiledAgentPlan(BaseModel):
     graph_terminal_nodes: list[str]
     graph_execution_order: list[str]
     graph_node_kinds: dict[str, str]
+    executor_profile: str
+    workflow_policy: dict[str, Any] = Field(default_factory=dict)
     prompt_template: str
     prompt_variables: list[str] = Field(default_factory=list)
     prompt_output_schema: dict[str, Any] | None = None
@@ -89,12 +92,14 @@ def compile_snapshot(
     terminals = [str(item) for item in graph.get("terminal_nodes") or []]
     if entrypoint not in node_kinds or not terminals or not set(terminals) <= node_kinds.keys():
         raise SnapshotCompileError("published graph entrypoint or terminal nodes are invalid")
-    order = _reachable_order(entrypoint, graph.get("edges") or [], node_kinds)
+    edges = graph.get("edges") or []
+    order = _reachable_order(entrypoint, edges, node_kinds)
     unreachable = sorted(set(node_kinds) - set(order))
     if unreachable:
         raise SnapshotCompileError(f"published graph contains unreachable nodes: {unreachable}")
     if not set(order).intersection(terminals):
         raise SnapshotCompileError("published graph has no reachable terminal node")
+    workflow_policy = _compile_workflow_policy(entrypoint, terminals, edges, node_kinds)
 
     prompt = _mapping(spec, "prompt")
     template = str(_required(prompt, "system_template"))
@@ -121,6 +126,9 @@ def compile_snapshot(
     if fallback_route:
         fallback_models.extend(str(item) for item in fallback_route.get("models") or [])
 
+    executor_profile = str(spec.get("runtime_executor", "declarative-langgraph/v1")).strip()
+    if not executor_profile:
+        raise SnapshotCompileError("published runtime executor profile is missing")
     canonical = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return CompiledAgentPlan(
         contract_hash=hashlib.sha256(canonical.encode()).hexdigest(),
@@ -129,6 +137,8 @@ def compile_snapshot(
         graph_terminal_nodes=terminals,
         graph_execution_order=order,
         graph_node_kinds=node_kinds,
+        executor_profile=executor_profile,
+        workflow_policy=workflow_policy,
         prompt_template=template,
         prompt_variables=declared,
         prompt_output_schema=output_schema,
@@ -215,6 +225,95 @@ def _reachable_order(entrypoint: str, edges: list[Any], node_kinds: dict[str, st
     return order
 
 
+def _compile_workflow_policy(
+    entrypoint: str,
+    terminals: list[str],
+    edges: list[Any],
+    node_kinds: dict[str, str],
+) -> dict[str, Any]:
+    """将发布 Graph DSL 变为 Runtime 可执行的受限迁移策略。
+
+    这里故意不把租户定义的节点映射为任意 Python 回调。Runtime 只有固定的
+    ``decision/retrieval/tool/answer/clarify`` 安全节点；发布图只能声明它们的
+    可达顺序，因而既能改变业务编排，又不会让快照取得代码执行或流程绕过权限。
+    """
+    normalized = {
+        node_id: _workflow_role(node_id, kind, terminal=node_id in terminals)
+        for node_id, kind in node_kinds.items()
+    }
+    adjacency: dict[str, list[dict[str, Any]]] = {node_id: [] for node_id in node_kinds}
+    for edge in edges:
+        if not isinstance(edge, dict):
+            raise SnapshotCompileError("published graph edge must be an object")
+        source, target = str(edge.get("from_node")), str(edge.get("to_node"))
+        try:
+            condition = compile_workflow_condition(edge.get("condition"))
+        except WorkflowConditionError as exc:
+            raise SnapshotCompileError(f"published graph condition is invalid: {exc}") from exc
+        adjacency[source].append(
+            {"to": target, "condition": condition.model_dump(mode="json") if condition else None}
+        )
+
+    for terminal in terminals:
+        if normalized[terminal] not in {"answer", "clarify"}:
+            raise SnapshotCompileError("published terminal node must be answer or clarify")
+        if adjacency[terminal]:
+            raise SnapshotCompileError("published terminal node cannot have outgoing edges")
+
+    allowed_targets = {
+        "decision": {"retrieval", "tool", "answer", "clarify"},
+        "retrieval": {"decision", "answer", "clarify"},
+        "tool": {"decision", "answer", "clarify"},
+        "answer": set(),
+        "clarify": set(),
+    }
+    for node_id, role in normalized.items():
+        targets = [normalized[item["to"]] for item in adjacency[node_id]]
+        if any(target not in allowed_targets[role] for target in targets):
+            raise SnapshotCompileError(
+                f"published workflow transition is not allowed from {role} at {node_id}"
+            )
+        if role in {"retrieval", "tool"} and len(targets) != 1:
+            raise SnapshotCompileError(
+                f"published {role} node must have exactly one controlled successor"
+            )
+        if role == "decision" and not targets:
+            raise SnapshotCompileError("published decision node must declare at least one action")
+        if len(targets) > 1 and not all(item["condition"] for item in adjacency[node_id]):
+            raise SnapshotCompileError(
+                f"published branching node requires conditions on every edge: {node_id}"
+            )
+
+    entry_role = normalized[entrypoint]
+    if entry_role not in {"decision", "retrieval", "clarify"}:
+        raise SnapshotCompileError("published workflow entry must be decision, retrieval or clarify")
+    return {
+        "version": "workflow-policy/v1",
+        "entrypoint": entrypoint,
+        "terminals": terminals,
+        "node_roles": normalized,
+        "adjacency": adjacency,
+    }
+
+
+def _workflow_role(node_id: str, kind: str, *, terminal: bool) -> str:
+    """归一发布节点类型；兼容旧 ``llm``，但拒绝无执行语义的任意种类。"""
+    normalized = kind.strip().lower()
+    if normalized in {"decision", "planner"}:
+        return "decision"
+    if normalized in {"retrieval", "rag"}:
+        return "retrieval"
+    if normalized in {"tool", "action"}:
+        return "tool"
+    if normalized in {"answer", "final"}:
+        return "answer"
+    if normalized in {"clarify", "clarification"}:
+        return "clarify"
+    if normalized == "llm":
+        return "answer" if terminal else "decision"
+    raise SnapshotCompileError(f"published graph node kind is unsupported: {node_id}:{kind}")
+
+
 def _mapping(value: dict[str, Any], name: str) -> dict[str, Any]:
     """取得必须为对象的快照分段；不接受宽松类型转换以免隐藏发布错误。"""
     item = value.get(name)
@@ -250,6 +349,15 @@ def _local_plan(model: str) -> CompiledAgentPlan:
         graph_terminal_nodes=["agent-loop"],
         graph_execution_order=["agent-loop"],
         graph_node_kinds={"agent-loop": "agent"},
+        executor_profile="local-default/v1",
+        workflow_policy={
+            "version": "workflow-policy/v1",
+            "entrypoint": "agent-loop",
+            "terminals": ["agent-loop"],
+            "node_roles": {"agent-loop": "decision"},
+            "adjacency": {"agent-loop": []},
+            "local_development_only": True,
+        },
         prompt_template="",
         logical_model=model,
     )

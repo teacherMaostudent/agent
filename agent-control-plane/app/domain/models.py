@@ -112,6 +112,7 @@ class AgentDraftSpec(StrictModel):
     knowledge: list[KnowledgeBinding] = Field(default_factory=list)
     model_policy: ModelPolicy
     runtime_limits: RuntimeLimits = Field(default_factory=RuntimeLimits)
+    runtime_executor: str = Field(default="declarative-langgraph/v1", min_length=1, max_length=100)
     labels: dict[str, str] = Field(default_factory=dict)
     retrieval_policy: dict[str, Any] = Field(default_factory=dict)
 
@@ -178,6 +179,7 @@ class PublishedSnapshot(StrictModel):
     model_policy_version: str
     spec: AgentDraftSpec
     published_at: datetime
+    runtime_artifact: dict[str, Any] | None = None
 
 
 class AgentVersionPublish(StrictModel):
@@ -205,6 +207,7 @@ class ReleaseCreate(StrictModel):
     tenant_allowlist: list[str] = Field(default_factory=list)
     reason: str = Field(default="", max_length=2_000)
     quality_gate_run_id: str | None = Field(default=None, max_length=160)
+    agent_lab_experiment_id: str | None = Field(default=None, max_length=160)
 
 
 class ReleasePromote(StrictModel):
@@ -224,6 +227,10 @@ class ReleaseManifest(StrictModel):
     reason: str
     quality_gate_id: str | None = None
     quality_gate_metrics: dict[str, Any] = Field(default_factory=dict)
+    agent_lab_experiment_id: str | None = None
+    runtime_executor_catalog_version: str | None = None
+    runtime_executor_cluster_id: str | None = None
+    runtime_executor_catalog_hash: str | None = None
     created_by: str
     created_at: datetime
     updated_at: datetime

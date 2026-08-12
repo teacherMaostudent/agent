@@ -2,7 +2,7 @@
 
 基于 Java 21、Spring Boot 3、Spring WebFlux 自研的大模型统一访问层。项目对标 LiteLLM 的核心思路，对外提供 OpenAI-compatible 接口，对内统一接入云端模型和本地推理服务，并在网关层沉淀协议适配、模型路由、fallback、SSE、限额、成本、Prompt/响应安全、审计和模型指标。
 
-> **职责边界**：Gateway 不负责编排 Agent Graph、保存会话记忆、执行 RAG 检索、编排业务 Tool 或判断 Agent 下一步动作。这些能力属于独立的 `rag-agent-service`。完整边界、身份 Header 和成本预算协议见 [网关职责边界与调用协议](docs/网关职责边界与调用协议.md)。
+> **职责边界**：Gateway 不负责编排 Agent Graph、保存会话记忆、执行 RAG 检索、编排业务 Tool 或判断 Agent 下一步动作。这些能力分别属于独立的 `agent-runtime`、Context/RAG 服务与 Tool Gateway。完整边界、身份 Header 和成本预算协议见 [网关职责边界与调用协议](docs/网关职责边界与调用协议.md)。
 
 ## 核心能力
 
@@ -672,6 +672,8 @@ http://localhost:5173
 
 ## 面试题库
 
-项目配套的 86 道面试题及详细答案位于 [LLM Gateway 面试题详解](docs/interview/00-LLM-Gateway面试题详解-总目录.md)。题库按总体设计、WebFlux、SSE、多模型路由、可靠性、Redis、Token 成本、安全、RAG/Agent 和综合场景拆分，并明确区分当前实现、演示边界和生产化方案。
+仓库级的 Python 设计、异步编程、类型契约、依赖注入与服务边界学习材料见
+[Python 工程实践教程](../docs/python-engineering-tutorial.md)。Gateway 的面试与技术讨论应以
+本 README、`docs/` 下的路由、评测、成本和边界设计文档为准，避免引用不存在的题库路径。
 
 成本治理采用“条件分位数预测预留 -> 厂商 usage 实际结算 -> 账单对账”的分层设计，详细实现、官方价格来源和仍需补齐的财务级能力见 [成本预测与结算](docs/成本预测与结算.md)。

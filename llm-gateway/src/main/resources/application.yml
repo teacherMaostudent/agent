@@ -416,6 +416,11 @@ rag-agent:
 # compatibility facade and asynchronous trace export.
 platform-services:
   default-tenant: ${PLATFORM_DEFAULT_TENANT:demo-tenant}
+  mtls:
+    enabled: ${PLATFORM_SERVICES_MTLS_ENABLED:false}
+    ca-file: ${PLATFORM_SERVICES_MTLS_CA_FILE:}
+    cert-file: ${PLATFORM_SERVICES_MTLS_CERT_FILE:}
+    key-file: ${PLATFORM_SERVICES_MTLS_KEY_FILE:}
   governance:
     base-url: ${GOVERNANCE_BASE_URL:http://localhost:8081}
     auditor-key: ${GOVERNANCE_AUDITOR_API_KEY:}

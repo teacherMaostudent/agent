@@ -10,7 +10,9 @@ from agent_runtime_service.runtime.temporal_queue import (
     AgentRunWorkflow,
     bind_runtime_executor,
     execute_agent_run,
+    resume_agent_run,
 )
+from agent_runtime_service.runtime.temporal_routing import TemporalTargetRouter
 
 
 async def run_worker() -> None:
@@ -21,11 +23,13 @@ async def run_worker() -> None:
     """
     container = AgentRuntimeContainer(build_async_queue=False)
     bind_runtime_executor(container._execute_submission)
-    router = getattr(container.async_runs, "router", None)
+    # Worker 不创建 API 侧队列; 直接从同一部署配置推导区域目标与 Task Queue。
+    router = TemporalTargetRouter(
+        container.settings.temporal_target,
+        container.settings.temporal_region_targets,
+    )
     client = await Client.connect(
-        router.target_for(container.settings.temporal_worker_region)
-        if router is not None
-        else container.settings.temporal_target,
+        router.target_for(container.settings.temporal_worker_region),
         namespace=container.settings.temporal_namespace,
     )
     worker = Worker(
@@ -33,11 +37,9 @@ async def run_worker() -> None:
         task_queue=router.task_queue_for(
             container.settings.temporal_runtime_task_queue,
             container.settings.temporal_worker_region,
-        )
-        if router is not None
-        else container.settings.temporal_runtime_task_queue,
+        ),
         workflows=[AgentRunWorkflow],
-        activities=[execute_agent_run],
+        activities=[execute_agent_run, resume_agent_run],
     )
     try:
         await worker.run()

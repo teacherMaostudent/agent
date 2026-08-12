@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any, Protocol
@@ -215,20 +216,53 @@ class RuntimePlanner:
         )
         route = _route(intent, sources, complexity, sla, cost)
         snapshot = state.get("agent_snapshot", {})
+        analyzer_version = type(self.analyzer).__name__
+        compiled = state.get("compiled_plan", {})
+        input_fingerprint = _fingerprint(
+            {
+                "task": state.get("task", ""),
+                "metadata": state.get("metadata", {}),
+                "snapshot_id": state.get("snapshot_id", ""),
+                "compiled_contract_hash": compiled.get("contract_hash", ""),
+            }
+        )
+        policy_fingerprint = _fingerprint(
+            {
+                "workflow": compiled.get("workflow_policy", {}),
+                "retrieval": effective_policy.model_dump(mode="json"),
+                "permissions": sorted(state.get("permissions", [])),
+                "budget_limits": budget.model_dump(mode="json"),
+            }
+        )
+        plan_payload = {
+            "intent": intent.model_dump(mode="json"),
+            "entities": [item.model_dump(mode="json") for item in entities],
+            "source_plan": sources.model_dump(mode="json"),
+            "complexity": complexity.model_dump(mode="json"),
+            "sla": sla.model_dump(mode="json"),
+            "cost": cost.model_dump(mode="json"),
+            "route": route.model_dump(mode="json"),
+            "agent_version": state.get("agent_version", "local-unversioned"),
+            "graph_version": snapshot.get("graph_version", "runtime-planner-v1"),
+            "model_policy_version": snapshot.get("model_policy_version", "local-unversioned"),
+            "executor_profile": compiled.get("executor_profile", "local-default/v1"),
+            "retrieval_policy": effective_policy.model_dump(mode="json"),
+            "planner_version": "runtime-planner/v2",
+            "analyzer_version": analyzer_version,
+            "input_fingerprint": input_fingerprint,
+            "policy_fingerprint": policy_fingerprint,
+        }
         return ExecutionPlan(
             plan_id=f"plan_{uuid4().hex}",
-            intent=intent,
-            entities=entities,
-            source_plan=sources,
-            complexity=complexity,
-            sla=sla,
-            cost=cost,
-            route=route,
-            agent_version=state.get("agent_version", "local-unversioned"),
-            graph_version=snapshot.get("graph_version", "runtime-planner-v1"),
-            model_policy_version=snapshot.get("model_policy_version", "local-unversioned"),
-            retrieval_policy=effective_policy.model_dump(mode="json"),
+            **plan_payload,
+            plan_hash=_fingerprint(plan_payload),
         )
+
+
+def _fingerprint(value: dict[str, Any]) -> str:
+    """计算可复现 SHA-256 摘要，审计只保存输入特征而不重复保存用户原文。"""
+    canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def _complexity(

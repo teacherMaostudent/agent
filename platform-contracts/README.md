@@ -46,3 +46,10 @@ docker compose -f compose.platform.yaml up --build -d
 ```
 
 The test creates a release, resolves its immutable snapshot at Runtime, verifies the durable Run record, invokes a Tool Gateway write tool with the same execution context, and asserts both Governance events.
+
+## 实验与发布约束
+
+Agent Lab 的实验计划、冻结快照与 release evidence 属于其服务 API，不是通用 ExecutionContext
+的一部分。它们必须通过 Control Plane 和 Governance 已版本化的 HTTP/事件契约关联，不能把实验
+内部字段临时塞入业务 Header。Model Lab 的训练计划、模型卡和工件 manifest 同理：它们是模型
+生命周期资产，不应由在线 Runtime 直接读取未发布的草稿。

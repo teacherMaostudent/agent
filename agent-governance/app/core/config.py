@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     workload_client_secret: str = Field(default="", repr=False)
     workload_audience: str = "agent-platform"
     workload_scope: str = ""
+    mtls_enabled: bool = False
+    mtls_ca_file: str = ""
+    mtls_cert_file: str = ""
+    mtls_key_file: str = Field(default="", repr=False)
     kafka_bootstrap_servers: str = ""
     cdc_required: bool = False
     kafka_governance_topic: str = "agent.governance.events.v1"
@@ -105,6 +109,10 @@ class Settings(BaseSettings):
                 unsafe.append(
                     "GOVERNANCE_WORKLOAD_TOKEN_URL and WORKLOAD_CLIENT_SECRET are required"
                 )
+            if not self.mtls_enabled:
+                unsafe.append("GOVERNANCE_MTLS_ENABLED must be true")
+            elif not all((self.mtls_ca_file, self.mtls_cert_file, self.mtls_key_file)):
+                unsafe.append("GOVERNANCE mTLS certificate paths are required")
             if not self.kafka_bootstrap_servers:
                 unsafe.append("GOVERNANCE_KAFKA_BOOTSTRAP_SERVERS is required")
             if not self.cdc_required:

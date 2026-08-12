@@ -1,0 +1,15 @@
+{
+  "version": "runtime-executor-catalog/v1",
+  "clusters": [
+    {
+      "cluster_id": "local-runtime",
+      "environment": "local",
+      "base_url": "http://agent-runtime:8001",
+      "executor_profiles": [
+        "simple/v1",
+        "declarative-langgraph/v1",
+        "temporal-workflow/v1"
+      ]
+    }
+  ]
+}

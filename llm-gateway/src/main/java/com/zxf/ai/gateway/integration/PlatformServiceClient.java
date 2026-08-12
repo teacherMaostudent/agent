@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zxf.ai.gateway.auth.WorkloadIdentityService;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Component;
@@ -31,7 +32,7 @@ public class PlatformServiceClient {
 
     /** 创建通往 Governance 与 Control Plane 的独立客户端，并集中保存工作负载身份配置。 */
     public PlatformServiceClient(
-            WebClient.Builder builder,
+            @Qualifier("platformServiceWebClientBuilder") WebClient.Builder builder,
             ObjectMapper objectMapper,
             @Value("${platform-services.governance.base-url:http://localhost:8085}") String governanceUrl,
             @Value("${platform-services.control-plane.base-url:http://localhost:8086}") String controlPlaneUrl,

@@ -1,0 +1,31 @@
+[project]
+name = "agent-lab"
+version = "0.1.0"
+description = "Offline replay orchestration for immutable Agent Platform releases"
+requires-python = ">=3.11"
+dependencies = [
+  "agent-platform-infra>=0.1.0",
+  "agent-platform-sdk>=0.1.0",
+  "fastapi>=0.111.0",
+  "httpx>=0.27.0",
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.3.0",
+  "temporalio>=1.18,<2.0.0",
+  "uvicorn[standard]>=0.30.0",
+]
+
+[project.scripts]
+agent-lab-temporal-worker = "app.temporal_worker:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "ruff>=0.6.0"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "../platform-sdk", "../platform-infra"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "RUF"]
+ignore = ["RUF002"]

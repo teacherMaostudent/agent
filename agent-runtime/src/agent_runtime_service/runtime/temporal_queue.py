@@ -42,12 +42,31 @@ async def execute_agent_run(submission: dict[str, Any]) -> dict:
     return await asyncio.to_thread(_executor, submission)
 
 
+@activity.defn(name="resume_agent_run")
+async def resume_agent_run(submission: dict[str, Any]) -> dict:
+    """在持有 Runtime 依赖的 Worker 中恢复同一 Run，审批载荷不直接进入图执行器。"""
+    if _executor is None:
+        raise RuntimeError("runtime activity executor is not bound")
+    return await asyncio.to_thread(_executor, {**submission, "operation": "resume"})
+
+
 @workflow.defn(name="AgentRunWorkflow")
 class AgentRunWorkflow:
+    def __init__(self) -> None:
+        """保存一次待消费审批信号；Workflow 历史是等待事实，Run Store 仍是业务真源。"""
+        self._approval: dict[str, Any] | None = None
+
+    @workflow.signal
+    def approve(self, approval: dict[str, Any]) -> None:
+        """接收 API 已认证、已结构化的审批决定，后续由 Workflow 串行消费一次。"""
+        if self._approval is not None:
+            raise ValueError("approval signal was already received")
+        self._approval = approval
+
     @workflow.run
     async def run(self, submission: dict[str, Any]) -> dict:
-        """执行单个运行活动，使用指数重试并把快照/参数错误列为不可重试。"""
-        return await workflow.execute_activity(
+        """执行并在审批暂停时等待 Signal，再从同一 LangGraph 检查点恢复。"""
+        result = await workflow.execute_activity(
             "execute_agent_run",
             submission,
             start_to_close_timeout=timedelta(hours=1),
@@ -59,6 +78,22 @@ class AgentRunWorkflow:
                 non_retryable_error_types=["SnapshotCompileError", "ValueError"],
             ),
         )
+        while result.get("status") == "WAITING_APPROVAL":
+            await workflow.wait_condition(lambda: self._approval is not None)
+            approval, self._approval = self._approval, None
+            result = await workflow.execute_activity(
+                "resume_agent_run",
+                {**submission, "approval": approval},
+                start_to_close_timeout=timedelta(hours=1),
+                retry_policy=RetryPolicy(
+                    initial_interval=timedelta(seconds=2),
+                    backoff_coefficient=2,
+                    maximum_interval=timedelta(minutes=2),
+                    maximum_attempts=5,
+                    non_retryable_error_types=["ValueError"],
+                ),
+            )
+        return result
 
 
 class TemporalRunQueue:
@@ -165,6 +200,17 @@ class TemporalRunQueue:
         else:
             return None
         return self.get(tenant_id, run_id)
+
+    def resume(self, tenant_id: str, run_id: str, approval: dict[str, Any]) -> dict[str, Any] | None:
+        """向存活的长期 Workflow 发送一次审批 Signal，拒绝找不到的跨租户运行。"""
+        for client in self._clients.values():
+            handle = client.get_workflow_handle(self._workflow_id(tenant_id, run_id))
+            try:
+                self._call(handle.signal(AgentRunWorkflow.approve, approval))
+                return self.get(tenant_id, run_id)
+            except (TemporalError, TimeoutError):
+                continue
+        return None
 
     def close(self) -> None:
         """停止私有事件循环并有限等待后台线程，避免服务关闭无限阻塞。"""

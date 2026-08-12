@@ -23,6 +23,8 @@ Gateway 执行灰度策略，监控 Gateway 性能后提升或回滚。Gateway �
 - 灰度推进、暂停、回滚，以及回滚后会话安全重绑定
 - 租户级模型、数据区域和最大灰度比例策略
 - 与业务写入同事务的 Outbox 事件
+- 可选强制关联 Agent Lab 的 laboratory 回放证据，防止无关 Gate 或草稿直接进入正式发布
+- Runtime Executor Catalog：发布前确认目标环境存在匹配执行器，并由 Runtime 实例实时证明能力
 - 管理端与 Runtime 端分离的鉴权入口
 - OpenAPI、Docker、Compose、调用样例和自动化测试
 
@@ -54,6 +56,12 @@ flowchart LR
 6. 新会话按稳定哈希进入灰度；已有会话固定到原 Release。
 7. 回滚后，绑定到问题 Release 的会话在下次解析时切回上一稳定版本。
 8. 配置变更与 Outbox 事件在同一数据库事务提交。
+9. 启用 Agent Lab 门禁后，正式 Release 还必须引用完成的 laboratory 实验，且实验的租户、Agent、
+   版本和 Judge Run 必须与发布请求完全一致。
+10. 生产发布必须通过 Runtime Executor Catalog：目标环境声明 `runtime_executor` Profile，至少一个
+    Runtime 实例的 `/api/v1/agent/capabilities` 返回同一 Catalog 版本和该 Profile。
+11. `AgentVersion` 生成时会在同一事务内把 `PublishedSnapshot` 编译为 `runtime-snapshot/v1`
+    Artifact；生产 Runtime 只加载并校验该 Artifact 的快照哈希，缺失或漂移即拒绝执行。
 
 发布后的快照同时包含可观察版本号和完整配置：
 
@@ -112,6 +120,30 @@ X-Trace-Id: trace-optional
 本地默认不强制角色；生产设置 `CONTROL_PLANE_ENFORCE_ADMIN_ROLE=true`。Runtime API
 可通过 `CONTROL_PLANE_RUNTIME_API_KEY` 启用独立的 `X-Runtime-Key`。
 
+若将 Agent Lab 作为发布前回放门禁，生产还应设置：
+
+```dotenv
+CONTROL_PLANE_AGENT_LAB_REQUIRED=true
+CONTROL_PLANE_AGENT_LAB_BASE_URL=https://agent-lab:8092
+CONTROL_PLANE_AGENT_LAB_SERVICE_API_KEY=<service-secret>
+```
+
+Control Plane 会用服务密钥读取 Agent Lab 的内部 release evidence，并拒绝实验环境不是
+`laboratory`、未完成、未通过 Gate，或 `quality_gate_run_id` 不一致的请求。该检查补充
+Governance Gate，不取代 Governance 的评测和审计职责。
+
+生产还必须挂载版本化 `runtime-executors.json`，并设置：
+
+```dotenv
+CONTROL_PLANE_RUNTIME_EXECUTOR_CATALOG_REQUIRED=true
+CONTROL_PLANE_RUNTIME_EXECUTOR_CATALOG_PATH=/service/runtime-catalog/runtime-executors.json
+CONTROL_PLANE_RUNTIME_EXECUTOR_CATALOG_SERVICE_API_KEY=<runtime-service-secret>
+```
+
+目录按环境列出可接收流量的 Runtime Cluster、base URL 和执行器 Profile。Control Plane 创建
+Release 时不会只相信静态目录：它会调用候选实例 capabilities 接口，要求实例返回同一 Catalog
+Version 和 `runtime_executor`。目录版本、摘要和目标 Cluster ID 会冻结到 Release 与 Outbox 事件。
+
 数据库查询、版本、发布、策略和 Outbox 均以 `tenant_id` 隔离。
 
 ## API
@@ -130,6 +162,9 @@ X-Trace-Id: trace-optional
 | `GET` | `/v1/runtime/releases/{id}/snapshot` | 按 Release 获取快照 |
 | `GET/PUT` | `/v1/tenant-policy` | 查询或更新租户策略 |
 | `GET` | `/v1/outbox` | 查看待集成的配置事件 |
+
+创建 Release 时，开启 Agent Lab 门禁的租户必须在请求中提供 `agent_lab_experiment_id` 与
+`quality_gate_run_id`；两者均来自同一个已冻结的实验，而不是用户可任意填写的字符串。
 
 Runtime Resolve 示例：
 

@@ -73,7 +73,13 @@ class ExecutionPlan(BaseModel):
     agent_version: str
     graph_version: str
     model_policy_version: str
+    executor_profile: str
     retrieval_policy: dict[str, Any] = Field(default_factory=dict)
+    planner_version: str
+    analyzer_version: str
+    input_fingerprint: str
+    policy_fingerprint: str
+    plan_hash: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

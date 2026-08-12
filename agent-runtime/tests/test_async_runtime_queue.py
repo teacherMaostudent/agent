@@ -37,3 +37,26 @@ def test_async_queue_is_idempotent_and_returns_preallocated_run_id(tmp_path: Pat
     assert current["result"]["answer"] == "ok"
     assert calls == [first["run_id"]]
     queue.close()
+
+
+def test_async_submission_preserves_frozen_release_resolution(tmp_path: Path) -> None:
+    """异步队列必须原样保存 API 提交时冻结的发布解析结果。"""
+    received: list[dict] = []
+    queue = AsyncRunQueue(tmp_path / "frozen-release.db", lambda item: received.append(item) or {"status": "COMPLETED"})
+    frozen = {"release_id": "rel-a", "version_id": "version-a", "snapshot": {"agent_id": "agent-a"}}
+    queue.submit(
+        {
+            "payload": {"task": "test"},
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "permissions": "rag:read",
+            "request_id": "request-frozen",
+            "trace_id": "trace-frozen",
+            "release_resolution": frozen,
+        }
+    )
+    deadline = monotonic() + 2
+    while monotonic() < deadline and not received:
+        sleep(0.01)
+    assert received[0]["release_resolution"] == frozen
+    queue.close()

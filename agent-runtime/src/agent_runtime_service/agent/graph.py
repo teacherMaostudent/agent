@@ -19,6 +19,7 @@ from langgraph.types import Command, interrupt
 from opentelemetry import trace
 from platform_sdk.contracts.context import ContextAssembleRequest
 from platform_sdk.contracts.rag import RagSearchRequest
+from platform_sdk.contracts.workflow import evaluate_workflow_condition
 from platform_sdk.security import bound_untrusted
 from platform_sdk.tools.registry import ToolContext, ToolRegistry
 
@@ -116,7 +117,11 @@ class AgentGraph:
             },
         )
         graph.add_edge("planned_retrieval_guard", "planned_retrieve")
-        graph.add_edge("planned_retrieve", "decide")
+        graph.add_conditional_edges(
+            "planned_retrieve",
+            self._after_retrieval,
+            {"decide": "decide", "clarify": "clarify"},
+        )
         graph.add_conditional_edges(
             "decide",
             self._route,
@@ -128,7 +133,11 @@ class AgentGraph:
             },
         )
         graph.add_edge("retrieval_guard", "retrieve")
-        graph.add_edge("retrieve", "decide")
+        graph.add_conditional_edges(
+            "retrieve",
+            self._after_retrieval,
+            {"decide": "decide", "clarify": "clarify"},
+        )
         graph.add_edge("tool_guard", "tool")
         graph.add_conditional_edges(
             "tool",
@@ -262,8 +271,12 @@ class AgentGraph:
         """把分析结果编译为当前运行唯一可用的路由、SLA 与检索策略。"""
         self._ensure_active(state)
         plan = self.planner.build_plan(state)
+        workflow = state.get("compiled_plan", {}).get("workflow_policy", {})
         return {
             "execution_plan": plan.model_dump(mode="json"),
+            # Cursor is a published Graph node, not a model-selected string.
+            # Every later action advances it through the compiled adjacency map.
+            "workflow_cursor": workflow.get("entrypoint", ""),
             "execution_trace": self._trace(
                 state,
                 "build_plan",
@@ -273,7 +286,18 @@ class AgentGraph:
 
     @staticmethod
     def _plan_route(state: AgentState) -> str:
-        """将受控计划路由映射为图节点；未知策略不允许跳过受控 Agent 路径。"""
+        """从发布工作流入口选择固定 Runtime 节点，不让 Planner 改写业务图。"""
+        workflow = state.get("compiled_plan", {}).get("workflow_policy", {})
+        roles = workflow.get("node_roles", {})
+        entry_role = roles.get(workflow.get("entrypoint"))
+        if entry_role == "retrieval":
+            return "rag"
+        if entry_role == "clarify":
+            return "clarify"
+        if entry_role == "decision":
+            return "agent"
+        if workflow and not workflow.get("local_development_only"):
+            raise RuntimeLimitExceeded("WORKFLOW_ENTRY_INVALID", "Published workflow entry is invalid.")
         route = state["execution_plan"]["route"]["route"]
         if route == RouteType.CLARIFY:
             return "clarify"
@@ -294,6 +318,7 @@ class AgentGraph:
         working = {**state, "budget": budget.model_dump(mode="json")}
         with trace.get_tracer(__name__).start_as_current_span("agent.decide"):
             decision = self.decision_engine.decide(working, self.tool_registry)
+        next_node = self._workflow_next_node(state, decision.action)
         if getattr(self.decision_engine, "uses_llm", False):
             cost_reader = getattr(self.decision_engine, "last_cost_usd", None)
             actual_cost = cost_reader() if cost_reader else None
@@ -304,6 +329,7 @@ class AgentGraph:
             )
         return {
             "decision": decision.model_dump(mode="json"),
+            "workflow_cursor": next_node or state.get("workflow_cursor", ""),
             "step_count": state.get("step_count", 0) + 1,
             "budget": budget.model_dump(mode="json"),
             "execution_trace": self._trace(
@@ -451,6 +477,7 @@ class AgentGraph:
                     package.budget_report.model_dump(mode="json") if package.budget_report else None
                 ),
             },
+            "workflow_cursor": self._workflow_after_side_effect(state, "retrieval"),
             "observations": [*state.get("observations", []), observation],
             "execution_trace": self._trace(
                 state,
@@ -559,6 +586,7 @@ class AgentGraph:
             }
         return {
             "observations": [*state.get("observations", []), observation],
+            "workflow_cursor": self._workflow_after_side_effect(state, "tool"),
             "execution_trace": self._trace(
                 state,
                 "tool",
@@ -568,8 +596,29 @@ class AgentGraph:
 
     @staticmethod
     def _after_tool(state: AgentState) -> str:
-        """仅工具被人工拒绝时结束，其他工具结果交回决策节点解释。"""
-        return "finish" if state.get("termination_reason") == "TOOL_REJECTED" else "continue"
+        """按发布图决定工具后的安全去向，人工拒绝仍优先终止。"""
+        if state.get("termination_reason") == "TOOL_REJECTED":
+            return "finish"
+        cursor = state.get("workflow_cursor", "")
+        roles = state.get("compiled_plan", {}).get("workflow_policy", {}).get("node_roles", {})
+        if not roles:
+            return "continue"
+        if roles.get(cursor) == "clarify":
+            return "finish"
+        if roles.get(cursor) in {"decision", "answer"}:
+            return "continue"
+        raise RuntimeLimitExceeded("WORKFLOW_CURSOR_INVALID", "Tool successor is not executable.")
+
+    @staticmethod
+    def _after_retrieval(state: AgentState) -> str:
+        """把检索后的发布节点映射到固定安全图；answer 仍须经模型给出受控答案。"""
+        cursor = state.get("workflow_cursor", "")
+        roles = state.get("compiled_plan", {}).get("workflow_policy", {}).get("node_roles", {})
+        if not roles or roles.get(cursor) in {"decision", "answer"}:
+            return "decide"
+        if roles.get(cursor) == "clarify":
+            return "clarify"
+        raise RuntimeLimitExceeded("WORKFLOW_CURSOR_INVALID", "Retrieval successor is not executable.")
 
     @staticmethod
     def _tool_context(
@@ -742,6 +791,98 @@ class AgentGraph:
             state.get("run_id", ""),
         ):
             raise RuntimeCancelled("Run cancellation was requested.")
+
+    @staticmethod
+    def _workflow_next_node(state: AgentState, action: AgentAction) -> str:
+        """验证模型动作是当前发布节点允许的直接迁移，并返回目标节点。
+
+        Graph DSL 不会生成 Python 代码；它只能让现有 Runtime 安全节点在预先发布的
+        邻接关系中移动。缺失策略仅保留给未版本化的本地测试入口。
+        """
+        workflow = state.get("compiled_plan", {}).get("workflow_policy", {})
+        if not workflow or workflow.get("local_development_only"):
+            return ""
+        cursor = str(state.get("workflow_cursor") or workflow.get("entrypoint") or "")
+        roles = workflow.get("node_roles", {})
+        adjacency = workflow.get("adjacency", {})
+        role = roles.get(cursor)
+        requested_role = {
+            AgentAction.RETRIEVE: "retrieval",
+            AgentAction.TOOL: "tool",
+            AgentAction.ANSWER: "answer",
+        }[action]
+        if role == "answer" and action == AgentAction.ANSWER and cursor in workflow.get("terminals", []):
+            return cursor
+        if role != "decision":
+            raise RuntimeLimitExceeded(
+                "WORKFLOW_DECISION_FORBIDDEN",
+                f"Published workflow node '{cursor}' cannot request a model action.",
+            )
+        facts = AgentGraph._workflow_facts(state, action=action)
+        matches = [
+            item["to"]
+            for item in adjacency.get(cursor, [])
+            if roles.get(item["to"]) == requested_role
+            and evaluate_workflow_condition(item.get("condition"), facts)
+        ]
+        if len(matches) != 1:
+            raise RuntimeLimitExceeded(
+                "WORKFLOW_ACTION_FORBIDDEN",
+                f"Published workflow does not allow action {action.value} from '{cursor}'.",
+            )
+        return matches[0]
+
+    @staticmethod
+    def _workflow_after_side_effect(state: AgentState, expected_role: str) -> str:
+        """完成检索或工具后沿发布图移动；一对多或错类型迁移一律失败关闭。"""
+        workflow = state.get("compiled_plan", {}).get("workflow_policy", {})
+        if not workflow or workflow.get("local_development_only"):
+            return state.get("workflow_cursor", "")
+        cursor = str(state.get("workflow_cursor", ""))
+        roles = workflow.get("node_roles", {})
+        adjacency = workflow.get("adjacency", {})
+        if roles.get(cursor) != expected_role:
+            raise RuntimeLimitExceeded(
+                "WORKFLOW_CURSOR_INVALID",
+                f"Published workflow expected {expected_role} at '{cursor}'.",
+            )
+        facts = AgentGraph._workflow_facts(state)
+        targets = [
+            item["to"]
+            for item in adjacency.get(cursor, [])
+            if evaluate_workflow_condition(item.get("condition"), facts)
+        ]
+        if len(targets) != 1 or roles.get(targets[0]) not in {"decision", "answer", "clarify"}:
+            raise RuntimeLimitExceeded(
+                "WORKFLOW_TRANSITION_FORBIDDEN",
+                f"Published workflow has no valid successor for '{cursor}'.",
+            )
+        return targets[0]
+
+    @staticmethod
+    def _workflow_facts(
+        state: AgentState,
+        *,
+        action: AgentAction | None = None,
+    ) -> dict[str, Any]:
+        """只暴露发布 DSL 白名单中的运行事实，避免条件读取请求任意字段。"""
+        decision = state.get("decision", {})
+        selected_action = action.value if action is not None else decision.get("action")
+        tool_observations = [
+            item for item in state.get("observations", []) if item.get("type") == "tool"
+        ]
+        latest_tool = tool_observations[-1] if tool_observations else {}
+        budget = AgentGraph._budget(state)
+        intent = state.get("intent", {})
+        return {
+            "decision.action": selected_action,
+            "intent.name": intent.get("name"),
+            "intent.confidence": intent.get("confidence"),
+            "evidence.count": len(state.get("evidence", [])),
+            "tool.success": latest_tool.get("success"),
+            "budget.remaining_cost_usd": budget.remaining_cost_usd,
+            "budget.remaining_ms": budget.remaining_ms,
+        }
 
     @staticmethod
     def _budget(state: AgentState) -> RuntimeBudget:

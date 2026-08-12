@@ -28,6 +28,7 @@ class GovernanceOutboxPublisher:
         timeout: float,
         workload_identity: WorkloadTokenProvider | None = None,
         delivery_mode: str = "direct",
+        mtls: dict | None = None,
     ) -> None:
         """初始化该组件的依赖、配置与内部状态。
 
@@ -40,6 +41,7 @@ class GovernanceOutboxPublisher:
         self.timeout = timeout
         self.workload_identity = workload_identity
         self.delivery_mode = delivery_mode
+        self.mtls = mtls or {}
 
     def publish_invocation(
         self,
@@ -95,7 +97,7 @@ class GovernanceOutboxPublisher:
         headers = {"X-Governance-Event-Key": self.event_key} if self.event_key else {}
         if self.workload_identity is not None:
             headers.update(self.workload_identity.authorization_header())
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, **self.mtls) as client:
             for event in self.repository.pending_events():
                 try:
                     response = await client.post(

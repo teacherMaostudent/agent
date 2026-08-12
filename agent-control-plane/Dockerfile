@@ -22,9 +22,12 @@ RUN mkdir -p /data \
 USER controlplane
 
 ENV CONTROL_PLANE_DATABASE_PATH=/data/control-plane.db
+ENV PLATFORM_ASGI_APP=app.main:app \
+    PLATFORM_ASGI_PORT=8080 \
+    PLATFORM_HEALTHCHECK_URL=http://127.0.0.1:8080/health/ready
 EXPOSE 8080
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=2)"]
+    CMD ["python", "-m", "platform_infra.healthcheck"]
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "-m", "platform_infra.asgi_runner"]

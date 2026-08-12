@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from collections import deque
 
+from platform_sdk.contracts.workflow import WorkflowConditionError, compile_workflow_condition
+
 from app.domain.models import (
     AgentDraftSpec,
     IssueSeverity,
@@ -13,6 +15,19 @@ from app.domain.models import (
 )
 
 _PROMPT_VARIABLE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
+_WORKFLOW_KINDS = {
+    "decision",
+    "planner",
+    "retrieval",
+    "rag",
+    "tool",
+    "action",
+    "answer",
+    "final",
+    "clarify",
+    "clarification",
+    "llm",
+}
 
 
 def validate_agent_spec(spec: AgentDraftSpec, policy: TenantPolicy) -> ValidationReport:
@@ -46,6 +61,7 @@ def validate_agent_spec(spec: AgentDraftSpec, policy: TenantPolicy) -> Validatio
         )
 
     adjacency: dict[str, set[str]] = {node_id: set() for node_id in node_set}
+    outgoing_conditions: dict[str, list[bool]] = {node_id: [] for node_id in node_set}
     for index, edge in enumerate(spec.graph.edges):
         if edge.from_node not in node_set or edge.to_node not in node_set:
             issues.append(
@@ -57,6 +73,59 @@ def validate_agent_spec(spec: AgentDraftSpec, policy: TenantPolicy) -> Validatio
             )
             continue
         adjacency[edge.from_node].add(edge.to_node)
+        try:
+            compile_workflow_condition(edge.condition)
+            has_condition = bool(edge.condition and edge.condition.strip())
+            outgoing_conditions[edge.from_node].append(has_condition)
+        except WorkflowConditionError as exc:
+            issues.append(
+                _error(
+                    "graph.condition_invalid",
+                    f"graph.edges[{index}].condition",
+                    str(exc),
+                )
+            )
+
+    roles = {
+        node.node_id: _workflow_role(node.kind, terminal=node.node_id in spec.graph.terminal_nodes)
+        for node in spec.graph.nodes
+    }
+    for index, node in enumerate(spec.graph.nodes):
+        if node.kind.strip().lower() not in _WORKFLOW_KINDS:
+            issues.append(
+                _error(
+                    "graph.unsupported_node_kind",
+                    f"graph.nodes[{index}].kind",
+                    f"Node kind '{node.kind}' is not executable by the governed Runtime.",
+                )
+            )
+    entry_role = roles.get(spec.graph.entrypoint)
+    if entry_role not in {"decision", "retrieval", "clarify"}:
+        issues.append(
+            _error(
+                "graph.invalid_entry_role",
+                "graph.entrypoint",
+                "Entrypoint must map to decision, retrieval, or clarify.",
+            )
+        )
+    for terminal in spec.graph.terminal_nodes:
+        if roles.get(terminal) not in {"answer", "clarify"}:
+            issues.append(
+                _error(
+                    "graph.invalid_terminal_role",
+                    "graph.terminal_nodes",
+                    "Terminal nodes must map to answer or clarify.",
+                )
+            )
+        if adjacency.get(terminal):
+            issues.append(
+                _error(
+                    "graph.terminal_has_successor",
+                    "graph.edges",
+                    "Terminal nodes cannot have outgoing edges.",
+                )
+            )
+    _validate_workflow_transitions(roles, adjacency, outgoing_conditions, issues)
 
     if spec.graph.entrypoint in node_set:
         reachable = _reachable(spec.graph.entrypoint, adjacency)
@@ -211,6 +280,79 @@ def _reachable(entrypoint: str, adjacency: dict[str, set[str]]) -> set[str]:
         visited.add(node)
         queue.extend(adjacency.get(node, set()) - visited)
     return visited
+
+
+def _workflow_role(kind: str, *, terminal: bool) -> str:
+    """将 Control Plane Graph 节点映射为 Runtime 受限工作流角色。"""
+    normalized = kind.strip().lower()
+    if normalized in {"decision", "planner"}:
+        return "decision"
+    if normalized in {"retrieval", "rag"}:
+        return "retrieval"
+    if normalized in {"tool", "action"}:
+        return "tool"
+    if normalized in {"answer", "final"}:
+        return "answer"
+    if normalized in {"clarify", "clarification"}:
+        return "clarify"
+    if normalized == "llm":
+        return "answer" if terminal else "decision"
+    return "unsupported"
+
+
+def _validate_workflow_transitions(
+    roles: dict[str, str],
+    adjacency: dict[str, set[str]],
+    outgoing_conditions: dict[str, list[bool]],
+    issues: list[ValidationIssue],
+) -> None:
+    """在发布期验证 Graph DSL 不会要求 Runtime 走越权或未实现的迁移。"""
+    allowed = {
+        "decision": {"retrieval", "tool", "answer", "clarify"},
+        "retrieval": {"decision", "answer", "clarify"},
+        "tool": {"decision", "answer", "clarify"},
+        "answer": set(),
+        "clarify": set(),
+    }
+    for node_id, targets in adjacency.items():
+        role = roles[node_id]
+        if role not in allowed:
+            continue
+        target_roles = {roles[target] for target in targets}
+        if not target_roles <= allowed[role]:
+            issues.append(
+                _error(
+                    "graph.transition_not_supported",
+                    "graph.edges",
+                    f"Node '{node_id}' has a transition Runtime cannot execute safely.",
+                )
+            )
+        if role in {"retrieval", "tool"} and len(targets) != 1:
+            issues.append(
+                _error(
+                    "graph.side_effect_successor_ambiguous",
+                    "graph.edges",
+                    f"{role} node '{node_id}' must have exactly one successor.",
+                )
+            )
+        if role == "decision" and not targets:
+            issues.append(
+                _error(
+                    "graph.decision_without_action",
+                    "graph.edges",
+                    f"Decision node '{node_id}' must declare at least one action.",
+                )
+            )
+        # Multiple choices need explicit conditions. A single unconditioned
+        # edge is deterministic; otherwise Runtime would have to guess.
+        if len(targets) > 1 and not all(outgoing_conditions[node_id]):
+            issues.append(
+                _error(
+                    "graph.ambiguous_conditions",
+                    "graph.edges",
+                    f"Branching node '{node_id}' requires a condition on every outgoing edge.",
+                )
+            )
 
 
 def _error(code: str, path: str, message: str) -> ValidationIssue:

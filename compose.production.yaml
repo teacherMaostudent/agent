@@ -36,9 +36,9 @@ x-rag-env: &rag-env
   RAG_INTERNAL_SERVICE_API_KEY: ${RAG_INTERNAL_SERVICE_API_KEY}
   RAG_MTLS_ENABLED: ${RAG_MTLS_ENABLED:-true}
   RAG_MTLS_CA_FILE: /run/secrets/agent_ca_pem
-  RAG_CONTROL_PLANE_BASE_URL: http://agent-control-plane:8080
+  RAG_CONTROL_PLANE_BASE_URL: https://agent-control-plane:8080
   RAG_CONTROL_PLANE_RUNTIME_KEY: ${CONTROL_PLANE_RUNTIME_API_KEY}
-  RAG_GOVERNANCE_BASE_URL: http://agent-governance:8081
+  RAG_GOVERNANCE_BASE_URL: https://agent-governance:8081
   RAG_GOVERNANCE_EVENT_KEY: ${GOVERNANCE_EVENT_INGESTION_KEY}
   RAG_GOVERNANCE_DELIVERY_MODE: cdc
   RAG_CONTEXT_SERVICE_BASE_URL: https://agent-context-service:8002
@@ -62,12 +62,51 @@ x-rag-service: &rag-service
   secrets:
     - agent_ca_pem
 
+x-runtime-env: &runtime-env
+  # Runtime 不继承 RAG 环境锚点；所有执行边界以 RUNTIME_ 前缀独立审计。
+  RUNTIME_ENVIRONMENT: production
+  RUNTIME_PERSISTENCE: postgres
+  RUNTIME_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/agent_platform
+  RUNTIME_DATABASE_SCHEMA: runtime_platform
+  RUNTIME_TEMPORAL_ENABLED: "true"
+  RUNTIME_TEMPORAL_TARGET: temporal:7233
+  RUNTIME_TEMPORAL_REGION_TARGETS: ${RUNTIME_TEMPORAL_REGION_TARGETS:-}
+  RUNTIME_TEMPORAL_WORKER_REGION: ${RUNTIME_TEMPORAL_WORKER_REGION:-}
+  RUNTIME_OIDC_ENABLED: "true"
+  RUNTIME_OIDC_ISSUER: ${OIDC_ISSUER}
+  RUNTIME_OIDC_AUDIENCE: ${OIDC_AUDIENCE}
+  RUNTIME_OIDC_JWKS_URL: ${OIDC_JWKS_URL}
+  RUNTIME_WORKLOAD_TOKEN_URL: ${OIDC_TOKEN_URL}
+  RUNTIME_WORKLOAD_CLIENT_ID: agent-runtime
+  RUNTIME_WORKLOAD_CLIENT_SECRET: ${RUNTIME_WORKLOAD_CLIENT_SECRET}
+  RUNTIME_WORKLOAD_AUDIENCE: ${OIDC_AUDIENCE}
+  RUNTIME_OPA_ENABLED: "true"
+  RUNTIME_OPA_BASE_URL: http://opa:8181
+  RUNTIME_SNAPSHOT_REQUIRED: "true"
+  RUNTIME_EXECUTOR_CATALOG_VERSION: ${RUNTIME_EXECUTOR_CATALOG_VERSION:-runtime-executor-catalog/v1}
+  RUNTIME_REQUIRE_SERVICE_AUTH: "true"
+  RUNTIME_SERVICE_API_KEY: ${RUNTIME_SERVICE_API_KEY}
+  RUNTIME_INTERNAL_SERVICE_API_KEY: ${RUNTIME_INTERNAL_SERVICE_API_KEY}
+  RUNTIME_MTLS_ENABLED: ${RUNTIME_MTLS_ENABLED:-true}
+  RUNTIME_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+  RUNTIME_CONTROL_PLANE_BASE_URL: https://agent-control-plane:8080
+  RUNTIME_CONTROL_PLANE_RUNTIME_KEY: ${CONTROL_PLANE_RUNTIME_API_KEY}
+  RUNTIME_GOVERNANCE_BASE_URL: https://agent-governance:8081
+  RUNTIME_GOVERNANCE_EVENT_KEY: ${GOVERNANCE_EVENT_INGESTION_KEY}
+  RUNTIME_GOVERNANCE_DELIVERY_MODE: cdc
+  RUNTIME_CONTEXT_SERVICE_BASE_URL: https://agent-context-service:8002
+  RUNTIME_RAG_QUERY_BASE_URL: https://rag-query-api:8003
+  RUNTIME_TOOL_GATEWAY_BASE_URL: http://tool-gateway:8090
+  RUNTIME_TOOL_GATEWAY_API_KEY: ${TOOL_GATEWAY_SERVICE_API_KEY}
+  RUNTIME_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
+  RUNTIME_LLM_GATEWAY_API_KEY: ${RUNTIME_LLM_GATEWAY_API_KEY}
+
 x-runtime-service: &runtime-service
   build:
     <<: *python-build
     dockerfile: agent-runtime/Dockerfile
   restart: unless-stopped
-  environment: *rag-env
+  environment: *runtime-env
   secrets:
     - agent_ca_pem
     - runtime_cert
@@ -100,10 +139,22 @@ secrets:
     file: ${CONTROL_PLANE_MTLS_CERT_FILE:-deploy/tls/control-plane.crt}
   control_plane_key:
     file: ${CONTROL_PLANE_MTLS_KEY_FILE:-deploy/tls/control-plane.key}
+  governance_cert:
+    file: ${GOVERNANCE_MTLS_CERT_FILE:-deploy/tls/agent-governance.crt}
+  governance_key:
+    file: ${GOVERNANCE_MTLS_KEY_FILE:-deploy/tls/agent-governance.key}
   tool_gateway_cert:
     file: ${TOOL_GATEWAY_MTLS_CERT_FILE:-deploy/tls/tool-gateway.crt}
   tool_gateway_key:
     file: ${TOOL_GATEWAY_MTLS_KEY_FILE:-deploy/tls/tool-gateway.key}
+  agent_lab_cert:
+    file: ${AGENT_LAB_MTLS_CERT_FILE:-deploy/tls/agent-lab.crt}
+  agent_lab_key:
+    file: ${AGENT_LAB_MTLS_KEY_FILE:-deploy/tls/agent-lab.key}
+  llm_gateway_cert:
+    file: ${LLM_GATEWAY_MTLS_CERT_FILE:-deploy/tls/llm-gateway.crt}
+  llm_gateway_key:
+    file: ${LLM_GATEWAY_MTLS_KEY_FILE:-deploy/tls/llm-gateway.key}
 
 services:
   postgres:
@@ -214,6 +265,50 @@ services:
       MODEL_LAB_REQUIRE_APPROVED_MODEL_CARD: "true"
     ports: ["8091:8091"]
 
+  agent-lab:
+    build:
+      <<: *python-build
+      dockerfile: agent-lab/Dockerfile
+    restart: unless-stopped
+    environment:
+      AGENT_LAB_ENVIRONMENT: production
+      AGENT_LAB_DATABASE_BACKEND: postgres
+      AGENT_LAB_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/agent_platform
+      AGENT_LAB_DATABASE_SCHEMA: agent_lab
+      AGENT_LAB_CONTROL_PLANE_BASE_URL: https://agent-control-plane:8080
+      AGENT_LAB_RUNTIME_BASE_URL: https://agent-runtime:8001
+      AGENT_LAB_GOVERNANCE_BASE_URL: https://agent-governance:8081
+      AGENT_LAB_CONTROL_PLANE_RUNTIME_KEY: ${CONTROL_PLANE_RUNTIME_API_KEY}
+      AGENT_LAB_GOVERNANCE_AUDITOR_KEY: ${GOVERNANCE_AUDITOR_API_KEY}
+      AGENT_LAB_SERVICE_API_KEY: ${AGENT_LAB_SERVICE_API_KEY}
+      AGENT_LAB_TEMPORAL_ENABLED: "true"
+      AGENT_LAB_TEMPORAL_TARGET: temporal:7233
+      AGENT_LAB_TEMPORAL_TASK_QUEUE: ${AGENT_LAB_TEMPORAL_TASK_QUEUE:-agent-lab-experiments}
+      AGENT_LAB_OIDC_ENABLED: "true"
+      AGENT_LAB_OIDC_ISSUER: ${OIDC_ISSUER}
+      AGENT_LAB_OIDC_AUDIENCE: ${OIDC_AUDIENCE}
+      AGENT_LAB_OIDC_JWKS_URL: ${OIDC_JWKS_URL}
+      AGENT_LAB_WORKLOAD_TOKEN_URL: ${OIDC_TOKEN_URL}
+      AGENT_LAB_WORKLOAD_CLIENT_ID: agent-lab
+      AGENT_LAB_WORKLOAD_CLIENT_SECRET: ${AGENT_LAB_WORKLOAD_CLIENT_SECRET}
+      AGENT_LAB_WORKLOAD_AUDIENCE: ${OIDC_AUDIENCE}
+      AGENT_LAB_MTLS_ENABLED: "true"
+      AGENT_LAB_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      AGENT_LAB_MTLS_CERT_FILE: /run/secrets/agent_lab_cert
+      AGENT_LAB_MTLS_KEY_FILE: /run/secrets/agent_lab_key
+      PLATFORM_MTLS_SERVER_ENABLED: "true"
+      PLATFORM_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      PLATFORM_MTLS_CERT_FILE: /run/secrets/agent_lab_cert
+      PLATFORM_MTLS_KEY_FILE: /run/secrets/agent_lab_key
+    secrets: [agent_ca_pem, agent_lab_cert, agent_lab_key]
+    depends_on: [postgres, temporal, agent-control-plane, agent-runtime, agent-governance]
+
+  agent-lab-worker:
+    extends:
+      service: agent-lab
+    command: agent-lab-temporal-worker
+    depends_on: [agent-lab, temporal]
+
   agent-control-plane:
     build:
       <<: *python-build
@@ -238,6 +333,9 @@ services:
       CONTROL_PLANE_TEMPORAL_TARGET: temporal:7233
       CONTROL_PLANE_TOOL_CATALOG_REQUIRED: "true"
       CONTROL_PLANE_TOOL_CATALOG_PATH: /service/tool-catalog/tools.json
+      CONTROL_PLANE_RUNTIME_EXECUTOR_CATALOG_PATH: /service/runtime-catalog/runtime-executors.json
+      CONTROL_PLANE_RUNTIME_EXECUTOR_CATALOG_REQUIRED: "true"
+      CONTROL_PLANE_RUNTIME_EXECUTOR_CATALOG_SERVICE_API_KEY: ${RUNTIME_SERVICE_API_KEY}
       CONTROL_PLANE_CONTRACTS_SCHEMA_DIR: /service/platform-contracts/schemas
       CONTROL_PLANE_AGENT_RELEASE_QUALITY_GATE_REQUIRED: "true"
       CONTROL_PLANE_ENFORCE_ADMIN_ROLE: "true"
@@ -246,11 +344,18 @@ services:
       CONTROL_PLANE_GOVERNANCE_AUDITOR_API_KEY: ${GOVERNANCE_AUDITOR_API_KEY}
       CONTROL_PLANE_MODEL_LAB_BASE_URL: http://model-lab:8091
       CONTROL_PLANE_MODEL_LAB_REQUIRED: "true"
+      CONTROL_PLANE_AGENT_LAB_BASE_URL: https://agent-lab:8092
+      CONTROL_PLANE_AGENT_LAB_SERVICE_API_KEY: ${AGENT_LAB_SERVICE_API_KEY}
+      CONTROL_PLANE_AGENT_LAB_REQUIRED: "true"
       CONTROL_PLANE_LLM_GATEWAY_ADMIN_PASSWORD: ${LLM_ADMIN_PASSWORD}
       CONTROL_PLANE_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
-      CONTROL_PLANE_GOVERNANCE_BASE_URL: http://agent-governance:8081
+      CONTROL_PLANE_GOVERNANCE_BASE_URL: https://agent-governance:8081
       CONTROL_PLANE_OTEL_ENABLED: "true"
       CONTROL_PLANE_OTEL_ENDPOINT: http://otel-collector:4318/v1/traces
+      PLATFORM_MTLS_SERVER_ENABLED: "true"
+      PLATFORM_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      PLATFORM_MTLS_CERT_FILE: /run/secrets/control_plane_cert
+      PLATFORM_MTLS_KEY_FILE: /run/secrets/control_plane_key
     secrets:
       - agent_ca_pem
       - control_plane_cert
@@ -258,6 +363,7 @@ services:
     depends_on: [postgres, temporal, otel-collector]
     volumes:
       - ./tool-gateway/config/tools.json:/service/tool-catalog/tools.json:ro
+      - ./agent-control-plane/config/runtime-executors.json:/service/runtime-catalog/runtime-executors.json:ro
       - ./platform-contracts/schemas:/service/platform-contracts/schemas:ro
 
   control-plane-worker:
@@ -281,6 +387,10 @@ services:
       GOVERNANCE_WORKLOAD_CLIENT_ID: agent-governance
       GOVERNANCE_WORKLOAD_CLIENT_SECRET: ${GOVERNANCE_WORKLOAD_CLIENT_SECRET}
       GOVERNANCE_WORKLOAD_AUDIENCE: ${OIDC_AUDIENCE}
+      GOVERNANCE_MTLS_ENABLED: "true"
+      GOVERNANCE_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      GOVERNANCE_MTLS_CERT_FILE: /run/secrets/governance_cert
+      GOVERNANCE_MTLS_KEY_FILE: /run/secrets/governance_key
       GOVERNANCE_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       GOVERNANCE_CDC_REQUIRED: "true"
       GOVERNANCE_WORM_BUCKET: ${AUDIT_BUCKET}
@@ -301,6 +411,11 @@ services:
       GOVERNANCE_JUDGE_CALIBRATION_REQUIRED: "true"
       GOVERNANCE_OTEL_ENABLED: "true"
       GOVERNANCE_OTEL_ENDPOINT: http://otel-collector:4318/v1/traces
+      PLATFORM_MTLS_SERVER_ENABLED: "true"
+      PLATFORM_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      PLATFORM_MTLS_CERT_FILE: /run/secrets/governance_cert
+      PLATFORM_MTLS_KEY_FILE: /run/secrets/governance_key
+    secrets: [agent_ca_pem, governance_cert, governance_key]
     depends_on: [postgres, kafka, otel-collector]
     volumes:
       - ./platform-contracts/schemas:/service/platform-contracts/schemas:ro
@@ -316,12 +431,10 @@ services:
   agent-runtime:
     <<: *runtime-service
     environment:
-      <<: *rag-env
-      RAG_WORKLOAD_CLIENT_ID: agent-runtime
-      RAG_WORKLOAD_CLIENT_SECRET: ${RUNTIME_WORKLOAD_CLIENT_SECRET}
-      RAG_MTLS_CERT_FILE: /run/secrets/runtime_cert
-      RAG_MTLS_KEY_FILE: /run/secrets/runtime_key
-      PLATFORM_MTLS_SERVER_ENABLED: ${RAG_MTLS_ENABLED:-true}
+      <<: *runtime-env
+      RUNTIME_MTLS_CERT_FILE: /run/secrets/runtime_cert
+      RUNTIME_MTLS_KEY_FILE: /run/secrets/runtime_key
+      PLATFORM_MTLS_SERVER_ENABLED: ${RUNTIME_MTLS_ENABLED:-true}
       PLATFORM_MTLS_CA_FILE: /run/secrets/agent_ca_pem
       PLATFORM_MTLS_CERT_FILE: /run/secrets/runtime_cert
       PLATFORM_MTLS_KEY_FILE: /run/secrets/runtime_key
@@ -438,7 +551,7 @@ services:
       TOOL_GATEWAY_ADMIN_API_KEY: ${TOOL_GATEWAY_ADMIN_API_KEY}
       TOOL_GATEWAY_ALLOW_PRIVATE_NETWORKS: "true"
       TOOL_GATEWAY_CONTRACTS_SCHEMA_DIR: /service/platform-contracts/schemas
-      TOOL_GATEWAY_GOVERNANCE_BASE_URL: http://agent-governance:8081
+      TOOL_GATEWAY_GOVERNANCE_BASE_URL: https://agent-governance:8081
       TOOL_GATEWAY_GOVERNANCE_EVENT_KEY: ${GOVERNANCE_EVENT_INGESTION_KEY}
       TOOL_GATEWAY_GOVERNANCE_DELIVERY_MODE: cdc
       TOOL_GATEWAY_OTEL_ENABLED: "true"
@@ -471,15 +584,20 @@ services:
       ADMIN_PASSWORD: ${LLM_ADMIN_PASSWORD}
       OTEL_SDK_DISABLED: "false"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
-      GOVERNANCE_BASE_URL: http://agent-governance:8081
+      GOVERNANCE_BASE_URL: https://agent-governance:8081
       GOVERNANCE_AUDITOR_API_KEY: ${GOVERNANCE_AUDITOR_API_KEY}
       GOVERNANCE_EVENT_INGESTION_KEY: ${GOVERNANCE_EVENT_INGESTION_KEY}
-      CONTROL_PLANE_BASE_URL: http://agent-control-plane:8080
+      CONTROL_PLANE_BASE_URL: https://agent-control-plane:8080
       CONTROL_PLANE_ADMIN_API_KEY: ${CONTROL_PLANE_ADMIN_API_KEY}
+      PLATFORM_SERVICES_MTLS_ENABLED: "true"
+      PLATFORM_SERVICES_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      PLATFORM_SERVICES_MTLS_CERT_FILE: /run/secrets/llm_gateway_cert
+      PLATFORM_SERVICES_MTLS_KEY_FILE: /run/secrets/llm_gateway_key
       WORKLOAD_IDENTITY_TOKEN_URL: ${OIDC_TOKEN_URL}
       WORKLOAD_IDENTITY_CLIENT_ID: llm-gateway
       WORKLOAD_IDENTITY_CLIENT_SECRET: ${LLM_GATEWAY_WORKLOAD_CLIENT_SECRET}
       WORKLOAD_IDENTITY_AUDIENCE: ${OIDC_AUDIENCE}
+    secrets: [agent_ca_pem, llm_gateway_cert, llm_gateway_key]
     depends_on: [postgres, redis, opa, otel-collector]
 
 volumes:
@@ -487,3 +605,4 @@ volumes:
   redis-data:
   kafka-data:
   opensearch-data:
+  agent-lab-data:

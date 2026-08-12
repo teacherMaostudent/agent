@@ -1,11 +1,17 @@
 ·   # Agent Platform
 
-## Model lifecycle extension
+> 文档状态：本 README 提供快速入口；以 [架构总览](docs/architecture-overview.md) 和
+> [部署指南](docs/deployment-guide.md) 作为当前服务边界、实验链路与部署条件的权威说明。
 
-`model-lab` is intentionally an offline experiment service rather than part of
-the online Agent Runtime. It registers reproducible LoRA/QLoRA, DPO/GRPO and
-distributed-training plans, evaluation results and model cards. Only approved
-artifacts should be published as Ollama/vLLM routes through Control Plane.
+## 离线实验服务
+
+`model-lab` 是离线模型实验服务：登记可复现的 LoRA/QLoRA、DPO/GRPO、分布式训练计划、
+评测结果与模型卡。只有通过评测的模型工件才可由 Control Plane 作为 Ollama/vLLM 路由候选。
+
+`agent-lab` 是离线 Agent 回放编排服务：冻结 Control Plane 发布快照，对受限用例调用 Agent
+Runtime，并将 Judge 与质量门禁委托给 Governance。它不训练模型、不承接线上用户流量，也不直接
+发布 Agent；Control Plane 只接受其已通过门禁的 release evidence。详见
+[Agent Lab](agent-lab/README.md)。
 
 RAG ingestion treats image OCR as labelled derived evidence: it is searchable,
 but keeps provenance and visual-review metadata while the original artifact
@@ -17,8 +23,8 @@ Production audit events use PostgreSQL Transactional Outbox plus Debezium/Kafka
 Connect.  The business services write only their local transaction; the
 `debezium-register` deployment job upserts and verifies the connector, and
 Governance consumes the canonical Kafka topic with idempotency and DLQ handling.
-See [CDC/Kafka Connect runbook](docs/cdc-kafka-connect-runbook.md) and run
-`py -3.12 scripts/production_readiness.py` before every production rollout.
+部署变量、Debezium Connector 注册与上线检查请参阅
+[部署指南](docs/deployment-guide.md)。
 
 面向企业知识问答、受控业务自动化和合规审计的多服务 Agent 平台。仓库采用 monorepo
 组织共享契约、部署文件和联调脚本；运行时仍保持明确的服务边界，因此可以按负载、数据域和
@@ -44,6 +50,10 @@ flowchart LR
     LLM --> Gov
     CP --> Temporal["Temporal Cluster"]
     Runtime --> Temporal
+    AgentLab["Agent Lab（离线回放）"] --> CP
+    AgentLab --> Runtime
+    AgentLab --> Gov
+    ModelLab["Model Lab（离线模型实验）"] --> CP
     Contracts["platform-contracts / Schema Registry"] --> CP
     Contracts --> Tool
     Contracts --> Gov
@@ -54,12 +64,15 @@ flowchart LR
 | 服务 | 核心职责 | 明确不负责 | 主要代码位置 |
 | --- | --- | --- | --- |
 | Control Plane | 定义 Agent、版本、发布、发布快照、质量门禁与发布编排 | 在线执行 Agent Loop | `agent-control-plane/` |
-| Agent Runtime | 状态机、LangGraph、Harness、规划、预算、审批恢复与运行编排 | 直接管理业务数据或模型厂商协议 | `rag-agent-service/apps/agent_runtime/` |
+| Agent Runtime | 状态机、LangGraph、Harness、规划、预算、审批恢复与运行编排 | 直接管理业务数据或模型厂商协议 | `agent-runtime/` |
 | Context Service | 会话记忆、证据组织、角色/时间/相关性/可信度排序、Token 预算 | 直接执行业务副作用 | `rag-agent-service/apps/agent_context_service/` |
 | RAG Service | 文档摄取、索引、ACL 检索、混合召回、重排和证据返回 | 决定 Agent 的下一步动作 | `rag-agent-service/apps/rag_query_api/`、`apps/ingestion_*` |
 | LLM Gateway | 多供应商调用、模型路由、限流、熔断、成本与模型策略 | 管理业务流程和工具权限 | `llm-gateway/` |
 | Tool Gateway | 工具目录、参数校验、权限、审批、幂等与安全执行 | 让模型绕过治理直接访问业务系统 | `tool-gateway/` |
 | Governance | 审计、评测、合规工作流、问题发现与不可变证据 | 同步阻塞主业务流程 | `agent-governance/` |
+
+`model-lab/` 与 `agent-lab/` 是两个离线服务，不计入七个线上逻辑服务：前者研究模型训练与
+模型卡，后者研究 Agent 快照回放、失败样本与基线比较。
 
 共享目录：
 
@@ -74,12 +87,15 @@ flowchart LR
    Header；业务代码不会信任调用方自行伪造的权限 Header。
 2. Runtime 向 Control Plane 解析 Agent 发布版本，取得不可变发布快照。快照包含模型、知识源、
    工具版本、预算、审批和输出约束。
-3. Snapshot Compiler 将快照编译成 Runtime 可执行计划；配置不完整、能力越权或工具版本不存在时
-   在运行前失败。
+3. Control Plane 在发布事务内将快照编译为带内容哈希的 `runtime-snapshot/v1` Artifact；Runtime 只加载
+   并校验该 Artifact。Snapshot Compiler 产出执行契约和受限 `workflow-policy/v1`；配置不完整、未知节点类型、
+   非法节点迁移、能力越权或工具版本不存在时在运行前失败。发布 Graph 只能声明受控迁移，不能上传
+   任意代码。
 4. Context Service 读取会话消息，并按角色、时间、相关性与来源可信度进行排序。需要知识时调用
    RAG Service；若检索被声明为可选且不可用，则显式标记为 `memory-only` 降级。
-5. Runtime 的 LangGraph 先执行规划，再在发布计划的允许范围内循环决策、检索、调用工具和观察。
-   Harness 是统一执行门面，LangGraph 仍是状态机与中断恢复实现。
+5. Harness 先解析 Release、加载 Artifact、创建执行上下文并按已部署的 Profile 选择执行器。短任务使用
+   `simple/v1`，默认 Agent Loop 使用 `declarative-langgraph/v1`，长期可靠任务使用 `temporal-workflow/v1`。
+   后两者由 LangGraph 在发布计划允许范围内循环规划、决策、检索、调用工具和观察；Harness 不承载这些业务能力。
 6. LLM Gateway 负责实际模型调用与路由。Tool Gateway 负责工具输入/输出 Schema、租户、权限、
    风险审批、一次性消费和幂等键。
 7. `controlled_scan` 只可扫描预注册范围内的日志、源码或文本文件；结果会脱敏、截断，并在进入
@@ -93,9 +109,10 @@ Control Plane 管理草稿，Runtime 只消费发布快照。发布时依次完�
 
 1. Agent Spec 静态校验；
 2. Tool Catalog Schema 校验与工具版本存在性校验；
-3. Governance 质量门禁；
-4. 生成不可变 Snapshot 和 Outbox 事件；
-5. 通过 CAS/Saga 推广到目标环境。
+3. laboratory 环境由 Agent Lab 冻结快照、回放并取得 Governance Gate；
+4. Control Plane 校验实验、Agent、版本、Gate 与快照的一致性；
+5. 生成不可变 Snapshot 和 Outbox 事件；
+6. 通过 CAS/Saga 推广到目标环境。
 
 这样，某次运行永远可以用 `snapshot_id` 还原“当时允许哪些模型、知识源和工具”，而不会受之后
 草稿修改影响。
@@ -114,7 +131,9 @@ Control Plane 管理草稿，Runtime 只消费发布快照。发布时依次完�
 ## Temporal 与跨区域执行
 
 Temporal Cluster 是工作流编排基础设施，不是七服务之一。Control Plane 使用它编排发布工作流，
-Runtime 使用它持久化长运行 Agent 执行。
+Runtime 使用它持久化长运行 Agent 执行。`temporal-workflow/v1` 仅可由异步 `POST /runs` 创建；若执行进入
+`WAITING_APPROVAL`，Workflow 保持存活，审批恢复接口发送 Signal，Worker 从同一 LangGraph checkpoint 继续，
+而不是重新规划或重新创建一次运行。
 
 Runtime 以 `agent-run/<tenant>/<run>` 生成全局幂等 Workflow ID，并使用区域化 Worker Queue。
 提交失败时按首选区域、主区域和候选区域顺序尝试；同一个 Workflow ID 避免跨区域故障转移产生
@@ -158,6 +177,11 @@ Governance Consumer、RAG Ingestion Worker 与 Runtime Worker 分开部署，避
 3. Tool 审批重放与重复提交验证；
 4. Temporal 区域故障转移与 Worker 恢复演练；
 5. Trace、Metrics、SLO 和告警恢复演练。
+
+注意：`compose.production.yaml` 是生产配置起点，不等同于所有服务在实际基础设施中已完成 HA 验收。Agent Lab
+已提供 PostgreSQL Repository、Temporal Worker、数据库租约、指数重试、持久化 DLQ 与 OIDC/mTLS 的生产代码路径；
+本地模式仍可使用 SQLite 和同步队列。上线时仍须由部署侧落实 NetworkPolicy、备份、监控告警、对象存储归档、
+数据保留与跨区域故障恢复演练。
 
 ## 贡献约定
 

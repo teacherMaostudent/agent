@@ -16,7 +16,13 @@ from agent_runtime_service.agent.graph import AgentGraph
 from agent_runtime_service.core.config import get_settings
 from agent_runtime_service.runtime.async_jobs import AsyncRunQueue
 from agent_runtime_service.runtime.budget import BudgetGuard
-from agent_runtime_service.runtime.harness import AgentHarness
+from agent_runtime_service.runtime.catalog import ExecutorCatalog
+from agent_runtime_service.runtime.harness import (
+    AgentHarness,
+    DurableExecutor,
+    GraphExecutor,
+    SimpleExecutor,
+)
 from agent_runtime_service.runtime.integration import (
     ControlPlaneClient,
     GovernanceOutboxPublisher,
@@ -116,10 +122,15 @@ class AgentRuntimeContainer:
             checkpointer=self.checkpointer,
             cancellation_checker=self._is_cancelled,
         )
-        self.agent_harness = AgentHarness(graph)
-        # Compatibility alias for integrations that still access the graph.
-        # New execution paths should use agent_harness.
-        self.agent_graph = self.agent_harness
+        # 执行器目录只在启动期装配; 请求路径不能注册或替换业务执行器。
+        graph_executor = GraphExecutor(graph)
+        self.executor_catalog = ExecutorCatalog(
+            {
+                "simple/v1": SimpleExecutor(),
+                "declarative-langgraph/v1": graph_executor,
+                "temporal-workflow/v1": DurableExecutor(graph_executor),
+            }
+        )
         self.control_plane = (
             ControlPlaneClient(
                 self.settings.control_plane_base_url,
@@ -142,6 +153,8 @@ class AgentRuntimeContainer:
             self.settings.governance_event_key,
             self.settings.service_http_timeout,
             self.workload_identity,
+            self.settings.governance_delivery_mode,
+            mtls=self._mtls_options(),
         )
         self.async_runs = None
         if build_async_queue:
@@ -155,6 +168,13 @@ class AgentRuntimeContainer:
                 if self.settings.temporal_enabled
                 else AsyncRunQueue(self.settings.runtime_jobs_path, self._execute_submission)
             )
+        self.agent_harness = AgentHarness(
+            release_resolver=self.control_plane,
+            executor_resolver=self.executor_catalog,
+            fallback_model=self.settings.agent_model,
+            snapshot_required=self.settings.snapshot_required,
+            cancel_execution=self._cancel_execution,
+        )
 
     def close(self) -> None:
         """按依赖反向顺序关闭队列、客户端、存储和检查点连接。"""
@@ -174,6 +194,15 @@ class AgentRuntimeContainer:
         run = self.run_store.get(tenant_id, run_id)
         return bool(run and run.cancel_requested)
 
+    def _cancel_execution(self, tenant_id: str, run_id: str):
+        """先持久化协作取消，再通知对应队列/Temporal Workflow，避免长期 Workflow 残留。"""
+        run = self.run_store.cancel(tenant_id, run_id)
+        if self.async_runs is not None:
+            queued = self.async_runs.cancel(tenant_id, run_id)
+            if run is None:
+                return queued
+        return run
+
     def _mtls_options(self) -> dict:
         """为全部内部 HTTP 客户端连接生成 Runtime 专属 mTLS 身份配置。"""
         return mtls_httpx_options(
@@ -187,11 +216,26 @@ class AgentRuntimeContainer:
         """让异步 Worker 复用唯一同步运行入口，防止 API 与 Worker 状态机分叉。"""
         from types import SimpleNamespace
 
-        from platform_sdk.contracts.runtime_api import AgentRunRequest
+        from platform_sdk.contracts.runtime_api import AgentResumeRequest, AgentRunRequest
 
-        from agent_runtime_service.service_api.runtime_api import run_agent
+        from agent_runtime_service.service_api.runtime_api import resume_run, run_agent
 
-        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(container=self)))
+        # Temporal 载荷仅来自已鉴权的 Runtime API 提交; 构造内部已验证身份, 避免 Worker
+        # 因未经过 ASGI OIDC middleware 而退回调用方 Header 或错误拒绝。
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(container=self)),
+            scope={"auth.claims": {"worker": "agent-runtime"}},
+        )
+        if submission.get("operation") == "resume":
+            approval = submission.get("approval") or {}
+            return resume_run(
+                submission["run_id"],
+                AgentResumeRequest.model_validate(approval),
+                request,
+                x_tenant_id=submission["tenant_id"],
+                x_user_id=str(approval.get("decided_by") or submission["user_id"]),
+                _temporal_worker_execution=True,
+            )
         return run_agent(
             AgentRunRequest.model_validate(submission["payload"]),
             request,
@@ -201,4 +245,6 @@ class AgentRuntimeContainer:
             x_request_id=submission["request_id"],
             x_trace_id=submission["trace_id"],
             x_run_id=submission["run_id"],
+            _temporal_worker_execution=True,
+            _release_resolution=submission.get("release_resolution"),
         )

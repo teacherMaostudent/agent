@@ -10,6 +10,7 @@ from agent_runtime_service.agent.models import AgentAction, AgentDecision
 from agent_runtime_service.runtime.budget import BudgetGuard
 from agent_runtime_service.runtime.models import ApprovalResume, RuntimeBudget
 from agent_runtime_service.runtime.planner import HeuristicSemanticAnalyzer, RuntimePlanner
+from agent_runtime_service.runtime.snapshot_compiler import compile_snapshot
 
 
 class EmptyContext:
@@ -130,6 +131,44 @@ def test_llm_call_limit_is_enforced_outside_the_decision_engine() -> None:
     assert result.status == "LIMIT_EXCEEDED"
     assert result.termination_reason == "MAX_LLM_CALLS"
     assert len(engine.decisions) == 1
+
+
+def test_published_workflow_blocks_model_action_not_declared_by_graph() -> None:
+    """模型建议检索不能绕过发布 Graph 中仅允许回答的受限迁移。"""
+    published = {
+        "schema_version": "1.0",
+        "tenant_id": "tenant-a",
+        "agent_id": "agent-a",
+        "spec": {
+            "graph": {
+                "graph_id": "answer-only",
+                "entrypoint": "decide",
+                "terminal_nodes": ["answer"],
+                "nodes": [
+                    {"node_id": "decide", "kind": "decision"},
+                    {"node_id": "answer", "kind": "answer"},
+                ],
+                "edges": [{"from_node": "decide", "to_node": "answer"}],
+            },
+            "prompt": {"system_template": "Answer {{task}}", "variables": ["task"]},
+            "model_policy": {
+                "default_route": "primary",
+                "routes": [{"route_name": "primary", "models": ["model-a"]}],
+            },
+        },
+    }
+    current = state("Question")
+    current["agent_snapshot"] = published
+    current["compiled_plan"] = compile_snapshot(
+        published, tenant_id="tenant-a", agent_id="agent-a", fallback_model="model-a"
+    ).model_dump(mode="json")
+    engine = SequenceEngine([AgentDecision(action=AgentAction.RETRIEVE, query="forbidden")])
+    graph = AgentGraph(engine, context_client=EmptyContext())
+
+    result = graph.run(current, "thread-workflow-policy")
+
+    assert result.status == "LIMIT_EXCEEDED"
+    assert result.termination_reason == "WORKFLOW_ACTION_FORBIDDEN"
 
 
 def test_downstream_attempt_budget_blocks_calls_before_execution() -> None:

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
 
 from fastapi.testclient import TestClient
+
+from app.infrastructure.runtime_executor_catalog import RuntimeExecutorCatalog
 
 
 def _create_agent(
@@ -55,6 +58,40 @@ def _release(
     return response.json()
 
 
+def test_release_requires_runtime_cluster_capability_when_catalog_is_enabled(
+    client: TestClient,
+    headers: dict[str, str],
+    valid_spec: dict[str, object],
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """发布必须同时匹配目录和实例能力；静态 Profile 声明不能替代运行实例证明。"""
+    _create_agent(client, headers, valid_spec)
+    version = _publish(client, headers, "1.0.0")
+    catalog_path = tmp_path / "runtime-executors.json"
+    catalog_path.write_text(
+        '{"version":"runtime-executor-catalog/v1","clusters":[{"cluster_id":"prod-a",'
+        '"environment":"production","base_url":"http://runtime-a",'
+        '"executor_profiles":["declarative-langgraph/v1"]}]}',
+        encoding="utf-8",
+    )
+    catalog = RuntimeExecutorCatalog(catalog_path, required=True, timeout=1, service_key="key")
+    monkeypatch.setattr(
+        catalog,
+        "_capabilities",
+        lambda _: {
+            "catalog_version": "runtime-executor-catalog/v1",
+            "executor_profiles": ["declarative-langgraph/v1"],
+        },
+    )
+    client.app.state.container.service._runtime_executor_catalog = catalog
+
+    release = _release(client, headers, str(version["version_id"]), 100)
+
+    assert release["runtime_executor_catalog_version"] == "runtime-executor-catalog/v1"
+    assert release["runtime_executor_cluster_id"] == "prod-a"
+
+
 def test_publish_snapshot_is_immutable_and_tenant_isolated(
     client: TestClient,
     headers: dict[str, str],
@@ -71,6 +108,11 @@ def test_publish_snapshot_is_immutable_and_tenant_isolated(
     version = _publish(client, headers, "1.0.0")
     assert version["snapshot"]["agent_version"] == "customer-service:1.0.0"
     assert version["snapshot"]["knowledge_version"].startswith("kb:")
+    assert version["snapshot"]["runtime_artifact"]["schema_version"] == "runtime-snapshot/v1"
+    assert (
+        version["snapshot"]["runtime_artifact"]["plan"]["executor_profile"]
+        == "declarative-langgraph/v1"
+    )
 
     changed_spec = deepcopy(valid_spec)
     changed_spec["display_name"] = "Customer Service Agent vNext"
@@ -299,3 +341,43 @@ def test_agent_release_records_governance_quality_gate(
     assert response.status_code == 201, response.text
     assert response.json()["quality_gate_id"] == "gate-3"
     assert response.json()["quality_gate_metrics"]["averageScore"] == 94
+
+
+def test_agent_release_requires_matching_agent_lab_evidence(
+    client: TestClient,
+    headers: dict[str, str],
+    valid_spec: dict[str, object],
+) -> None:
+    """验证正式发布只能引用同 Agent、同版本、同 Judge Run 的 Agent Lab 实验。"""
+    _create_agent(client, headers, valid_spec)
+    version = _publish(client, headers, "3.1.0")
+
+    async def passed_gate(tenant_id: str, run_id: str) -> dict:
+        return {"id": "gate-lab", "passed": True, "metrics": {}, "reasons": []}
+
+    async def evidence(tenant_id: str, experiment_id: str) -> dict:
+        assert experiment_id == "alx-approved"
+        return {
+            "agentId": "customer-service",
+            "versionId": version["version_id"],
+            "environment": "laboratory",
+            "judgeRunId": "judge-lab-1",
+        }
+
+    container = client.app.state.container
+    container.governance_quality.quality_gate = passed_gate
+    container.agent_lab.approved_release_evidence = evidence
+    container.service._require_agent_lab = True
+    response = client.post(
+        "/v1/agents/customer-service/releases",
+        headers=headers,
+        json={
+            "version_id": version["version_id"],
+            "environment": "production",
+            "quality_gate_run_id": "judge-lab-1",
+            "agent_lab_experiment_id": "alx-approved",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["agent_lab_experiment_id"] == "alx-approved"

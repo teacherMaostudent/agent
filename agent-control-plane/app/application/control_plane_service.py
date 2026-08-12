@@ -13,6 +13,11 @@ import sqlite3
 from typing import Any
 from uuid import uuid4
 
+from platform_sdk.contracts.runtime_snapshot import (
+    RuntimeSnapshotCompileError,
+    compile_runtime_snapshot,
+)
+
 from app.application.exceptions import (
     ConflictError,
     DraftValidationError,
@@ -58,13 +63,19 @@ class ControlPlaneService:
         *,
         governance=None,
         require_quality_gate: bool = False,
+        agent_lab=None,
+        require_agent_lab: bool = False,
         tool_catalog_validator=None,
+        runtime_executor_catalog=None,
     ) -> None:
         """注入持久化和发布前置校验依赖；依赖失效时拒绝产生不可审计发布。"""
         self._repository = repository
         self._governance = governance
         self._require_quality_gate = require_quality_gate
+        self._agent_lab = agent_lab
+        self._require_agent_lab = require_agent_lab
         self._tool_catalog_validator = tool_catalog_validator
+        self._runtime_executor_catalog = runtime_executor_catalog
 
     async def create_agent(
         self,
@@ -232,6 +243,28 @@ class ControlPlaneService:
             spec=agent.draft,
             published_at=now,
         )
+        # 发布事务冻结 Runtime 可执行产物; 请求运行时不得再解释可变草稿或重新编译。
+        try:
+            artifact = compile_runtime_snapshot(
+                snapshot.model_dump(mode="json"),
+                tenant_id=identity.tenant_id,
+                agent_id=agent_id,
+            )
+        except RuntimeSnapshotCompileError as exc:
+            raise DraftValidationError(
+                ValidationReport(
+                    valid=False,
+                    issues=[{
+                        "severity": "error",
+                        "code": "runtime_snapshot.compile_failed",
+                        "path": "runtime_executor",
+                        "message": str(exc),
+                    }],
+                )
+            ) from exc
+        snapshot = snapshot.model_copy(
+            update={"runtime_artifact": artifact.model_dump(mode="json")}
+        )
         content_hash = _hash(snapshot.model_dump(mode="json"))
         version = AgentVersion(
             tenant_id=identity.tenant_id,
@@ -295,6 +328,42 @@ class ControlPlaneService:
         """创建发布记录并原子写入 Outbox，且在可见前通过质量门禁与灰度约束。"""
         version = await self.get_version(identity, agent_id, request.version_id)
         gate: dict[str, Any] = {}
+        agent_lab_evidence: dict[str, Any] = {}
+        runtime_executor: dict[str, Any] = {}
+        if self._runtime_executor_catalog is not None:
+            try:
+                runtime_executor = self._runtime_executor_catalog.validate(
+                    request.environment, version.snapshot.spec.runtime_executor
+                )
+            except ValueError as exc:
+                raise PolicyViolationError(
+                    f"Runtime executor availability rejected release: {exc}"
+                ) from exc
+        if self._require_agent_lab and not request.agent_lab_experiment_id:
+            raise PolicyViolationError(
+                "A passing Agent Lab experiment is required for Agent release."
+            )
+        if request.agent_lab_experiment_id:
+            if self._agent_lab is None:
+                raise InvalidStateError("Agent Lab client is unavailable.")
+            try:
+                agent_lab_evidence = await self._agent_lab.approved_release_evidence(
+                    identity.tenant_id, request.agent_lab_experiment_id
+                )
+            except Exception as exc:
+                raise PolicyViolationError(f"Agent Lab evidence rejected release: {exc}") from exc
+            if agent_lab_evidence.get("agentId") != agent_id:
+                raise PolicyViolationError("Agent Lab experiment belongs to another Agent.")
+            if agent_lab_evidence.get("versionId") != version.version_id:
+                raise PolicyViolationError("Agent Lab experiment was not run against this version.")
+            if agent_lab_evidence.get("environment") != "laboratory":
+                raise PolicyViolationError(
+                    "Agent Lab evidence must originate from laboratory environment."
+                )
+            if request.quality_gate_run_id != agent_lab_evidence.get("judgeRunId"):
+                raise PolicyViolationError(
+                    "Release quality-gate run must be the Judge run owned by Agent Lab."
+                )
         if self._require_quality_gate and not request.quality_gate_run_id:
             raise PolicyViolationError(
                 "A Governance quality-gate run is required for Agent release."
@@ -347,6 +416,10 @@ class ControlPlaneService:
             reason=request.reason,
             quality_gate_id=gate.get("id"),
             quality_gate_metrics=gate.get("metrics") or {},
+            agent_lab_experiment_id=request.agent_lab_experiment_id,
+            runtime_executor_catalog_version=runtime_executor.get("catalog_version"),
+            runtime_executor_cluster_id=runtime_executor.get("cluster_id"),
+            runtime_executor_catalog_hash=runtime_executor.get("catalog_hash"),
             created_by=identity.user_id,
             created_at=now,
             updated_at=now,
@@ -370,6 +443,10 @@ class ControlPlaneService:
                 "rollout_percentage": release.rollout_percentage,
                 "previous_release_id": release.previous_release_id,
                 "quality_gate_id": release.quality_gate_id,
+                "agent_lab_experiment_id": release.agent_lab_experiment_id,
+                "runtime_executor_catalog_version": release.runtime_executor_catalog_version,
+                "runtime_executor_cluster_id": release.runtime_executor_cluster_id,
+                "runtime_executor_catalog_hash": release.runtime_executor_catalog_hash,
             },
         )
         await self._repository.create_release(

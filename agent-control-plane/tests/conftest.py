@@ -44,7 +44,7 @@ def valid_spec() -> dict[str, object]:
             "nodes": [
                 {"node_id": "understand", "kind": "llm"},
                 {"node_id": "retrieve", "kind": "retrieval"},
-                {"node_id": "respond", "kind": "llm"},
+                {"node_id": "respond", "kind": "answer"},
             ],
             "edges": [
                 {"from_node": "understand", "to_node": "retrieve"},

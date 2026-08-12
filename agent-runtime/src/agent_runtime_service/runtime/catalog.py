@@ -1,41 +1,41 @@
-"""Allow-listed Agent catalog resolved from Control Plane release snapshots."""
+"""Runtime 集群已部署执行器的只读目录。
+
+目录在进程启动期间由 Container 装配；请求处理阶段只能解析已部署的 Profile，
+不能依据发布快照动态加载业务代码或注册新的执行器。
+"""
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Mapping
 
 from agent_runtime_service.runtime.harness import ExecutorAdapter
 
 
-class AgentCatalog:
-    """Maps published agent ids to locally registered executors.
+class ExecutorCatalog:
+    """保存当前 Runtime 集群允许执行的 Profile 与执行器映射。"""
 
-    The catalog never imports code from a request.  Control Plane supplies the
-    immutable snapshot; this class only selects an already deployed executor.
-    """
+    def __init__(self, entries: Mapping[str, ExecutorAdapter]) -> None:
+        """冻结启动期装配的执行器目录，拒绝空 Profile 与重复归一化键。"""
+        self._entries: dict[str, ExecutorAdapter] = {}
+        for profile, executor in entries.items():
+            self._add(profile, executor)
 
-    def __init__(self) -> None:
-        """初始化空白名单；业务 Agent 工厂只能在进程启动部署时注册。"""
-        self._factories: dict[str, Callable[[dict[str, Any]], ExecutorAdapter]] = {}
+    @property
+    def profiles(self) -> tuple[str, ...]:
+        """返回稳定排序的已部署 Profile，供能力接口和发布前校验读取。"""
+        return tuple(sorted(self._entries))
 
-    def register(self, agent_id: str, factory: Callable[[dict[str, Any]], ExecutorAdapter]) -> None:
-        """注册唯一 Agent 工厂，重复或空标识拒绝以避免快照路由歧义。"""
-        key = agent_id.strip()
-        if not key or key in self._factories:
-            raise ValueError(f"invalid or duplicate agent catalog entry: {agent_id}")
-        self._factories[key] = factory
-
-    def build(self, agent_id: str, snapshot: dict[str, Any]) -> ExecutorAdapter:
-        """为已部署 Agent 构造执行器；未部署快照不能跨集群加载任意业务代码。"""
+    def resolve(self, profile: str) -> ExecutorAdapter:
+        """解析发布快照声明的执行器；未知 Profile 必须在执行前失败。"""
+        key = profile.strip()
         try:
-            factory = self._factories[agent_id.strip()]
+            return self._entries[key]
         except KeyError as exc:
-            raise LookupError(
-                f"agent '{agent_id}' is not deployed in this Runtime cluster"
-            ) from exc
-        return factory(snapshot)
+            raise LookupError(f"executor profile is not deployed: {key or '<empty>'}") from exc
 
-    def contains(self, agent_id: str) -> bool:
-        """检查本 Runtime 集群是否部署了某 Agent，供调度器选择目标集群。"""
-        return agent_id.strip() in self._factories
+    def _add(self, profile: str, executor: ExecutorAdapter) -> None:
+        """仅在构造阶段写入目录，保持运行期目录对请求不可变。"""
+        key = profile.strip()
+        if not key or key in self._entries:
+            raise ValueError(f"invalid or duplicate executor profile: {profile}")
+        self._entries[key] = executor

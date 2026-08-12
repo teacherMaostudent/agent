@@ -1,6 +1,6 @@
-# Complete local integration topology. The seven logical services run as nine processes:
-# Runtime, Context, RAG Query, Ingestion API/Worker, Control Plane, LLM Gateway,
-# Tool Gateway, and Governance. Use scripts/platform_e2e.py after `docker compose up`.
+# 完整本地联调拓扑：七个线上逻辑服务以独立工作负载运行；Context、RAG Query、摄取 API/Worker
+# 共用 RAG 源码包但不共用进程。Model Lab、Agent Lab 是额外的离线实验服务。启动后可运行
+# scripts/platform_e2e.py；生产边界与限制见 docs/deployment-guide.md。
 x-rag-env: &rag-env
   RAG_DATA_DIR: /service/data
   RAG_PERSISTENCE: sqlite
@@ -29,12 +29,33 @@ x-rag-service: &rag-service
   volumes:
     - rag-data:/service/data
 
+x-runtime-env: &runtime-env
+  # Runtime 的配置与 RAG 进程彻底隔离：即使字段同名，也必须由 RUNTIME_ 显式声明。
+  RUNTIME_ENVIRONMENT: local
+  RUNTIME_DATA_DIR: /service/data
+  RUNTIME_PERSISTENCE: sqlite
+  RUNTIME_REQUIRE_SERVICE_AUTH: "true"
+  RUNTIME_SERVICE_API_KEY: local-runtime-service-key
+  RUNTIME_INTERNAL_SERVICE_API_KEY: local-rag-service-key
+  RUNTIME_CORS_ORIGINS: '[]'
+  RUNTIME_LLM_ENABLED: "false"
+  RUNTIME_CONTEXT_SERVICE_BASE_URL: http://agent-context-service:8002
+  RUNTIME_RAG_QUERY_BASE_URL: http://rag-query-api:8003
+  RUNTIME_TOOL_GATEWAY_BASE_URL: http://tool-gateway:8090
+  RUNTIME_TOOL_GATEWAY_API_KEY: local-tool-gateway-key
+  RUNTIME_CONTROL_PLANE_BASE_URL: http://agent-control-plane:8080
+  RUNTIME_CONTROL_PLANE_RUNTIME_KEY: local-control-plane-key
+  RUNTIME_SNAPSHOT_REQUIRED: "true"
+  RUNTIME_EXECUTOR_CATALOG_VERSION: runtime-executor-catalog/v1
+  RUNTIME_GOVERNANCE_BASE_URL: http://agent-governance:8081
+  RUNTIME_GOVERNANCE_EVENT_KEY: local-governance-key
+
 x-runtime-service: &runtime-service
   build:
     context: .
     dockerfile: agent-runtime/Dockerfile
   restart: unless-stopped
-  environment: *rag-env
+  environment: *runtime-env
   volumes:
     - runtime-data:/service/data
 
@@ -51,6 +72,8 @@ services:
       CONTROL_PLANE_GOVERNANCE_AUDITOR_API_KEY: local-governance-auditor-key
       CONTROL_PLANE_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
       CONTROL_PLANE_GOVERNANCE_BASE_URL: http://agent-governance:8081
+      CONTROL_PLANE_AGENT_LAB_BASE_URL: http://agent-lab:8092
+      CONTROL_PLANE_AGENT_LAB_SERVICE_API_KEY: local-agent-lab-key
     ports: ["8082:8080"]
     volumes: ["control-plane-data:/data"]
 
@@ -147,6 +170,28 @@ services:
     ports:
       - "8091:8091"
 
+  agent-lab:
+    build:
+      context: .
+      dockerfile: agent-lab/Dockerfile
+    restart: unless-stopped
+    environment:
+      # 本地联调显式选择 SQLite/同步队列；生产模板会强制切换为 PostgreSQL + Temporal。
+      AGENT_LAB_ENVIRONMENT: local
+      AGENT_LAB_DATABASE_BACKEND: sqlite
+      AGENT_LAB_DATABASE_PATH: /data/agent-lab.db
+      AGENT_LAB_CONTROL_PLANE_BASE_URL: http://agent-control-plane:8080
+      AGENT_LAB_RUNTIME_BASE_URL: http://agent-runtime:8001
+      AGENT_LAB_GOVERNANCE_BASE_URL: http://agent-governance:8081
+      AGENT_LAB_CONTROL_PLANE_RUNTIME_KEY: local-control-plane-key
+      AGENT_LAB_GOVERNANCE_AUDITOR_KEY: local-governance-auditor-key
+      AGENT_LAB_SERVICE_API_KEY: local-agent-lab-key
+      AGENT_LAB_TEMPORAL_ENABLED: "false"
+    ports:
+      - "8092:8092"
+    volumes: [agent-lab-data:/data]
+    depends_on: [agent-control-plane, agent-runtime, agent-governance]
+
   postgres:
     image: postgres:17-alpine
     environment:
@@ -164,4 +209,5 @@ volumes:
   rag-data:
   runtime-data:
   tool-gateway-data:
+  agent-lab-data:
   postgres-data:

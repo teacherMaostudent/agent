@@ -59,6 +59,17 @@ class SqliteRepository:
                         "ALTER TABLE releases ADD COLUMN quality_gate_metrics_json "
                         "TEXT NOT NULL DEFAULT '{}'"
                     )
+                if "agent_lab_experiment_id" not in columns:
+                    connection.execute(
+                        "ALTER TABLE releases ADD COLUMN agent_lab_experiment_id TEXT"
+                    )
+                for column in (
+                    "runtime_executor_catalog_version",
+                    "runtime_executor_cluster_id",
+                    "runtime_executor_catalog_hash",
+                ):
+                    if column not in columns:
+                        connection.execute(f"ALTER TABLE releases ADD COLUMN {column} TEXT")
 
         await asyncio.to_thread(operation)
 
@@ -310,9 +321,11 @@ class SqliteRepository:
                 INSERT INTO releases (
                     tenant_id, release_id, agent_id, version_id, environment,
                     rollout_percentage, tenant_allowlist_json, status, previous_release_id,
-                    reason, quality_gate_id, quality_gate_metrics_json,
+                    reason, quality_gate_id, quality_gate_metrics_json, agent_lab_experiment_id,
+                    runtime_executor_catalog_version, runtime_executor_cluster_id,
+                    runtime_executor_catalog_hash,
                     created_by, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     release.tenant_id,
@@ -327,6 +340,10 @@ class SqliteRepository:
                     release.reason,
                     release.quality_gate_id,
                     _json(release.quality_gate_metrics),
+                    release.agent_lab_experiment_id,
+                    release.runtime_executor_catalog_version,
+                    release.runtime_executor_cluster_id,
+                    release.runtime_executor_catalog_hash,
                     release.created_by,
                     release.created_at.isoformat(),
                     release.updated_at.isoformat(),
@@ -849,6 +866,10 @@ def _release_from_row(row: sqlite3.Row) -> ReleaseManifest:
             "reason": row["reason"],
             "quality_gate_id": row["quality_gate_id"],
             "quality_gate_metrics": json.loads(row["quality_gate_metrics_json"]),
+            "agent_lab_experiment_id": row["agent_lab_experiment_id"],
+            "runtime_executor_catalog_version": row["runtime_executor_catalog_version"],
+            "runtime_executor_cluster_id": row["runtime_executor_cluster_id"],
+            "runtime_executor_catalog_hash": row["runtime_executor_catalog_hash"],
             "created_by": row["created_by"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],

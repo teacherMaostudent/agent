@@ -43,7 +43,7 @@ def _check_static(failures: list[str]) -> None:
     tables = str(config.get("table.include.list", ""))
     for table in (
         "control_plane.outbox_events",
-        "rag_platform.runtime_outbox",
+        "runtime_platform.runtime_outbox",
         "tool_gateway.event_outbox",
     ):
         if table not in tables:
@@ -54,6 +54,7 @@ def _check_static(failures: list[str]) -> None:
         [
             "debezium-register:",
             "RAG_GOVERNANCE_DELIVERY_MODE: cdc",
+            "RUNTIME_GOVERNANCE_DELIVERY_MODE: cdc",
             "TOOL_GATEWAY_GOVERNANCE_DELIVERY_MODE: cdc",
             'GOVERNANCE_CDC_REQUIRED: "true"',
             "GOVERNANCE_JUDGE_PRIMARY_MODEL_REVISION",

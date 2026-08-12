@@ -138,3 +138,39 @@ class ModelLabClient:
         if record.get("status") != "APPROVED" or not record.get("model_card"):
             raise ValueError("Model Lab experiment is not approved with a model card")
         return record
+
+
+class AgentLabClient:
+    """读取已完成 Agent 回放的发布证据；不创建实验或修改其结果。"""
+
+    def __init__(self, settings: Settings) -> None:
+        """保存 Agent Lab 地址和服务凭据，并为生产调用创建可轮换工作负载身份。"""
+        self._settings = settings
+        self._workload_identity = build_workload_token_provider(settings)
+
+    async def approved_release_evidence(
+        self, tenant_id: str, experiment_id: str
+    ) -> dict[str, Any]:
+        """只接受已通过 Governance 门禁且绑定不可变快照的实验事实。"""
+        async with httpx.AsyncClient(
+            base_url=self._settings.agent_lab_base_url,
+            timeout=30,
+            **mtls_httpx_options(
+                enabled=self._settings.mtls_enabled,
+                ca_file=self._settings.mtls_ca_file,
+                cert_file=self._settings.mtls_cert_file,
+                key_file=self._settings.mtls_key_file,
+            ),
+        ) as client:
+            response = await client.get(
+                f"/internal/v1/experiments/{experiment_id}/release-evidence",
+                params={"tenant_id": tenant_id},
+                headers={
+                    "X-Agent-Lab-Key": self._settings.agent_lab_service_api_key or "",
+                    "X-Tenant-Id": tenant_id,
+                    "X-User-Id": "agent-control-plane",
+                    **self._workload_identity.authorization_header(),
+                },
+            )
+            response.raise_for_status()
+            return response.json()

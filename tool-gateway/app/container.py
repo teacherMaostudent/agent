@@ -55,6 +55,12 @@ class Container:
             self.settings.http_connect_timeout,
             build_workload_token_provider(self.settings),
             self.settings.governance_delivery_mode,
+            mtls_httpx_options(
+                enabled=self.settings.mtls_enabled,
+                ca_file=self.settings.mtls_ca_file,
+                cert_file=self.settings.mtls_cert_file,
+                key_file=self.settings.mtls_key_file,
+            ),
         )
         self.execution = ToolExecutionService(
             self.registry,
