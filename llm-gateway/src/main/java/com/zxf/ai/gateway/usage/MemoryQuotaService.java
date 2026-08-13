@@ -50,10 +50,13 @@ public class MemoryQuotaService implements QuotaService {
             if (existing != null) return existing;
             long nextTokens = counter.tokens.get() + estimatedTotalTokens;
             if (nextTokens > quota.getDailyTokenLimit()) {
-                throw new GatewayException(HttpStatus.TOO_MANY_REQUESTS, "Daily token quota exceeded for user: " + userId);
+                throw new QuotaExceededException("QUOTA_DAILY_TOKEN",
+                        BigDecimal.valueOf(quota.getDailyTokenLimit()), BigDecimal.valueOf(counter.tokens.get()),
+                        BigDecimal.valueOf(estimatedTotalTokens));
             }
             if (counter.cost.add(estimatedCost).compareTo(quota.getDailyCostLimit()) > 0) {
-                throw new GatewayException(HttpStatus.TOO_MANY_REQUESTS, "Daily cost quota exceeded for user: " + userId);
+                throw new QuotaExceededException("QUOTA_DAILY_COST", quota.getDailyCostLimit(),
+                        counter.cost, estimatedCost);
             }
             counter.tokens.addAndGet(estimatedTotalTokens);
             counter.cost = counter.cost.add(estimatedCost);

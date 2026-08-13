@@ -115,10 +115,14 @@ public class RedisQuotaService implements QuotaService {
         );
         String code = result == null || result.isEmpty() ? "UNKNOWN" : String.valueOf(result.get(0));
         if ("TOKEN_EXCEEDED".equals(code)) {
-            throw new GatewayException(HttpStatus.TOO_MANY_REQUESTS, "Daily token quota exceeded for user: " + userId);
+            long currentTokens = Long.parseLong(String.valueOf(result.get(1)));
+            throw new QuotaExceededException("QUOTA_DAILY_TOKEN", BigDecimal.valueOf(quota.getDailyTokenLimit()),
+                    BigDecimal.valueOf(currentTokens), BigDecimal.valueOf(estimatedTotalTokens));
         }
         if ("COST_EXCEEDED".equals(code)) {
-            throw new GatewayException(HttpStatus.TOO_MANY_REQUESTS, "Daily cost quota exceeded for user: " + userId);
+            long currentCostMicros = Long.parseLong(String.valueOf(result.get(2)));
+            throw new QuotaExceededException("QUOTA_DAILY_COST", quota.getDailyCostLimit(),
+                    fromMicros(currentCostMicros), estimatedCost);
         }
         if (!"OK".equals(code) && !"ALREADY_RESERVED".equals(code)) {
             throw new GatewayException(HttpStatus.INTERNAL_SERVER_ERROR, "Redis quota reserve failed: " + code);

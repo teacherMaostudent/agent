@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zxf.ai.gateway.config.GatewayProperties;
 import com.zxf.ai.gateway.model.GatewayException;
 import com.zxf.ai.gateway.model.ModelEndpoint;
+import com.zxf.ai.gateway.model.ProviderRateLimitedException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -61,7 +62,7 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
                 // 超时必须放在上游调用链路上，避免模型长时间无响应时连接一直占用。
                 .timeout(properties.getRequestTimeout())
                 .transform(this::applyRetryIfEnabled)
-                .onErrorMap(this::mapError);
+                .onErrorMap(error -> mapError(endpoint, error));
     }
 
     /**
@@ -83,7 +84,7 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
                 .bodyToFlux(String.class)
                 .timeout(properties.getRequestTimeout())
                 .transform(this::applyRetryIfEnabled)
-                .onErrorMap(this::mapError);
+                .onErrorMap(error -> mapError(endpoint, error));
     }
 
     /**
@@ -167,11 +168,15 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
     /**
      * 执行 map error 的协议或数据转换，保持内部模型与外部契约隔离。
     */
-    private Throwable mapError(Throwable throwable) {
+    private Throwable mapError(ModelEndpoint endpoint, Throwable throwable) {
         if (throwable instanceof GatewayException) {
             return throwable;
         }
         if (throwable instanceof WebClientResponseException responseException) {
+            if (responseException.getStatusCode().value() == 429) {
+                return new ProviderRateLimitedException(endpoint.providerName(), endpoint.key(),
+                        retryAfterSeconds(responseException));
+            }
             // 保留上游响应体，方便看到 billing_not_active、invalid_api_key、model_not_found 等真实原因。
             String body = responseException.getResponseBodyAsString();
             String message = body == null || body.isBlank() ? responseException.getMessage() : body;
@@ -179,6 +184,15 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
         }
         // 非 HTTP 异常通常来自网络、DNS、代理或超时，统一包装为 502。
         return new GatewayException(HttpStatus.BAD_GATEWAY, throwable.getMessage());
+    }
+
+    /** 从上游 Retry-After 提取保守退避时间；格式未知时采用一秒，避免同步重试风暴。 */
+    private long retryAfterSeconds(WebClientResponseException response) {
+        try {
+            return Math.max(1, Long.parseLong(response.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)));
+        } catch (RuntimeException ignored) {
+            return 1;
+        }
     }
 
     /**

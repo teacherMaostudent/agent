@@ -43,6 +43,8 @@ public class GatewayProperties {
     private Map<String, ApiKey> apiKeys = new LinkedHashMap<>();
     private Cache cache = new Cache();
     private Resilience resilience = new Resilience();
+    /** 实时准入控制独立于熔断和每日配额，生产副本共享 Redis 状态。 */
+    private Admission admission = new Admission();
     private Persistence persistence = new Persistence();
     private Admin admin = new Admin();
     private Oidc oidc = new Oidc();
@@ -56,6 +58,16 @@ public class GatewayProperties {
     /** 原生价格统一换算到报表基准币种。汇率必须带版本并由运维定期更新。 */
     private Billing billing = new Billing();
     private Map<String, PromptTemplate> promptTemplates = new LinkedHashMap<>();
+
+    /** 返回请求频率、Token 吞吐、并发和载荷上限配置。 */
+    public Admission getAdmission() {
+        return admission;
+    }
+
+    /** 由 Spring 绑定受控的实时准入配置。 */
+    public void setAdmission(Admission admission) {
+        this.admission = admission;
+    }
 
     /**
      * 读取当前配置或运行状态字段 get oidc 的值，供调用方进行受控决策。
@@ -1128,7 +1140,6 @@ public class GatewayProperties {
     public static class Resilience {
         private int circuitFailureThreshold = 3;
         private Duration circuitOpenDuration = Duration.ofSeconds(30);
-        private int routeRateLimitPerMinute = 120;
 
         /**
          * 读取当前配置或运行状态字段 get circuit failure threshold 的值，供调用方进行受控决策。
@@ -1158,19 +1169,75 @@ public class GatewayProperties {
             this.circuitOpenDuration = circuitOpenDuration;
         }
 
-        /**
-         * 读取当前配置或运行状态字段 get route rate limit per minute 的值，供调用方进行受控决策。
-        */
-        public int getRouteRateLimitPerMinute() {
-            return routeRateLimitPerMinute;
-        }
+    }
 
-        /**
-         * 更新配置字段 set route rate limit per minute；该值由 Spring 配置绑定或受控管理接口提供。
-        */
-        public void setRouteRateLimitPerMinute(int routeRateLimitPerMinute) {
-            this.routeRateLimitPerMinute = routeRateLimitPerMinute;
-        }
+    /**
+     * 多维实时准入配置。
+     *
+     * <p>值为零表示该维度不限制。请求和 Token 以分钟为窗口；并发许可必须在响应终止时归还。</p>
+     */
+    public static class Admission {
+        private String store = "memory";
+        private long tenantRequestsPerMinute = 600;
+        private long userRequestsPerMinute = 120;
+        private long routeRequestsPerMinute = 120;
+        private long providerRequestsPerMinute = 600;
+        private long tenantTokensPerMinute = 500_000;
+        private long userTokensPerMinute = 200_000;
+        private long routeTokensPerMinute = 500_000;
+        private long providerTokensPerMinute = 1_000_000;
+        private long tenantMaxConcurrency = 100;
+        private long userMaxConcurrency = 20;
+        private long routeMaxConcurrency = 50;
+        private long providerMaxConcurrency = 200;
+        private int rateBurstSeconds = 60;
+        private int concurrencyLeaseTtlSeconds = 240;
+        private int maxRequestBytes = 1_048_576;
+        private int maxMessages = 128;
+        private long maxPromptTokens = 128_000;
+        private long maxCompletionTokens = 16_384;
+        private int maxUpstreamAttempts = 3;
+
+        /** 返回准入状态存储类型；生产应为 redis。 */ public String getStore() { return store; }
+        /** 绑定准入状态存储类型。 */ public void setStore(String store) { this.store = store; }
+        /** 返回租户每分钟请求上限。 */ public long getTenantRequestsPerMinute() { return tenantRequestsPerMinute; }
+        /** 绑定租户每分钟请求上限。 */ public void setTenantRequestsPerMinute(long value) { tenantRequestsPerMinute = value; }
+        /** 返回用户每分钟请求上限。 */ public long getUserRequestsPerMinute() { return userRequestsPerMinute; }
+        /** 绑定用户每分钟请求上限。 */ public void setUserRequestsPerMinute(long value) { userRequestsPerMinute = value; }
+        /** 返回路由每分钟请求上限。 */ public long getRouteRequestsPerMinute() { return routeRequestsPerMinute; }
+        /** 绑定路由每分钟请求上限。 */ public void setRouteRequestsPerMinute(long value) { routeRequestsPerMinute = value; }
+        /** 返回供应商每分钟请求上限。 */ public long getProviderRequestsPerMinute() { return providerRequestsPerMinute; }
+        /** 绑定供应商每分钟请求上限。 */ public void setProviderRequestsPerMinute(long value) { providerRequestsPerMinute = value; }
+        /** 返回租户每分钟 Token 上限。 */ public long getTenantTokensPerMinute() { return tenantTokensPerMinute; }
+        /** 绑定租户每分钟 Token 上限。 */ public void setTenantTokensPerMinute(long value) { tenantTokensPerMinute = value; }
+        /** 返回用户每分钟 Token 上限。 */ public long getUserTokensPerMinute() { return userTokensPerMinute; }
+        /** 绑定用户每分钟 Token 上限。 */ public void setUserTokensPerMinute(long value) { userTokensPerMinute = value; }
+        /** 返回路由每分钟 Token 上限。 */ public long getRouteTokensPerMinute() { return routeTokensPerMinute; }
+        /** 绑定路由每分钟 Token 上限。 */ public void setRouteTokensPerMinute(long value) { routeTokensPerMinute = value; }
+        /** 返回供应商每分钟 Token 上限。 */ public long getProviderTokensPerMinute() { return providerTokensPerMinute; }
+        /** 绑定供应商每分钟 Token 上限。 */ public void setProviderTokensPerMinute(long value) { providerTokensPerMinute = value; }
+        /** 返回租户最大在途请求数。 */ public long getTenantMaxConcurrency() { return tenantMaxConcurrency; }
+        /** 绑定租户最大在途请求数。 */ public void setTenantMaxConcurrency(long value) { tenantMaxConcurrency = value; }
+        /** 返回用户最大在途请求数。 */ public long getUserMaxConcurrency() { return userMaxConcurrency; }
+        /** 绑定用户最大在途请求数。 */ public void setUserMaxConcurrency(long value) { userMaxConcurrency = value; }
+        /** 返回路由最大在途请求数。 */ public long getRouteMaxConcurrency() { return routeMaxConcurrency; }
+        /** 绑定路由最大在途请求数。 */ public void setRouteMaxConcurrency(long value) { routeMaxConcurrency = value; }
+        /** 返回供应商最大在途请求数。 */ public long getProviderMaxConcurrency() { return providerMaxConcurrency; }
+        /** 绑定供应商最大在途请求数。 */ public void setProviderMaxConcurrency(long value) { providerMaxConcurrency = value; }
+        /** 返回令牌桶允许的最大突发时间窗口。 */ public int getRateBurstSeconds() { return rateBurstSeconds; }
+        /** 绑定令牌桶允许的最大突发时间窗口。 */ public void setRateBurstSeconds(int value) { rateBurstSeconds = value; }
+        /** 返回并发许可的兜底过期秒数，防止进程崩溃永久占用。 */ public int getConcurrencyLeaseTtlSeconds() { return concurrencyLeaseTtlSeconds; }
+        /** 绑定并发许可的兜底过期秒数。 */ public void setConcurrencyLeaseTtlSeconds(int value) { concurrencyLeaseTtlSeconds = value; }
+        /** 返回允许的最大 JSON 字节数。 */ public int getMaxRequestBytes() { return maxRequestBytes; }
+        /** 绑定允许的最大 JSON 字节数。 */ public void setMaxRequestBytes(int value) { maxRequestBytes = value; }
+        /** 返回一条请求允许的最大消息数。 */ public int getMaxMessages() { return maxMessages; }
+        /** 绑定一条请求允许的最大消息数。 */ public void setMaxMessages(int value) { maxMessages = value; }
+        /** 返回允许的最大输入 Token。 */ public long getMaxPromptTokens() { return maxPromptTokens; }
+        /** 绑定允许的最大输入 Token。 */ public void setMaxPromptTokens(long value) { maxPromptTokens = value; }
+        /** 返回允许的最大输出 Token。 */ public long getMaxCompletionTokens() { return maxCompletionTokens; }
+        /** 绑定允许的最大输出 Token。 */ public void setMaxCompletionTokens(long value) { maxCompletionTokens = value; }
+        /** 返回单个客户端请求允许的最大真实上游尝试数，覆盖 fallback 链。 */ public int getMaxUpstreamAttempts() { return maxUpstreamAttempts; }
+        /** 绑定单个客户端请求允许的最大真实上游尝试数。 */ public void setMaxUpstreamAttempts(int value) { maxUpstreamAttempts = value; }
     }
 
     public static class Persistence {

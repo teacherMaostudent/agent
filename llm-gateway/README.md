@@ -12,6 +12,7 @@
 - 协议适配：OpenAI-compatible client + Anthropic Messages client。
 - 模型路由：primary、fallback、灰度路由、权重负载均衡。
 - 稳定性治理：超时、重试、限流、熔断、故障 fallback。
+- 多维准入控制：入口 Tenant/User RPM、上游 Route/Provider RPM、TPM、在途并发、请求大小与 Token 上限；生产由 Redis Lua 原子执行并返回 `Retry-After`。
 - 多租户 API Key：支持租户、用户、模型白名单。
 - 限额控制：memory 单机版和 Redis Lua 原子扣减版。
 - MySQL 持久化：请求缓存、成本报表、性能报表、评估资产、Phoenix Trace、合规审查、审计日志、模型热更新配置。
@@ -57,7 +58,8 @@ src/main/java/com/zxf/ai/gateway
 |-- model          # 网关通用模型对象
 |-- prompt         # Prompt 模板渲染
 |-- report         # 成本报表、模型性能报表
-|-- resilience     # 限流、熔断、健康状态
+|-- admission      # Redis/内存多维准入：RPM、TPM、并发与载荷上限
+|-- resilience     # 熔断与健康状态（不再承担实时限流）
 |-- routing        # 模型路由、fallback、灰度、权重
 |-- service        # 主聊天网关链路
 |-- usage          # token 估算、成本估算、memory/Redis 限额
@@ -313,6 +315,50 @@ routes:
 - fallback：失败后按顺序降级。
 - weighted：按权重分流。
 - canary：小比例灰度新模型。
+
+## 生产准入控制
+
+网关将“实时过载保护”和“每日成本配额”分为两个独立边界：
+
+| 边界 | 负责内容 | 状态存储 |
+| --- | --- | --- |
+| `admission` | RPM、TPM、并发、消息数、请求体、单次 Token 上限 | 生产 Redis Lua；本地 memory |
+| `usage` | 每日 Token/成本预占、结算与释放 | 生产 Redis Lua；本地 memory |
+| `resilience` | 上游失败计数、熔断和健康状态 | 持久化状态或本地兼容模式 |
+
+生产环境必须同时设置：
+
+```powershell
+$env:GATEWAY_QUOTA_STORE="redis"
+$env:GATEWAY_ADMISSION_STORE="redis"
+$env:GATEWAY_ALLOW_ANONYMOUS="false"
+```
+
+`admission` 在 Redis 内以单个 Lua 脚本校验并提交 Tenant/User/Route/Provider 的 Token Bucket 与 in-flight
+许可。任一维度拒绝时返回 HTTP 429、公开的受限维度和 `Retry-After`；调用结束、客户端取消、流断开和异常都会
+释放并发许可。固定一分钟桶只保留给本地 memory 模式，不能用于多副本生产集群。
+
+建议从供应商合同额度反推 `GATEWAY_PROVIDER_RPM`、`GATEWAY_PROVIDER_TPM` 与
+`GATEWAY_PROVIDER_MAX_CONCURRENCY`，再为 Tenant/User 配置更低的公平使用上限。`GATEWAY_RATE_BURST_SECONDS`
+控制 Token Bucket 可承受的短时突发；不能用它替代并发上限。生产启动会校验每个启用的 TPM 至少覆盖
+`GATEWAY_MAX_PROMPT_TOKENS + GATEWAY_MAX_COMPLETION_TOKENS`，避免一条已经通过输入校验的请求永远无法获取令牌。
+`GATEWAY_MAX_UPSTREAM_ATTEMPTS` 则限制一次
+用户请求在 fallback 链上可发起的真实上游调用数；生产要求 `gateway.max-retries=0`，避免客户端重试、SDK 重试、
+Gateway retry 与 fallback 叠加放大流量。`GATEWAY_CONCURRENCY_LEASE_TTL_SECONDS` 必须覆盖
+`request-timeout × max-upstream-attempts + 15s`，以免故障回退仍在执行时 Redis 过早释放入口并发许可。
+
+通过 `/actuator/prometheus` 采集 `llm_gateway_admission_total`：它以 `stage`、`outcome`、`scope` 和稳定
+`reason` 记录准入结果，但刻意不以 tenant、用户或路由名作为标签，防止监控系统出现高基数失控。告警应关注 Redis
+`unavailable`、Provider/Route 的持续 `rejected`，并据此调整供应商容量或业务侧配额。
+
+每个 HTTP 429 都带机器可读的 `reasonCode`，不可仅凭状态码做重试判断：`ADMISSION_*` 表示网关自身的
+RPM/TPM/并发策略，带 `Retry-After`；`QUOTA_DAILY_TOKEN` 与 `QUOTA_DAILY_COST` 表示日额度耗尽，不应短时重试；
+`PROVIDER_RATE_LIMIT` 则表示上游厂商限流，Gateway 会先执行受控 fallback。入口准入被拒也会生成脱敏
+`GatewayTraceEvent` 和 `llm.request.rejected` 治理事件，因而审计可以解释未执行请求的策略命中。
+
+容量调优还应同时采集：`llm_gateway_admission_utilization`（最近一次准入观察到的最高容量利用率）、
+`llm_gateway_execution_total`、`llm_gateway_upstream_attempt_total`（两者比值为调用放大倍数）与
+`llm_gateway_provider_rate_limited_total`。这些指标只按阶段、维度类别或 Provider 聚合，绝不使用身份或内容标签。
 
 ## 成本报表
 

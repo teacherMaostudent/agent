@@ -99,6 +99,7 @@ services:
       DATABASE_PASSWORD: local-postgres-password
       REDIS_HOST: redis
       GATEWAY_QUOTA_STORE: redis
+      GATEWAY_ADMISSION_STORE: redis
       GATEWAY_ALLOW_ANONYMOUS: "false"
       ADMIN_SECURITY_ENABLED: "true"
       ADMIN_USERNAME: admin

@@ -105,3 +105,26 @@ Uvicorn。Compose 为两个 API 工作负载分别注入服务器证书、私钥
 运行生产模板前必须提供 `AGENT_LAB_WORKLOAD_CLIENT_SECRET`、Agent Lab 独立客户端证书、OIDC 配置和
 PostgreSQL/Temporal 可用性。部署层仍应实现 NetworkPolicy、实验输出分级脱敏、对象存储归档、保留期和
 DLQ 告警/重放演练；代码不能替代这些基础设施控制。
+
+## LLM Gateway 多维准入控制
+
+LLM Gateway 把短期过载、长期成本和上游故障拆成三个独立边界：`admission` 管理 RPM、TPM、并发及请求大小；
+`usage` 管理每日 Token/成本预占和结算；`resilience` 只管理熔断。生产 Compose 必须设置
+`GATEWAY_ADMISSION_STORE=redis` 和 `GATEWAY_QUOTA_STORE=redis`；生产启动校验会拒绝 memory 模式。
+
+`admission` 使用 Redis Lua 对 Tenant、User、Route 和 Provider 维度的 Token Bucket 与 in-flight 许可做原子判断。
+请求完成、取消、流式连接断开或异常时释放并发许可；进程崩溃时依靠 `GATEWAY_CONCURRENCY_LEASE_TTL_SECONDS`
+回收兜底许可。应按供应商合同额度设置 `GATEWAY_PROVIDER_RPM`、`GATEWAY_PROVIDER_TPM` 与
+`GATEWAY_PROVIDER_MAX_CONCURRENCY`，再向下为租户和用户分配更小的公平使用上限。`GATEWAY_MAX_UPSTREAM_ATTEMPTS`
+限制一个业务请求在 fallback 链中可触发的真实模型调用；生产启动校验同时要求 `gateway.max-retries=0`，从而避免
+SDK、Gateway 和 fallback 多层重试叠加放大供应商流量。
+
+所有本地准入拒绝返回 HTTP 429、受限维度和 `Retry-After`。不要让调用方立即重试；应遵循该响应头退避。
+若所有模型候选均熔断，网关返回 503；若均受准入限制，返回 429，二者都不会被伪装成 502。
+
+生产告警必须以 `reasonCode` 而非泛化的 HTTP 429 聚合：`ADMISSION_*` 是网关瞬时准入限制，
+`QUOTA_DAILY_*` 是不可短时恢复的日配额，`PROVIDER_RATE_LIMIT` 是上游厂商限制。入口准入拒绝同样会异步导出
+脱敏 Trace 与 `llm.request.rejected` 治理事件。Prometheus 除准入结果外还应采集
+`llm_gateway_admission_utilization`、`llm_gateway_execution_total`、`llm_gateway_upstream_attempt_total` 和
+`llm_gateway_provider_rate_limited_total`；后两个的比值揭示 fallback 造成的调用放大。所有指标标签都不得包含
+tenant、user、route 名称或请求内容。

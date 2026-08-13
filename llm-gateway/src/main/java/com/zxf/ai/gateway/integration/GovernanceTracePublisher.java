@@ -63,7 +63,8 @@ public class GovernanceTracePublisher {
         governanceEvent.put("schema_version", "1.0");
         governanceEvent.put("event_id", "evt_" + UUID.randomUUID().toString().replace("-", ""));
         governanceEvent.put("source_service", "llm-gateway");
-        governanceEvent.put("event_type", "llm.request.completed");
+        governanceEvent.put("event_type", event.decisionCode().isBlank()
+                ? "llm.request.completed" : "llm.request.rejected");
         governanceEvent.put("trace_id", event.traceId());
         governanceEvent.put("tenant_id", event.tenantId());
         governanceEvent.put("occurred_at", Instant.now().toString());
@@ -79,6 +80,9 @@ public class GovernanceTracePublisher {
         details.put("cost", event.cost());
         details.put("cost_currency", event.currency());
         details.put("error_type", event.errorType());
+        details.put("decision_code", event.decisionCode());
+        details.put("decision_scope", event.decisionScope());
+        details.put("retry_after_seconds", event.retryAfterSeconds());
         platform.governanceEvent(governanceEvent, event.tenantId(), event.userId())
                 .subscribe(
                         ignored -> { },

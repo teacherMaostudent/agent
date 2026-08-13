@@ -9,7 +9,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -25,11 +24,6 @@ public class GatewayPolicyService {
      * 当前状态保存在单机内存；多实例部署时可同步到 Redis 或治理平台。
      */
     private final Map<String, RouteState> states = new ConcurrentHashMap<>();
-    /**
-     * 简单分钟桶限流计数器。
-     * 生产环境建议增加后台清理或使用 Redis TTL，避免长期运行后桶数量持续增长。
-     */
-    private final Map<String, AtomicInteger> minuteCounters = new ConcurrentHashMap<>();
 
     /** 注入路由韧性参数和可选持久化仓储，以支持跨重启恢复熔断状态。 */
     public GatewayPolicyService(GatewayProperties properties, ObjectProvider<RuntimeStateRepository> stateRepository) {
@@ -37,18 +31,12 @@ public class GatewayPolicyService {
         this.stateRepository = stateRepository.getIfAvailable();
     }
 
-    /** 在上游调用前执行熔断与每分钟路由限流，拒绝已知不可用或过载目标。 */
+    /** 在上游调用前只执行熔断；实时速率和并发由独立 AdmissionControl 负责。 */
     public void beforeCall(ModelEndpoint endpoint) {
         RouteState state = state(endpoint.key());
         if (state.openUntil != null && state.openUntil.isAfter(Instant.now())) {
             // 熔断窗口内快速失败，让上层 fallback 到其他模型，避免继续打故障上游。
             throw new GatewayException(HttpStatus.SERVICE_UNAVAILABLE, "Circuit is open for route: " + endpoint.key());
-        }
-        String bucket = endpoint.key() + ":" + Instant.now().truncatedTo(ChronoUnit.MINUTES);
-        int count = minuteCounters.computeIfAbsent(bucket, key -> new AtomicInteger()).incrementAndGet();
-        if (count > properties.getResilience().getRouteRateLimitPerMinute()) {
-            // 限流按路由维度生效，避免某个模型被单个入口打满。
-            throw new GatewayException(HttpStatus.TOO_MANY_REQUESTS, "Route rate limit exceeded: " + endpoint.key());
         }
     }
 
@@ -82,12 +70,11 @@ public class GatewayPolicyService {
         return state.openUntil == null || state.openUntil.isBefore(Instant.now());
     }
 
-    /** 返回路由健康和限流配置快照，不暴露任何上游服务密钥。 */
+    /** 返回路由熔断健康快照，不暴露任何上游服务密钥。 */
     public Map<String, Object> snapshot() {
         return Map.of(
                 "store", stateRepository == null ? "memory" : "mysql",
                 "routes", states,
-                "rateLimitPerMinute", properties.getResilience().getRouteRateLimitPerMinute(),
                 "circuitFailureThreshold", properties.getResilience().getCircuitFailureThreshold()
         );
     }

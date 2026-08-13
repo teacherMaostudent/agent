@@ -105,7 +105,29 @@ gateway:
   resilience:
     circuit-failure-threshold: 3
     circuit-open-duration: 30s
-    route-rate-limit-per-minute: 120
+  admission:
+    # Redis uses an atomic token bucket + in-flight counter across all Gateway replicas.
+    # Set values to 0 only when a dimension is deliberately unlimited.
+    store: ${GATEWAY_ADMISSION_STORE:memory}
+    rate-burst-seconds: ${GATEWAY_RATE_BURST_SECONDS:60}
+    concurrency-lease-ttl-seconds: ${GATEWAY_CONCURRENCY_LEASE_TTL_SECONDS:240}
+    tenant-requests-per-minute: ${GATEWAY_TENANT_RPM:600}
+    user-requests-per-minute: ${GATEWAY_USER_RPM:120}
+    route-requests-per-minute: ${GATEWAY_ROUTE_RPM:120}
+    provider-requests-per-minute: ${GATEWAY_PROVIDER_RPM:600}
+    tenant-tokens-per-minute: ${GATEWAY_TENANT_TPM:500000}
+    user-tokens-per-minute: ${GATEWAY_USER_TPM:200000}
+    route-tokens-per-minute: ${GATEWAY_ROUTE_TPM:500000}
+    provider-tokens-per-minute: ${GATEWAY_PROVIDER_TPM:1000000}
+    tenant-max-concurrency: ${GATEWAY_TENANT_MAX_CONCURRENCY:100}
+    user-max-concurrency: ${GATEWAY_USER_MAX_CONCURRENCY:20}
+    route-max-concurrency: ${GATEWAY_ROUTE_MAX_CONCURRENCY:50}
+    provider-max-concurrency: ${GATEWAY_PROVIDER_MAX_CONCURRENCY:200}
+    max-request-bytes: ${GATEWAY_MAX_REQUEST_BYTES:1048576}
+    max-messages: ${GATEWAY_MAX_MESSAGES:128}
+    max-prompt-tokens: ${GATEWAY_MAX_PROMPT_TOKENS:128000}
+    max-completion-tokens: ${GATEWAY_MAX_COMPLETION_TOKENS:16384}
+    max-upstream-attempts: ${GATEWAY_MAX_UPSTREAM_ATTEMPTS:3}
   default-model: deepseek-v4-flash
   providers:
     deepseek:

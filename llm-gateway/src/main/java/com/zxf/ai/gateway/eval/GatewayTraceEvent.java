@@ -29,7 +29,10 @@ public record GatewayTraceEvent(
         String errorType,
         String errorMessage,
         BigDecimal cost,
-        String currency
+        String currency,
+        String decisionCode,
+        String decisionScope,
+        long retryAfterSeconds
 ) {
     /**
      * 为非 Agent 发起的兼容调用补齐追踪身份；新模型访问链路必须传入完整身份。
@@ -54,6 +57,6 @@ public record GatewayTraceEvent(
         this(requestId, requestId, tenantId, userId, "direct-client", "unversioned",
                 "stateless", requestId, "general-model-access", null, "unspecified", requestedModel,
                 stream, startedAt, completedAt, latencyMs, request, response, success,
-                errorType, errorMessage, cost, currency);
+                errorType, errorMessage, cost, currency, "", "", 0);
     }
 }

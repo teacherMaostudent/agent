@@ -4,12 +4,17 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zxf.ai.gateway.cache.RequestCacheService;
+import com.zxf.ai.gateway.admission.AdmissionControl;
+import com.zxf.ai.gateway.admission.AdmissionLease;
+import com.zxf.ai.gateway.admission.AdmissionMetrics;
+import com.zxf.ai.gateway.admission.AdmissionRejectedException;
 import com.zxf.ai.gateway.client.LlmClientRegistry;
 import com.zxf.ai.gateway.eval.GatewayTraceEvent;
 import com.zxf.ai.gateway.model.GatewayException;
 import com.zxf.ai.gateway.model.GatewayRequestContext;
 import com.zxf.ai.gateway.model.GatewayUsage;
 import com.zxf.ai.gateway.model.ModelEndpoint;
+import com.zxf.ai.gateway.model.ProviderRateLimitedException;
 import com.zxf.ai.gateway.prompt.PromptTemplateService;
 import com.zxf.ai.gateway.report.UsageReportService;
 import com.zxf.ai.gateway.report.ModelPerformanceService;
@@ -21,6 +26,7 @@ import com.zxf.ai.gateway.usage.TokenEstimator;
 import com.zxf.ai.gateway.usage.OutputTokenPrediction;
 import com.zxf.ai.gateway.usage.OutputTokenPredictor;
 import com.zxf.ai.gateway.usage.UsageReservation;
+import com.zxf.ai.gateway.usage.QuotaExceededException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -55,6 +61,8 @@ public class ChatGatewayService {
     private final OutputTokenPredictor outputTokenPredictor;
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private final AdmissionControl admissionControl;
+    private final AdmissionMetrics admissionMetrics;
 
     /** 装配路由、模型客户端、额度、缓存、策略、报表和审计事件等网关协作组件。 */
     public ChatGatewayService(
@@ -70,7 +78,9 @@ public class ChatGatewayService {
             ModelPerformanceService performanceService,
             OutputTokenPredictor outputTokenPredictor,
             ObjectMapper objectMapper,
-            ApplicationEventPublisher eventPublisher
+            ApplicationEventPublisher eventPublisher,
+            AdmissionControl admissionControl,
+            AdmissionMetrics admissionMetrics
     ) {
         this.modelRouter = modelRouter;
         this.clientRegistry = clientRegistry;
@@ -85,6 +95,8 @@ public class ChatGatewayService {
         this.outputTokenPredictor = outputTokenPredictor;
         this.objectMapper = objectMapper;
         this.eventPublisher = eventPublisher;
+        this.admissionControl = admissionControl;
+        this.admissionMetrics = admissionMetrics;
     }
 
     /** 执行非流式补全：渲染 Prompt、固定路由版本、命中安全缓存并发布最终 Trace。 */
@@ -126,8 +138,8 @@ public class ChatGatewayService {
          * - 没有权重配置时走 primary；
          * - 最后追加 fallbacks 作为失败兜底链路。
          */
-        List<ModelEndpoint> endpoints = modelRouter.resolvePinned(
-                request.path("model").asText(context.requestedModel()), routeVersion, modelRevision);
+        List<ModelEndpoint> endpoints = boundedEndpoints(modelRouter.resolvePinned(
+                request.path("model").asText(context.requestedModel()), routeVersion, modelRevision));
         ReservationPlan plan = reserveUsage(context, endpoints, request);
         return tryComplete(context, request, endpoints, 0, plan, null);
     }
@@ -144,10 +156,10 @@ public class ChatGatewayService {
         if (preparedRequest.isObject()) {
             ((com.fasterxml.jackson.databind.node.ObjectNode) preparedRequest).remove(List.of("route_version", "model_revision"));
         }
-        List<ModelEndpoint> endpoints = modelRouter.resolvePinned(
-                preparedRequest.path("model").asText(context.requestedModel()), routeVersion, modelRevision);
+        List<ModelEndpoint> endpoints = boundedEndpoints(modelRouter.resolvePinned(
+                preparedRequest.path("model").asText(context.requestedModel()), routeVersion, modelRevision));
         ReservationPlan plan = reserveUsage(context, endpoints, preparedRequest);
-        return tryStream(context, preparedRequest, endpoints, 0, plan);
+        return tryStream(context, preparedRequest, endpoints, 0, plan, null);
     }
 
     /** 按调用计划尝试非流式上游端点；仅在失败前未输出时进入下一个回退端点。 */
@@ -161,6 +173,12 @@ public class ChatGatewayService {
     ) {
         if (index >= endpoints.size()) {
             quotaService.release(context.userId(), plan.reservation());
+            if (lastError instanceof GatewayException gatewayError
+                    && (gatewayError.status() == HttpStatus.TOO_MANY_REQUESTS
+                    || gatewayError.status() == HttpStatus.SERVICE_UNAVAILABLE)) {
+                // 候选路由都不可用时保留 429/503，而不是把可退避的事实误包装为 502。
+                return Mono.error(gatewayError);
+            }
             String lastMessage = lastError == null ? "unknown" : lastError.getMessage();
             return Mono.error(new GatewayException(HttpStatus.BAD_GATEWAY,
                     "All model routes failed. Last error: " + lastMessage));
@@ -179,6 +197,15 @@ public class ChatGatewayService {
             return tryComplete(context, request, endpoints, index + 1, plan, ex);
         }
 
+        AdmissionLease lease;
+        try {
+            lease = admissionControl.admitUpstream(context, endpoint, plan.reservation().estimatedTotalTokens());
+        } catch (GatewayException ex) {
+            // 受限路由不应拖垮其他候选；若所有候选都拒绝，末端会保留最后的 429/503 语义。
+            return tryComplete(context, request, endpoints, index + 1, plan, ex);
+        }
+
+        admissionMetrics.upstreamAttempt(endpoint.providerName());
         return clientRegistry.resolve(endpoint).chatCompletion(endpoint, request)
                 .map(response -> {
                     // 厂商返回 usage 时优先采用真实 completion token；缺失时再使用估算值。
@@ -199,11 +226,22 @@ public class ChatGatewayService {
                     // 单个路由失败不直接返回给业务方，而是进入 fallback 链路。
                     // 最后一个路由也失败时，tryComplete 会把最后一次错误原因带到 502 响应中。
                     policyService.recordFailure(endpoint);
+                    if (error instanceof ProviderRateLimitedException limited) {
+                        admissionMetrics.providerRateLimited(limited.provider());
+                    }
                     performanceService.recordFailure(context, endpoint, error, Duration.between(started, Instant.now()).toMillis());
                     log.warn("llm_gateway_fallback requestId={} user={} failedRoute={} reason={}",
                             context.requestId(), context.userId(), endpoint.key(), error.getMessage());
                     return tryComplete(context, request, endpoints, index + 1, plan, error);
-                });
+                })
+                // 此许可只包裹一次真实 upstream attempt；fallback 会重新申请自身 route/provider 许可。
+                .doFinally(ignored -> lease.release());
+    }
+
+    /** 截断 fallback 调用计划，避免故障期将一次业务请求放大为无界上游流量。 */
+    private List<ModelEndpoint> boundedEndpoints(List<ModelEndpoint> endpoints) {
+        int maximum = Math.max(1, admissionControl.maxUpstreamAttempts());
+        return endpoints.size() <= maximum ? endpoints : endpoints.subList(0, maximum);
     }
 
     /** 按调用计划尝试流式上游端点；响应首块后失败不得切换端点以免混合输出。 */
@@ -212,22 +250,36 @@ public class ChatGatewayService {
             JsonNode request,
             List<ModelEndpoint> endpoints,
             int index,
-            ReservationPlan plan
+            ReservationPlan plan,
+            Throwable lastError
     ) {
         if (index >= endpoints.size()) {
             quotaService.release(context.userId(), plan.reservation());
+            if (lastError instanceof GatewayException gatewayError
+                    && (gatewayError.status() == HttpStatus.TOO_MANY_REQUESTS
+                    || gatewayError.status() == HttpStatus.SERVICE_UNAVAILABLE)) {
+                return Flux.error(gatewayError);
+            }
             return Flux.error(new GatewayException(HttpStatus.BAD_GATEWAY, "All model routes failed"));
         }
 
         ModelEndpoint endpoint = endpoints.get(index);
         Instant started = Instant.now();
         if (!policyService.isAvailable(endpoint)) {
-            return tryStream(context, request, endpoints, index + 1, plan);
+            return tryStream(context, request, endpoints, index + 1, plan,
+                    new GatewayException(HttpStatus.SERVICE_UNAVAILABLE, "Circuit is open for route: " + endpoint.key()));
         }
         try {
             policyService.beforeCall(endpoint);
         } catch (GatewayException ex) {
-            return tryStream(context, request, endpoints, index + 1, plan);
+            return tryStream(context, request, endpoints, index + 1, plan, ex);
+        }
+
+        AdmissionLease lease;
+        try {
+            lease = admissionControl.admitUpstream(context, endpoint, plan.reservation().estimatedTotalTokens());
+        } catch (GatewayException ex) {
+            return tryStream(context, request, endpoints, index + 1, plan, ex);
         }
 
         AtomicReference<StringBuilder> text = new AtomicReference<>(new StringBuilder());
@@ -235,6 +287,7 @@ public class ChatGatewayService {
         AtomicReference<Long> ttftMs = new AtomicReference<>();
         AtomicReference<JsonNode> reportedUsage = new AtomicReference<>();
         AtomicBoolean responseStarted = new AtomicBoolean();
+        admissionMetrics.upstreamAttempt(endpoint.providerName());
         return clientRegistry.resolve(endpoint).streamChatCompletion(endpoint, request)
                 .doOnNext(chunk -> {
                     responseStarted.set(true);
@@ -279,6 +332,9 @@ public class ChatGatewayService {
                 })
                 .onErrorResume(error -> {
                     policyService.recordFailure(endpoint);
+                    if (error instanceof ProviderRateLimitedException limited) {
+                        admissionMetrics.providerRateLimited(limited.provider());
+                    }
                     performanceService.recordFailure(context, endpoint, error, Duration.between(started, Instant.now()).toMillis());
                     log.warn("llm_gateway_stream_fallback requestId={} user={} failedRoute={} reason={}",
                             context.requestId(), context.userId(), endpoint.key(), error.getMessage());
@@ -289,11 +345,12 @@ public class ChatGatewayService {
                                 "Upstream stream failed after response started; fallback was suppressed"
                         ));
                     }
-                    return tryStream(context, request, endpoints, index + 1, plan);
+                    return tryStream(context, request, endpoints, index + 1, plan, error);
                 })
                 .doOnError(error -> {
                     if (index == 0) publishTrace(context, request, null, false, error);
-                });
+                })
+                .doFinally(ignored -> lease.release());
     }
 
     /** 在兼容上游响应中附加可审计的路由、用量、成本与输出长度预测元数据。 */
@@ -423,6 +480,7 @@ public class ChatGatewayService {
                 .map(endpoint -> costCalculator.estimate(endpoint, promptTokens, prediction.selected()))
                 .max(BigDecimal::compareTo)
                 .orElse(BigDecimal.ZERO);
+        admissionControl.validateTokenBounds(promptTokens, prediction.selected());
         if (context.costBudget() != null && estimatedCost.compareTo(context.costBudget()) > 0) {
             throw new GatewayException(HttpStatus.PAYMENT_REQUIRED,
                     "Predicted request cost " + estimatedCost
@@ -451,7 +509,31 @@ public class ChatGatewayService {
                 context.startedAt(), Instant.now(), Duration.between(context.startedAt(), Instant.now()).toMillis(),
                 safeRequest, safeResponse, success,
                 error == null ? "" : error.getClass().getSimpleName(),
-                error == null || error.getMessage() == null ? "" : error.getMessage(), cost, currency));
+                error == null || error.getMessage() == null ? "" : error.getMessage(), cost, currency,
+                decisionCode(error), decisionScope(error), retryAfterSeconds(error)));
+    }
+
+    /** 将内部准入、配额与上游限流统一投影为不依赖异常类名的审计原因码。 */
+    private String decisionCode(Throwable error) {
+        if (error instanceof AdmissionRejectedException rejected) return rejected.reasonCode();
+        if (error instanceof ProviderRateLimitedException limited) return limited.reasonCode();
+        if (error instanceof QuotaExceededException exceeded) return exceeded.reasonCode();
+        return "";
+    }
+
+    /** 只导出公共限流维度，不把租户、用户或 Redis Key 写进治理事件。 */
+    private String decisionScope(Throwable error) {
+        if (error instanceof AdmissionRejectedException rejected) return rejected.scope();
+        if (error instanceof ProviderRateLimitedException limited) return "provider";
+        if (error instanceof QuotaExceededException) return "daily-quota";
+        return "";
+    }
+
+    /** 为可退避的错误导出秒级提示；普通业务错误保持为零。 */
+    private long retryAfterSeconds(Throwable error) {
+        if (error instanceof AdmissionRejectedException rejected) return rejected.retryAfterSeconds();
+        if (error instanceof ProviderRateLimitedException limited) return limited.retryAfterSeconds();
+        return 0;
     }
 
     /** 将网关响应中的成本字段安全转为小数，非法或缺失值视为零。 */

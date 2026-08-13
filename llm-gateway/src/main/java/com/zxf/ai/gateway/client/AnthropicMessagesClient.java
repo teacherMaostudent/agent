@@ -7,6 +7,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zxf.ai.gateway.config.GatewayProperties;
 import com.zxf.ai.gateway.model.GatewayException;
 import com.zxf.ai.gateway.model.ModelEndpoint;
+import com.zxf.ai.gateway.model.ProviderRateLimitedException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -68,7 +70,7 @@ public class AnthropicMessagesClient implements LlmProviderClient {
                 .timeout(properties.getRequestTimeout())
                 .transform(this::applyRetryIfEnabled)
                 .map(response -> toOpenAiCompatibleResponse(endpoint, response))
-                .onErrorMap(this::mapError);
+                .onErrorMap(error -> mapError(endpoint, error));
     }
 
     @Override
@@ -87,7 +89,7 @@ public class AnthropicMessagesClient implements LlmProviderClient {
                 .bodyToFlux(String.class)
                 .timeout(properties.getRequestTimeout())
                 .transform(this::applyRetryIfEnabled)
-                .onErrorMap(this::mapError);
+                .onErrorMap(error -> mapError(endpoint, error));
     }
 
     /**
@@ -279,16 +281,29 @@ public class AnthropicMessagesClient implements LlmProviderClient {
     /**
      * 执行 map error 的协议或数据转换，保持内部模型与外部契约隔离。
     */
-    private Throwable mapError(Throwable throwable) {
+    private Throwable mapError(ModelEndpoint endpoint, Throwable throwable) {
         if (throwable instanceof GatewayException) {
             return throwable;
         }
         if (throwable instanceof WebClientResponseException responseException) {
+            if (responseException.getStatusCode().value() == 429) {
+                return new ProviderRateLimitedException(endpoint.providerName(), endpoint.key(),
+                        retryAfterSeconds(responseException));
+            }
             String body = responseException.getResponseBodyAsString();
             String message = body == null || body.isBlank() ? responseException.getMessage() : body;
             return new GatewayException(HttpStatus.valueOf(responseException.getStatusCode().value()), message);
         }
         return new GatewayException(HttpStatus.BAD_GATEWAY, throwable.getMessage());
+    }
+
+    /** 从供应商提示中取得秒级退避时间，不能解析时返回最小安全值。 */
+    private long retryAfterSeconds(WebClientResponseException response) {
+        try {
+            return Math.max(1, Long.parseLong(response.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)));
+        } catch (RuntimeException ignored) {
+            return 1;
+        }
     }
 
     /**
@@ -301,4 +316,3 @@ public class AnthropicMessagesClient implements LlmProviderClient {
         return baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
     }
 }
-

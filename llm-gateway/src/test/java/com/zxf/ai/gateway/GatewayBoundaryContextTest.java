@@ -23,7 +23,8 @@ import static org.assertj.core.api.Assertions.assertThat;
         "management.health.redis.enabled=false",
         "enhancement.langchain4j.enabled=false",
         "rag-agent.enabled=false",
-        "gateway.compatibility.agent-memory.enabled=false"
+        "gateway.compatibility.agent-memory.enabled=false",
+        "gateway.admission.store=memory"
 })
 class GatewayBoundaryContextTest {
     @Autowired
