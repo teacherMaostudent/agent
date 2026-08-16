@@ -11,6 +11,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, Field
 
+from platform_sdk.contracts.capabilities import required_runtime_capabilities
 from platform_sdk.contracts.workflow import (
     WorkflowConditionError,
     compile_workflow_condition,
@@ -34,6 +35,7 @@ class CompiledRuntimePlan(BaseModel):
     graph_execution_order: list[str]
     graph_node_kinds: dict[str, str]
     executor_profile: str
+    required_capabilities: list[str] = Field(default_factory=list)
     workflow_policy: dict[str, Any] = Field(default_factory=dict)
     prompt_template: str
     prompt_variables: list[str] = Field(default_factory=list)
@@ -44,6 +46,7 @@ class CompiledRuntimePlan(BaseModel):
     fallback_models: list[str] = Field(default_factory=list)
     data_region: str | None = None
     retrieval_policy: dict[str, Any] = Field(default_factory=dict)
+    subagents: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RuntimeSnapshotArtifact(BaseModel):
@@ -156,6 +159,7 @@ def compile_runtime_snapshot(
             graph_execution_order=order,
             graph_node_kinds=node_kinds,
             executor_profile=executor_profile,
+            required_capabilities=required_runtime_capabilities(spec),
             workflow_policy=workflow_policy,
             prompt_template=template,
             prompt_variables=variables,
@@ -166,6 +170,7 @@ def compile_runtime_snapshot(
             fallback_models=list(dict.fromkeys(fallback_models)),
             data_region=default_route.get("data_region"),
             retrieval_policy=dict(spec.get("retrieval_policy") or {}),
+            subagents=[dict(item) for item in spec.get("subagents") or []],
         ),
     )
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -20,14 +21,17 @@ class RuntimeExecutorCatalog:
         self.timeout = timeout
         self.service_key = service_key
 
-    def validate(self, environment: str, profile: str) -> dict[str, Any]:
-        """验证环境允许 Profile，且有登记实例证明目录版本和执行器均一致。"""
+    def validate(
+        self, environment: str, profile: str, *, required_capabilities: Iterable[str] = ()
+    ) -> dict[str, Any]:
+        """验证环境、执行器和计划所需能力均由目标实例实际证明。"""
         # Local/CI does not contact a Runtime cluster merely because the sample
         # catalog is present. Production explicitly enables this release gate.
         if not self.required:
             return {"catalog_version": "local-unchecked", "clusters": []}
         catalog = self._load()
         catalog_version = str(catalog["version"])
+        required = {str(item) for item in required_capabilities}
         eligible = [
             item
             for item in catalog["clusters"]
@@ -42,11 +46,23 @@ class RuntimeExecutorCatalog:
         errors: list[str] = []
         for cluster in eligible:
             try:
+                declared = {str(item) for item in cluster.get("capabilities", [])}
+                if not required <= declared:
+                    raise ValueError(
+                        "capabilities missing from deployment catalog: "
+                        + ", ".join(sorted(required - declared))
+                    )
                 capability = self._capabilities(cluster)
                 if capability.get("catalog_version") != catalog_version:
                     raise ValueError("catalog version mismatch")
                 if profile not in capability.get("executor_profiles", []):
                     raise ValueError("profile missing from runtime capability")
+                actual = {str(item) for item in capability.get("capabilities", [])}
+                if not required <= actual:
+                    raise ValueError(
+                        "capabilities missing from runtime instance: "
+                        + ", ".join(sorted(required - actual))
+                    )
                 return {
                     "catalog_version": catalog_version,
                     "cluster_id": cluster.get("cluster_id"),

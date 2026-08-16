@@ -21,6 +21,17 @@ CREATE TABLE IF NOT EXISTS runtime_outbox(
     attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TIMESTAMPTZ,
     last_error TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL
 );
+CREATE TABLE IF NOT EXISTS runtime_session_events(
+    event_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, session_id TEXT NOT NULL,
+    run_id TEXT NOT NULL, parent_run_id TEXT NOT NULL DEFAULT '', trace_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+    snapshot_id TEXT NOT NULL, sequence INTEGER NOT NULL, event_type TEXT NOT NULL,
+    status TEXT NOT NULL, error_code TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL, occurred_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (tenant_id, session_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS runtime_session_events_lookup_idx
+    ON runtime_session_events(tenant_id, session_id, sequence);
+ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS parent_run_id TEXT NOT NULL DEFAULT '';
 """
 
 
@@ -40,3 +51,10 @@ class PostgresRuntimeStore(RuntimeStore):
         self._connection = connect_postgres(dsn, schema)
         execute_script(self._connection, _SCHEMA)
         self._connection.commit()
+
+    def _lock_session_stream(self, tenant_id: str, session_id: str) -> None:
+        """使用事务级咨询锁串行化同一会话的序号分配，防止多 Runtime 副本产生序号竞争。"""
+        self._connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))",
+            (tenant_id, session_id),
+        )

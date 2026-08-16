@@ -197,6 +197,16 @@ def validate_agent_spec(spec: AgentDraftSpec, policy: TenantPolicy) -> Validatio
             )
         )
 
+    subagent_ids = [item.agent_id for item in spec.subagents]
+    if len(subagent_ids) != len(set(subagent_ids)):
+        issues.append(
+            _error(
+                "subagents.duplicate",
+                "subagents",
+                "A published Agent may bind each subagent only once.",
+            )
+        )
+
     route_names = [route.route_name for route in spec.model_policy.routes]
     route_set = set(route_names)
     if len(route_names) != len(route_set):

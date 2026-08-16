@@ -93,14 +93,22 @@ flowchart LR
    任意代码。
 4. Context Service 读取会话消息，并按角色、时间、相关性与来源可信度进行排序。需要知识时调用
    RAG Service；若检索被声明为可选且不可用，则显式标记为 `memory-only` 降级。
-5. Harness 先解析 Release、加载 Artifact、创建执行上下文并按已部署的 Profile 选择执行器。短任务使用
+5. Runtime 在启动期冻结 Context、LLM、RAG、Tool 与 Workflow Provider；Snapshot Compiler 从
+   发布 Spec 推导必需能力，Harness 会在选执行器前拒绝“快照需要、目标实例未部署”的能力组合。随后
+   Harness 解析 Release、加载 Artifact、创建执行上下文并按已部署的 Profile 选择执行器。短任务使用
    `simple/v1`，默认 Agent Loop 使用 `declarative-langgraph/v1`，长期可靠任务使用 `temporal-workflow/v1`。
    后两者由 LangGraph 在发布计划允许范围内循环规划、决策、检索、调用工具和观察；Harness 不承载这些业务能力。
-6. LLM Gateway 负责实际模型调用与路由。Tool Gateway 负责工具输入/输出 Schema、租户、权限、
+6. Runtime 在状态成功提交后发布仅含关联 ID 与状态的进程内生命周期事件；它用于本地扩展与后续
+   Session 回放，不承载跨服务审计。可靠事件仍经 Transactional Outbox、CDC/Kafka Connect 进入
+   Governance，因而观测订阅失败不会影响用户运行。
+7. Runtime 同一事务还会写入按 `(tenant_id, session_id, sequence)` 单调递增的 Session Event Store。
+   Agent Lab 可分页读取该无敏感正文的事件流来关联冻结快照和离线回放；Context Service 仍是历史
+   消息与上下文证据的唯一所有者，二者不会互相复制。
+8. LLM Gateway 负责实际模型调用与路由。Tool Gateway 负责工具输入/输出 Schema、租户、权限、
    风险审批、一次性消费和幂等键。
-7. `controlled_scan` 只可扫描预注册范围内的日志、源码或文本文件；结果会脱敏、截断，并在进入
+9. `controlled_scan` 只可扫描预注册范围内的日志、源码或文本文件；结果会脱敏、截断，并在进入
    Prompt 前应用内容上限。
-8. Runtime、Control Plane、Tool Gateway 和 LLM Gateway 通过 Outbox/事件向 Governance 写入审计。
+10. Runtime、Control Plane、Tool Gateway 和 LLM Gateway 通过 Outbox/事件向 Governance 写入审计。
    Governance 的评测与合规处理异步进行，不会把主运行链路变成同步依赖。
 
 ## 发布与执行的一致性模型

@@ -40,6 +40,7 @@ from agent_runtime_service.runtime.models import (
 )
 from agent_runtime_service.runtime.planner import HeuristicSemanticAnalyzer, RuntimePlanner
 from agent_runtime_service.runtime.snapshot_compiler import validate_final_output
+from agent_runtime_service.runtime.subagents import SubAgentManager, SubAgentPolicyError
 
 
 class AgentGraph:
@@ -61,6 +62,8 @@ class AgentGraph:
         budget_guard: BudgetGuard | None = None,
         checkpointer=None,
         cancellation_checker: Callable[[str, str], bool] | None = None,
+        subagent_manager: SubAgentManager | None = None,
+        subagent_executor: Callable[[Any, str, dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         """组装受控执行图。
 
@@ -80,6 +83,8 @@ class AgentGraph:
         self.planner = planner or RuntimePlanner(HeuristicSemanticAnalyzer())
         self.budget_guard = budget_guard or BudgetGuard(0.0, 0.0)
         self.cancellation_checker = cancellation_checker
+        self.subagent_manager = subagent_manager
+        self.subagent_executor = subagent_executor
         self.graph = self._build().compile(checkpointer=checkpointer or InMemorySaver())
 
     def _build(self):
@@ -347,6 +352,7 @@ class AgentGraph:
         return {
             AgentAction.RETRIEVE: "retrieve",
             AgentAction.TOOL: "tool",
+            AgentAction.SUBAGENT: "tool",
             AgentAction.ANSWER: "answer",
         }[action]
 
@@ -519,6 +525,8 @@ class AgentGraph:
         """
         self._ensure_active(state)
         decision = AgentDecision.model_validate(state["decision"])
+        if decision.action == AgentAction.SUBAGENT:
+            return self._subagent(state, decision)
         published_version = self._published_tool_version(state, decision.tool_name)
         approval_ids = state.get("metadata", {}).get("tool_approval_ids", {})
         approval_id = (
@@ -592,6 +600,41 @@ class AgentGraph:
                 "tool",
                 {"tool": decision.tool_name, "success": observation["success"]},
             ),
+        }
+
+    def _subagent(self, state: AgentState, decision: AgentDecision) -> dict:
+        """执行已发布子 Agent 委派；目标 Agent 仍经自身 Release/快照运行。"""
+        self._ensure_active(state)
+        if self.subagent_manager is None or self.subagent_executor is None:
+            raise RuntimeLimitExceeded("SUBAGENT_UNAVAILABLE", "Subagent execution is not deployed.")
+        try:
+            delegation, result = self.subagent_manager.dispatch(
+                state,
+                target_agent_id=decision.subagent_id,
+                task=decision.subagent_task,
+                executor=self.subagent_executor,
+            )
+        except SubAgentPolicyError as exc:
+            raise RuntimeLimitExceeded("SUBAGENT_POLICY", str(exc)) from exc
+        invocations = dict(state.get("subagent_invocations", {}))
+        invocations[delegation.target_agent_id] = invocations.get(delegation.target_agent_id, 0) + 1
+        observation = {
+            "type": "subagent",
+            "agent_id": delegation.target_agent_id,
+            "success": result.get("status") == "COMPLETED",
+            "result": bound_untrusted(result, int(state.get("metadata", {}).get("tool_result_max_chars", 12_000))),
+        }
+        budget = self._budget(state)
+        child_cost = float(result.get("budget", {}).get("spent_cost_usd", 0))
+        budget = budget.model_copy(
+            update={"spent_cost_usd": min(budget.max_cost_usd, budget.spent_cost_usd + child_cost)}
+        )
+        return {
+            "subagent_invocations": invocations,
+            "observations": [*state.get("observations", []), observation],
+            "budget": budget.model_dump(mode="json"),
+            "workflow_cursor": self._workflow_after_side_effect(state, "tool"),
+            "execution_trace": self._trace(state, "subagent", {"agent_id": delegation.target_agent_id}),
         }
 
     @staticmethod
@@ -809,6 +852,7 @@ class AgentGraph:
         requested_role = {
             AgentAction.RETRIEVE: "retrieval",
             AgentAction.TOOL: "tool",
+            AgentAction.SUBAGENT: "tool",
             AgentAction.ANSWER: "answer",
         }[action]
         if role == "answer" and action == AgentAction.ANSWER and cursor in workflow.get("terminals", []):

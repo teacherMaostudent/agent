@@ -72,7 +72,8 @@ def test_release_requires_runtime_cluster_capability_when_catalog_is_enabled(
     catalog_path.write_text(
         '{"version":"runtime-executor-catalog/v1","clusters":[{"cluster_id":"prod-a",'
         '"environment":"production","base_url":"http://runtime-a",'
-        '"executor_profiles":["declarative-langgraph/v1"]}]}',
+        '"executor_profiles":["declarative-langgraph/v1"],'
+        '"capabilities":["context","llm","retrieval","tool","workflow"]}]}',
         encoding="utf-8",
     )
     catalog = RuntimeExecutorCatalog(catalog_path, required=True, timeout=1, service_key="key")
@@ -82,6 +83,7 @@ def test_release_requires_runtime_cluster_capability_when_catalog_is_enabled(
         lambda _: {
             "catalog_version": "runtime-executor-catalog/v1",
             "executor_profiles": ["declarative-langgraph/v1"],
+            "capabilities": ["context", "llm", "retrieval", "tool", "workflow"],
         },
     )
     client.app.state.container.service._runtime_executor_catalog = catalog
@@ -90,6 +92,41 @@ def test_release_requires_runtime_cluster_capability_when_catalog_is_enabled(
 
     assert release["runtime_executor_catalog_version"] == "runtime-executor-catalog/v1"
     assert release["runtime_executor_cluster_id"] == "prod-a"
+
+
+def test_runtime_catalog_rejects_plan_when_instance_lacks_required_capability(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """发布目录和实例探测都必须证明能力完整，不能只校验执行器 Profile。"""
+    catalog_path = tmp_path / "runtime-executors.json"
+    catalog_path.write_text(
+        '{"version":"runtime-executor-catalog/v1","clusters":[{"cluster_id":"prod-a",'
+        '"environment":"production","base_url":"http://runtime-a",'
+        '"executor_profiles":["declarative-langgraph/v1"],'
+        '"capabilities":["context","llm"]}]}',
+        encoding="utf-8",
+    )
+    catalog = RuntimeExecutorCatalog(catalog_path, required=True, timeout=1, service_key="key")
+    monkeypatch.setattr(
+        catalog,
+        "_capabilities",
+        lambda _: {
+            "catalog_version": "runtime-executor-catalog/v1",
+            "executor_profiles": ["declarative-langgraph/v1"],
+            "capabilities": ["context", "llm"],
+        },
+    )
+
+    try:
+        catalog.validate(
+            "production",
+            "declarative-langgraph/v1",
+            required_capabilities=["context", "llm", "tool"],
+        )
+    except ValueError as exc:
+        assert "capabilities missing" in str(exc)
+    else:
+        raise AssertionError("release must reject an incompletely deployed Runtime")
 
 
 def test_publish_snapshot_is_immutable_and_tenant_isolated(

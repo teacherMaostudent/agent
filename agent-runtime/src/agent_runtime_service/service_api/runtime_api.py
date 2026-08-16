@@ -3,9 +3,11 @@ from time import monotonic
 from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
+from platform_sdk.contracts.capabilities import RuntimeCapability
 from platform_sdk.contracts.context import ConversationMessage
 from platform_sdk.contracts.runtime_api import AgentResumeRequest, AgentRunRequest
 
+from agent_runtime_service.runtime.capabilities import CapabilityUnavailable
 from agent_runtime_service.runtime.models import ApprovalResume, RuntimeBudget
 from agent_runtime_service.runtime.snapshot_compiler import CompiledAgentPlan, SnapshotCompileError
 
@@ -24,8 +26,18 @@ def runtime_capabilities(request: Request) -> dict:
     return {
         "service": "agent-runtime",
         "catalog_version": container.settings.executor_catalog_version,
+        "capability_catalog_version": container.capabilities.version,
         "executor_profiles": list(container.agent_harness.executor_profiles),
+        "capabilities": list(container.capabilities.names),
     }
+
+
+def _capability(container, capability: RuntimeCapability):
+    """把未部署能力转为 503，避免接口因内部属性缺失出现不透明错误。"""
+    try:
+        return container.capability(capability)
+    except CapabilityUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def _trusted_identity(
@@ -135,6 +147,7 @@ def run_agent(
             else container.settings.agent_attempt_budget
         ),
         run_id=x_run_id,
+        parent_run_id=str(payload.metadata.get("_parent_run_id", "")),
     )
     # Temporal Activity 重试会携带同一 run_id; 已有终态/待审批 Run 必须只返回既有结果,
     # 不能再次写入用户消息或重新触发 Graph。运行中的 Run 由 Temporal Activity 重放恢复。
@@ -148,7 +161,7 @@ def run_agent(
             "status": existing_before_create.status,
             "idempotent_replay": True,
         }
-    created = container.run_store.create(execution)
+    created, started_event = container.run_store.create_with_session_event(execution)
     if created.run_id != execution.run_id:
         return {
             **_public_result(created.result),
@@ -160,9 +173,12 @@ def run_agent(
     existing = container.run_store.get(x_tenant_id, execution.run_id)
     if existing and existing.cancel_requested:
         raise HTTPException(status_code=409, detail="run was cancelled before execution")
+    if started_event is not None:
+        # 运行记录已在 Store 提交后才发布事件；Event Bus 不得成为状态机的写入前置条件。
+        container.publish_session_event(started_event)
     try:
         if not run_already_started:
-            container.context_client.append_message(
+            _capability(container, RuntimeCapability.CONTEXT).append_message(
                 session_id,
                 ConversationMessage(role="user", content=payload.task, metadata=payload.metadata),
                 x_tenant_id,
@@ -199,6 +215,7 @@ def run_agent(
         runtime_metadata = {
             **payload.metadata,
             "tool_result_max_chars": configured_tool_limit,
+            "runtime_environment": payload.environment,
         }
         result = container.agent_harness.run(
             {
@@ -229,13 +246,14 @@ def run_agent(
                 "observations": [],
                 "evidence": [],
                 "execution_trace": [],
+                "subagent_invocations": {},
                 "temporal_worker_execution": _temporal_worker_execution,
             },
             execution.run_id,
             compiled_plan,
         )
         if result.status != "WAITING_APPROVAL":
-            container.context_client.append_message(
+            _capability(container, RuntimeCapability.CONTEXT).append_message(
                 session_id,
                 ConversationMessage(
                     role="assistant",
@@ -255,7 +273,7 @@ def run_agent(
             {},
             type(exc).__name__,
         )
-        container.run_store.finish_and_enqueue(
+        session_event = container.run_store.finish_and_enqueue(
             execution.run_id,
             "FAILED",
             {},
@@ -263,6 +281,8 @@ def run_agent(
             type(exc).__name__,
         )
         container.governance.flush()
+        if session_event is not None:
+            container.publish_session_event(session_event)
         raise
     body = {
         **result.model_dump(mode="json"),
@@ -273,10 +293,12 @@ def run_agent(
     event = container.governance.event_for_run(execution, result.status, body)
     # 编译计划仅供审批恢复选择同一执行器, 不能进入对外结果或治理事件载荷。
     persisted_result = {**body, "_compiled_plan": compiled_plan.model_dump(mode="json")}
-    container.run_store.finish_and_enqueue(
+    session_event = container.run_store.finish_and_enqueue(
         execution.run_id, result.status, persisted_result, event
     )
     container.governance.flush()
+    if session_event is not None:
+        container.publish_session_event(session_event)
     return body
 
 
@@ -315,7 +337,7 @@ def submit_agent_run(
             status_code=409,
             detail="asynchronous /runs is reserved for temporal-workflow/v1 releases",
         )
-    return container.async_runs.submit(
+    return _capability(container, RuntimeCapability.WORKFLOW).submit(
         {
             "payload": payload.model_dump(mode="json"),
             "tenant_id": x_tenant_id,
@@ -362,8 +384,8 @@ def resume_run(
     except Exception as exc:
         raise HTTPException(status_code=409, detail="persisted execution plan is unavailable") from exc
     if compiled_plan.executor_profile == "temporal-workflow/v1" and not _temporal_worker_execution:
-        queue = container.async_runs
-        if queue is None or not hasattr(queue, "resume"):
+        queue = _capability(container, RuntimeCapability.WORKFLOW)
+        if not hasattr(queue, "resume"):
             raise HTTPException(status_code=503, detail="Temporal durable executor is unavailable")
         queued = queue.resume(
             x_tenant_id,
@@ -396,7 +418,7 @@ def resume_run(
         "latency_ms": int((datetime.now(UTC) - run.created_at).total_seconds() * 1_000),
     }
     if result.status != "WAITING_APPROVAL":
-        container.context_client.append_message(
+        _capability(container, RuntimeCapability.CONTEXT).append_message(
             run.context.session_id,
             ConversationMessage(
                 role="assistant",
@@ -411,8 +433,12 @@ def resume_run(
         )
     event = container.governance.event_for_run(run.context, result.status, body)
     persisted_result = {**body, "_compiled_plan": compiled_plan.model_dump(mode="json")}
-    container.run_store.finish_and_enqueue(run_id, result.status, persisted_result, event)
+    session_event = container.run_store.finish_and_enqueue(
+        run_id, result.status, persisted_result, event
+    )
     container.governance.flush()
+    if session_event is not None:
+        container.publish_session_event(session_event)
     return body
 
 
@@ -426,13 +452,41 @@ def get_run(
     x_tenant_id, _, _ = _trusted_identity(request, x_tenant_id, "anonymous", "")
     run = request.app.state.container.run_store.get(x_tenant_id, run_id)
     if run is None:
-        queued = request.app.state.container.async_runs.get(x_tenant_id, run_id)
+        queued = _capability(
+            request.app.state.container, RuntimeCapability.WORKFLOW
+        ).get(x_tenant_id, run_id)
         if queued is None:
             raise HTTPException(status_code=404, detail="run not found")
         return queued
     body = run.model_dump(mode="json")
     body["result"] = _public_result(body.get("result") or {})
     return body
+
+
+@router.get("/sessions/{session_id}/events")
+def get_session_events(
+    session_id: str,
+    request: Request,
+    after_sequence: int = 0,
+    limit: int = 200,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+) -> dict:
+    """按租户读取只含运行关联信息的追加事件流，供 Agent Lab 回放而非恢复 Prompt 正文。"""
+    x_tenant_id, _, _ = _trusted_identity(request, x_tenant_id, "anonymous", "")
+    try:
+        events = request.app.state.container.run_store.session_events(
+            x_tenant_id,
+            session_id,
+            after_sequence=after_sequence,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "session_id": session_id,
+        "events": [event.model_dump(mode="json") for event in events],
+        "next_after_sequence": events[-1].sequence if events else after_sequence,
+    }
 
 
 @router.post("/runs/{run_id}/cancel")

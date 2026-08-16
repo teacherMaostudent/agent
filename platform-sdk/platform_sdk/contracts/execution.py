@@ -14,6 +14,7 @@ class ExecutionContext(BaseModel):
     request_id: str
     trace_id: str
     run_id: str
+    parent_run_id: str = ""
     session_id: str
     tenant_id: str
     user_id: str
@@ -42,6 +43,7 @@ class ExecutionContext(BaseModel):
         graph_version: str = "runtime-planner-v1",
         model_policy_version: str = "local-unversioned",
         run_id: str | None = None,
+        parent_run_id: str = "",
     ) -> ExecutionContext:
         """创建一次运行不可变的传播身份、截止时间和尝试预算。
 
@@ -52,6 +54,7 @@ class ExecutionContext(BaseModel):
             request_id=request_id,
             trace_id=trace_id,
             run_id=run_id or f"run_{uuid4().hex}",
+            parent_run_id=parent_run_id,
             session_id=session_id,
             tenant_id=tenant_id,
             user_id=user_id,
@@ -70,6 +73,7 @@ class ExecutionContext(BaseModel):
             "X-Request-Id": self.request_id,
             "X-Trace-Id": self.trace_id,
             "X-Run-Id": self.run_id,
+            "X-Parent-Run-Id": self.parent_run_id,
             "X-Session-Id": self.session_id,
             "X-Agent-Id": self.agent_id,
             "X-Agent-Version": self.agent_version,

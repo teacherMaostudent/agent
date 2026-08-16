@@ -26,13 +26,49 @@ Runtime 将“可配置”限制在可审计的声明式边界内，而不是让
    检索档位。它不能新增快照未绑定的模型、知识源、权限或工具，也不能直接执行副作用。
 3. **LangGraph** 是固定的可靠状态机与检查点实现。它在模型决策、检索和工具之后都验证
    Workflow Policy 的 cursor；模型只能建议 `RETRIEVE`、`TOOL` 或 `ANSWER`，不能改图。
-4. **Harness** 是 API 与 Worker 唯一的执行门面，统一 `run/resume` 契约，并按快照中的
+4. **Capability Runtime** 在启动期冻结 Context、LLM、Retrieval、Tool、Workflow 五类
+   Provider；Snapshot Compiler 从发布 Spec 推导 `required_capabilities`。Harness 在选择
+   执行器前校验这些能力，未部署能力以 409 拒绝，不能在请求中临时注册插件或静默降级。
+5. **Harness** 是 API 与 Worker 唯一的执行门面，统一 `run/resume` 契约，并按快照中的
    `runtime_executor` Profile 选择本集群已部署的执行器。生产未知 Profile 一律拒绝；默认图
    仅在未启用 `RUNTIME_SNAPSHOT_REQUIRED` 的本地兼容模式可用。
 
-Runtime 提供内部 `GET /api/v1/agent/capabilities`，只返回已部署的 `runtime_executor` Profiles 和
-`RUNTIME_EXECUTOR_CATALOG_VERSION`。Control Plane 在生产发布前用它证明目标实例确实具备快照
-要求的执行器；该接口必须使用服务身份、mTLS 与网络策略保护，不能暴露给终端用户。
+Runtime 提供内部 `GET /api/v1/agent/capabilities`，只返回已部署的 `runtime_executor` Profiles、
+能力目录版本和实际能力名称。Control Plane 在生产发布前用它证明目标实例确实具备快照要求的
+执行器与外围能力；该接口必须使用服务身份、mTLS 与网络策略保护，不能暴露给终端用户。
+
+### Runtime Event Bus
+
+`RuntimeEventBus` 是 Runtime **进程内**的生命周期分发边界。它只在运行记录已经提交后发布
+`started`、`waiting_approval`、`completed`、`failed`、`cancel_requested` 等最小关联事件；事件仅含
+`run_id`、`trace_id`、`tenant_id`、`agent_id`、`snapshot_id`、`session_id`、状态与少量计数，不携带
+用户任务、Prompt、模型回答或证据正文。订阅者只能在容器启动时装配，运行中不能注册插件；订阅失败
+仅记录日志，不回滚已提交的运行状态。
+
+它不是 Kafka、Temporal 或 Governance 的替代品：跨进程投递、审计耐久性与重放仍由 Transactional
+Outbox、CDC/Kafka Connect 和 Governance 负责。Session Event Store 使用同一生命周期契约并与状态
+事务一起写入，不会另建一套状态事实来源。
+
+### Session Event Store
+
+每次 `RUN_STARTED`、取消、等待审批、完成或失败，都会与 `runtime_runs` 状态变更、必要时的
+Governance Outbox 写入处于同一数据库事务；事件在 `(tenant_id, session_id)` 内分配严格递增的
+`sequence`。`GET /api/v1/agent/sessions/{session_id}/events` 可按序号分页读取这一**无正文**事件流，
+用于 Agent Lab 关联快照、运行结果和失败轨迹。它不取代 Context Service 的会话消息记录，也不保存
+Prompt、模型回答、工具原始输出或证据正文；这些内容继续遵循各自服务的 ACL 与生命周期策略。
+
+### SubAgent Manager
+
+发布 Spec 可声明 `subagents` 绑定。`SubAgentManager` 只接受这些冻结目标，并按绑定的最大深度、
+调用次数和预算比例切分父运行的剩余资源；未声明目标、超深度或超次数均 fail-closed。子 Agent
+实际执行仍必须解析其自身 Release 和 Snapshot，经 Harness 与其独立权限/工具策略运行，不能继承
+父 Agent 的任意工具或模型权限。
+
+Graph 的模型动作新增受控 `SUBAGENT`：仅当发布 Workflow 当前允许 `tool` 角色时才可进入委派节点；
+委派结果会作为脱敏、截断后的观察写回父 Graph。父 `tenant_id`、用户权限、Session 和 Trace 仅作为
+身份关联传递，目标 Agent 的模型、知识、工具与审批策略一律从其自己的发布快照重新解析。
+子运行还会保存不可伪造的 `parent_run_id`，因此 Session Event Store 可同时按会话顺序和父子链路
+还原一次委派，而无需保存任务正文。
 
 每份 Execution Plan 都保存 `plan_hash`、Planner/Analyzer 版本、输入摘要和策略摘要，并随
 Run 结果和 Governance Outbox 事件输出，供 Agent Lab 回放和线上审计关联。摘要不重复保存

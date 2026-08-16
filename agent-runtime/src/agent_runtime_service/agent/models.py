@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 class AgentAction(StrEnum):
     RETRIEVE = "RETRIEVE"
     TOOL = "TOOL"
+    SUBAGENT = "SUBAGENT"
     ANSWER = "ANSWER"
 
 
@@ -16,6 +17,8 @@ class AgentDecision(BaseModel):
     query: str = ""
     tool_name: str = ""
     tool_arguments: dict[str, Any] = Field(default_factory=dict)
+    subagent_id: str = ""
+    subagent_task: str = ""
     final_answer: str = ""
 
     @model_validator(mode="after")
@@ -29,6 +32,10 @@ class AgentDecision(BaseModel):
             raise ValueError("RETRIEVE requires query")
         if self.action == AgentAction.TOOL and not self.tool_name.strip():
             raise ValueError("TOOL requires tool_name")
+        if self.action == AgentAction.SUBAGENT and (
+            not self.subagent_id.strip() or not self.subagent_task.strip()
+        ):
+            raise ValueError("SUBAGENT requires subagent_id and subagent_task")
         if self.action == AgentAction.ANSWER and not self.final_answer.strip():
             raise ValueError("ANSWER requires final_answer")
         return self
@@ -75,6 +82,7 @@ class AgentState(TypedDict, total=False):
     final_answer: str
     termination_reason: str
     safety_status: str
+    subagent_invocations: dict[str, int]
 
 
 class AgentRunResult(BaseModel):

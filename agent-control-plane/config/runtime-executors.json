@@ -9,7 +9,8 @@
         "simple/v1",
         "declarative-langgraph/v1",
         "temporal-workflow/v1"
-      ]
+      ],
+      "capabilities": ["context", "llm", "retrieval", "tool", "workflow"]
     }
   ]
 }
