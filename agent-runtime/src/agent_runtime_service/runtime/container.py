@@ -1,6 +1,8 @@
 """Runtime composition root for graph, harness, persistence and worker adapters."""
 
 import sqlite3
+from datetime import datetime
+from typing import Any
 
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -11,6 +13,7 @@ from platform_sdk.clients.llm_gateway import LlmGatewayClient
 from platform_sdk.clients.rag import HttpRagQueryClient
 from platform_sdk.clients.tool_gateway import ToolGatewayClient
 from platform_sdk.contracts.capabilities import RuntimeCapability
+from platform_sdk.contracts.execution import ExecutionContext
 
 from agent_runtime_service.agent.decision_engine import GatewayDecisionEngine, OfflineDecisionEngine
 from agent_runtime_service.agent.graph import AgentGraph
@@ -19,8 +22,10 @@ from agent_runtime_service.runtime.async_jobs import AsyncRunQueue
 from agent_runtime_service.runtime.budget import BudgetGuard
 from agent_runtime_service.runtime.capabilities import CapabilityRegistry, CapabilityUnavailable
 from agent_runtime_service.runtime.catalog import ExecutorCatalog
+from agent_runtime_service.runtime.code_runner import ControlledCodeRunner, SandboxPolicy
 from agent_runtime_service.runtime.event_bus import (
     RuntimeEventBus,
+    RuntimeInterceptionPipeline,
     RuntimeLifecycleEvent,
 )
 from agent_runtime_service.runtime.harness import (
@@ -40,6 +45,7 @@ from agent_runtime_service.runtime.planner import (
     RuntimePlanner,
 )
 from agent_runtime_service.runtime.postgres_store import PostgresRuntimeStore
+from agent_runtime_service.runtime.session_events import ModelVisibleMessage, RuntimeEventType
 from agent_runtime_service.runtime.subagents import SubAgentDelegation, SubAgentManager
 from agent_runtime_service.runtime.temporal_queue import TemporalRunQueue
 
@@ -60,6 +66,7 @@ class AgentRuntimeContainer:
         self.settings = get_settings()
         # Event Bus 是进程内扩展边界，不与治理 Outbox 共用或竞争跨服务投递职责。
         self.events = RuntimeEventBus()
+        self.interception_pipeline = RuntimeInterceptionPipeline()
         self.workload_identity = build_workload_token_provider(self.settings)
         if self.settings.persistence == "postgres":
             self.run_store = PostgresRuntimeStore(
@@ -122,14 +129,23 @@ class AgentRuntimeContainer:
                 if self.settings.temporal_enabled
                 else AsyncRunQueue(self.settings.runtime_jobs_path, self._execute_submission)
             )
+        subagent_manager = SubAgentManager()
         providers = {
             RuntimeCapability.CONTEXT: context_client,
             RuntimeCapability.RETRIEVAL: rag_client,
             RuntimeCapability.LLM: llm_gateway,
             RuntimeCapability.TOOL: tool_registry,
+            RuntimeCapability.SESSION: self.run_store,
+            RuntimeCapability.SUBAGENT: subagent_manager,
         }
         if self.async_runs is not None:
             providers[RuntimeCapability.WORKFLOW] = self.async_runs
+        if self.settings.code_runner_enabled:
+            sandbox_policy = SandboxPolicy()
+            providers[RuntimeCapability.SANDBOX] = sandbox_policy
+            providers[RuntimeCapability.CODE_RUNNER] = ControlledCodeRunner(
+                tool_registry, sandbox_policy
+            )
         self.capabilities = CapabilityRegistry(
             providers,
             version=self.settings.capability_catalog_version,
@@ -160,18 +176,22 @@ class AgentRuntimeContainer:
             ),
             checkpointer=self.checkpointer,
             cancellation_checker=self._is_cancelled,
-            subagent_manager=SubAgentManager(),
+            subagent_manager=subagent_manager,
             subagent_executor=self._invoke_subagent,
+            session_event_recorder=self._record_graph_session_event,
+            interception_pipeline=self.interception_pipeline,
         )
         # 执行器目录只在启动期装配; 请求路径不能注册或替换业务执行器。
         graph_executor = GraphExecutor(graph)
-        self.executor_catalog = ExecutorCatalog(
-            {
+        executor_profiles = {
                 "simple/v1": SimpleExecutor(),
                 "declarative-langgraph/v1": graph_executor,
                 "temporal-workflow/v1": DurableExecutor(graph_executor),
             }
-        )
+        if self.settings.code_runner_enabled:
+            # Code Runner still uses the bounded Graph; its Snapshot grants only the remote sandbox tool.
+            executor_profiles["code-runner/v1"] = graph_executor
+        self.executor_catalog = ExecutorCatalog(executor_profiles)
         self.control_plane = (
             ControlPlaneClient(
                 self.settings.control_plane_base_url,
@@ -238,6 +258,44 @@ class AgentRuntimeContainer:
     def publish_session_event(self, event: RuntimeLifecycleEvent) -> None:
         """分发已事务提交的 Session 事件；事件总线绝不自行创建第二份状态事实。"""
         self.events.publish(event)
+
+    def _record_graph_session_event(
+        self,
+        state: dict[str, Any],
+        event_type: RuntimeEventType,
+        metadata: dict[str, Any],
+        model_message: ModelVisibleMessage | None,
+    ) -> None:
+        """把 Graph 的已完成步骤追加为受限 Session 事实，并在提交后通知本地观察者。
+
+        Graph 只持有标识字段而不持有 Store；这里集中恢复 ``ExecutionContext``，使任何
+        Prompt、模型、工具或子 Agent 事件都沿用与 Run 相同的租户、快照和追踪边界。
+        """
+        context = ExecutionContext(
+            request_id=str(state["request_id"]),
+            trace_id=str(state["trace_id"]),
+            session_id=str(state["session_id"]),
+            tenant_id=str(state["tenant_id"]),
+            user_id=str(state["user_id"]),
+            agent_id=str(state["agent_id"]),
+            agent_version=str(state["agent_version"]),
+            snapshot_id=str(state["snapshot_id"]),
+            graph_version=str(state["graph_version"]),
+            model_policy_version=str(
+                state.get("agent_snapshot", {}).get("model_policy_version", "unknown")
+            ),
+            run_id=str(state["run_id"]),
+            deadline_at=datetime.fromisoformat(str(state["deadline_at"])),
+            attempt_budget_remaining=int(state.get("attempt_budget_remaining", 0)),
+            parent_run_id=str(state.get("metadata", {}).get("_parent_run_id", "")),
+        )
+        event = self.run_store.append_session_event(
+            context,
+            event_type,
+            metadata=metadata,
+            model_message=model_message,
+        )
+        self.publish_session_event(event)
 
     def capability(self, capability: RuntimeCapability):
         """从冻结目录取得外围 Provider，禁止业务代码直接依赖某个服务客户端属性。"""

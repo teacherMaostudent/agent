@@ -35,8 +35,11 @@ Temporal、PostgreSQL、Kafka、对象存储、OpenSearch/向量库、OIDC Provi
 4. Harness 只负责解析 Release、加载 Snapshot、创建执行上下文、选择 Executor 以及运行/恢复/取消；它不实现
    Intent、RAG、Prompt Assembly、LLM Routing、Tool Auth 或领域逻辑。Executor 再由 LangGraph 在计划允许的边界内
    运行状态机；LLM Gateway 调模型，Tool Gateway 执行受控工具。
-5. 高风险工具转为审批中断；预算、取消和幂等状态由 Runtime 管理。
-6. 各服务把业务事务和 Outbox 事件一起提交；Governance 异步审计、评测和生成发现。
+5. Harness 先验证 Capability Manifest：能力名称、Provider 摘要、隔离等级及 Executor Profile 必须与
+   目标 Runtime 集群部署证明一致。高风险工具转为审批中断；预算、取消和幂等状态由 Runtime 管理。
+6. Session Event Store 同时记录运行生命周期及脱敏后的模型可见投影（Prompt 组成、模型决策、工具/子 Agent
+   结果）。它可解释模型上下文，但不复制 Context/RAG/Tool Gateway 的原始敏感正文。
+7. 各服务把业务事务和 Outbox 事件一起提交；Governance 异步审计、评测和生成发现。
 
 发布 Graph 不会加载租户自定义 Python 节点。它只能声明既有安全节点的迁移，LangGraph 在模型决策、
 检索和工具执行后检查该策略。Harness 按已部署的 `runtime_executor` Profile 选择执行器；生产环境
@@ -46,6 +49,14 @@ Graph 分支条件同样是受限 DSL，而不是 Python 表达式。Control Pla
 验证字段、运算符、字面量与分支完整性；仅 `decision.action`、意图、证据计数、工具成功状态和预算
 事实可参与判断。Runtime 只用这些白名单事实评估快照中已编译的结构化条件，未命中或多条命中均
 不能由模型自行选择替代路径。
+
+Runtime 还固定提供 `pre_prompt`、`pre_model_request`、`post_model_response`、`pre_tool_execute`、
+`post_tool_result`、`post_step` 六个策略 Hook 阶段。Hook 只能在进程启动时装配，不能改写租户、Run、
+Trace 或 Snapshot 身份；异常即拒绝执行。该机制提供 DSH 风格的明确扩展接缝，但生产不支持动态插件。
+
+`code-runner/v1` 是可选研发执行器，默认不部署；只有 Runtime 同时声明 Sandbox/Code Runner Manifest、
+发布 Snapshot 绑定精确版本 `controlled_code_runner` 工具，且 Tool Gateway 后端提供隔离沙箱时才可发布。
+Runtime 本机不执行模型代码。
 
 ### 发布与实验
 

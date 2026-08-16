@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import hashlib
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any, Literal
 from uuid import uuid4
 
 from platform_sdk.contracts.execution import ExecutionContext
+from platform_sdk.security import redact_text
 from pydantic import BaseModel, Field
 
 
@@ -19,6 +22,51 @@ class RuntimeEventType(StrEnum):
     RUN_COMPLETED = "runtime.run.completed"
     RUN_FAILED = "runtime.run.failed"
     RUN_CANCEL_REQUESTED = "runtime.run.cancel_requested"
+    TURN_STARTED = "runtime.turn.started"
+    STEP_STARTED = "runtime.step.started"
+    PROMPT_ASSEMBLED = "runtime.prompt.assembled"
+    MODEL_REQUESTED = "runtime.model.requested"
+    MODEL_RESPONDED = "runtime.model.responded"
+    TOOL_CALLED = "runtime.tool.called"
+    TOOL_RESULT = "runtime.tool.result"
+    SUBAGENT_DELEGATED = "runtime.subagent.delegated"
+    SUBAGENT_RESULT = "runtime.subagent.result"
+    USER_MESSAGE = "runtime.user.message"
+    ASSISTANT_MESSAGE = "runtime.assistant.message"
+
+
+class ModelVisibleMessage(BaseModel):
+    """写入 Session 的受限模型消息投影，不保存未经处理的敏感正文。"""
+
+    role: Literal["user", "assistant", "tool", "system"]
+    content: str = Field(max_length=16_000)
+    content_sha256: str
+    source: str = Field(max_length=80)
+    redacted: bool = True
+    truncated: bool = False
+
+
+def model_visible_message(
+    role: Literal["user", "assistant", "tool", "system"],
+    content: str,
+    *,
+    source: str,
+    max_chars: int = 12_000,
+) -> ModelVisibleMessage:
+    """生成可审计的脱敏消息投影，并以原文摘要证明它对应的输入版本。
+
+    原始正文仍由 Context、RAG 或 Tool Gateway 在各自数据域内保管。Runtime 只持久化
+    可重建决策 Prompt 的受限投影，避免执行日志成为新的明文敏感数据副本。
+    """
+    raw = str(content)
+    bounded = raw[:max_chars]
+    return ModelVisibleMessage(
+        role=role,
+        content=redact_text(bounded),
+        content_sha256=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        source=source,
+        truncated=len(raw) > max_chars,
+    )
 
 
 class RuntimeLifecycleEvent(BaseModel):
@@ -37,7 +85,9 @@ class RuntimeLifecycleEvent(BaseModel):
     session_id: str
     status: str
     error_code: str = ""
-    metadata: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    # 只有经过脱敏与上限控制的投影可进入这个字段；原始敏感正文不得通过 Runtime Event API 写入。
+    model_message: ModelVisibleMessage | None = None
 
     @classmethod
     def from_execution(
@@ -48,7 +98,8 @@ class RuntimeLifecycleEvent(BaseModel):
         sequence: int,
         status: str,
         error_code: str = "",
-        metadata: Mapping[str, str | int | float | bool] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        model_message: ModelVisibleMessage | None = None,
     ) -> RuntimeLifecycleEvent:
         """从已发布的执行上下文构造事件；事件 ID 与会话序号由 Store 统一分配。"""
         return cls(
@@ -66,7 +117,20 @@ class RuntimeLifecycleEvent(BaseModel):
             status=status,
             error_code=error_code,
             metadata=dict(metadata or {}),
+            model_message=model_message,
         )
+
+
+def derive_model_messages(events: Iterable[RuntimeLifecycleEvent]) -> list[dict[str, str]]:
+    """从 Session 事件流恢复模型可见消息投影，拒绝读取未声明为模型可见的元数据。"""
+    messages: list[dict[str, str]] = []
+    for event in events:
+        if event.model_message is None:
+            continue
+        messages.append(
+            {"role": event.model_message.role, "content": event.model_message.content}
+        )
+    return messages
 
 
 def event_type_for_status(status: str) -> RuntimeEventType:

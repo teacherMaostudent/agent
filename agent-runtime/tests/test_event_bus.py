@@ -1,10 +1,14 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from platform_sdk.contracts.execution import ExecutionContext
 
 from agent_runtime_service.runtime.event_bus import (
     RuntimeEventBus,
     RuntimeEventType,
+    RuntimeHookPhase,
+    RuntimeHookRejected,
+    RuntimeInterceptionPipeline,
     RuntimeLifecycleEvent,
 )
 
@@ -59,3 +63,23 @@ def test_event_subscriber_failure_does_not_reverse_committed_runtime_state() -> 
             _context(), RuntimeEventType.RUN_FAILED, sequence=1, status="FAILED", error_code="RuntimeError"
         )
     )
+
+
+def test_interception_pipeline_is_frozen_and_protects_execution_identity() -> None:
+    """策略 Hook 可以补充决策上下文，但不能把一次运行重新绑定到其他租户或快照。"""
+    pipeline = RuntimeInterceptionPipeline(
+        {RuntimeHookPhase.PRE_MODEL_REQUEST: (lambda payload: {**payload, "allowed": True},)}
+    )
+    assert pipeline.apply(
+        RuntimeHookPhase.PRE_MODEL_REQUEST,
+        {"tenant_id": "tenant-a", "run_id": "run-a", "snapshot_id": "snap-a"},
+    )["allowed"] is True
+
+    unsafe = RuntimeInterceptionPipeline(
+        {RuntimeHookPhase.PRE_TOOL_EXECUTE: (lambda payload: {**payload, "tenant_id": "other"},)}
+    )
+    with pytest.raises(RuntimeHookRejected, match="protected"):
+        unsafe.apply(
+            RuntimeHookPhase.PRE_TOOL_EXECUTE,
+            {"tenant_id": "tenant-a", "run_id": "run-a", "snapshot_id": "snap-a"},
+        )

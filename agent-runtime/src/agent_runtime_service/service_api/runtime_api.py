@@ -5,10 +5,15 @@ from uuid import uuid4
 from fastapi import APIRouter, Header, HTTPException, Request, status
 from platform_sdk.contracts.capabilities import RuntimeCapability
 from platform_sdk.contracts.context import ConversationMessage
-from platform_sdk.contracts.runtime_api import AgentResumeRequest, AgentRunRequest
+from platform_sdk.contracts.runtime_api import (
+    AgentFollowupRequest,
+    AgentResumeRequest,
+    AgentRunRequest,
+)
 
 from agent_runtime_service.runtime.capabilities import CapabilityUnavailable
 from agent_runtime_service.runtime.models import ApprovalResume, RuntimeBudget
+from agent_runtime_service.runtime.session_events import RuntimeEventType, model_visible_message
 from agent_runtime_service.runtime.snapshot_compiler import CompiledAgentPlan, SnapshotCompileError
 
 router = APIRouter(prefix="/agent", tags=["agent-runtime"])
@@ -27,8 +32,13 @@ def runtime_capabilities(request: Request) -> dict:
         "service": "agent-runtime",
         "catalog_version": container.settings.executor_catalog_version,
         "capability_catalog_version": container.capabilities.version,
+        "capability_contract_version": "runtime-capability-contract/v1",
+        "capability_manifest_digest": container.capabilities.manifest_digest,
         "executor_profiles": list(container.agent_harness.executor_profiles),
         "capabilities": list(container.capabilities.names),
+        "capability_manifests": [
+            item.model_dump(mode="json") for item in container.capabilities.manifests
+        ],
     }
 
 
@@ -176,8 +186,23 @@ def run_agent(
     if started_event is not None:
         # 运行记录已在 Store 提交后才发布事件；Event Bus 不得成为状态机的写入前置条件。
         container.publish_session_event(started_event)
+        turn_event = container.run_store.append_session_event(
+            execution,
+            RuntimeEventType.TURN_STARTED,
+            metadata={"origin": "runtime-api"},
+        )
+        container.publish_session_event(turn_event)
     try:
         if not run_already_started:
+            user_event = container.run_store.append_session_event(
+                execution,
+                RuntimeEventType.USER_MESSAGE,
+                metadata={"message_source": "runtime-api"},
+                model_message=model_visible_message(
+                    "user", payload.task, source="runtime-api.user-message"
+                ),
+            )
+            container.publish_session_event(user_event)
             _capability(container, RuntimeCapability.CONTEXT).append_message(
                 session_id,
                 ConversationMessage(role="user", content=payload.task, metadata=payload.metadata),
@@ -266,6 +291,16 @@ def run_agent(
                 x_tenant_id,
                 x_user_id,
             )
+            assistant_event = container.run_store.append_session_event(
+                execution,
+                RuntimeEventType.ASSISTANT_MESSAGE,
+                status=result.status,
+                metadata={"termination_reason": result.termination_reason},
+                model_message=model_visible_message(
+                    "assistant", result.answer, source="runtime-api.assistant-message"
+                ),
+            )
+            container.publish_session_event(assistant_event)
     except Exception as exc:
         event = container.governance.event_for_run(
             execution,
@@ -292,7 +327,11 @@ def run_agent(
     }
     event = container.governance.event_for_run(execution, result.status, body)
     # 编译计划仅供审批恢复选择同一执行器, 不能进入对外结果或治理事件载荷。
-    persisted_result = {**body, "_compiled_plan": compiled_plan.model_dump(mode="json")}
+    persisted_result = {
+        **body,
+        "_compiled_plan": compiled_plan.model_dump(mode="json"),
+        "_runtime_environment": payload.environment,
+    }
     session_event = container.run_store.finish_and_enqueue(
         execution.run_id, result.status, persisted_result, event
     )
@@ -431,8 +470,22 @@ def resume_run(
             run.tenant_id,
             run.user_id,
         )
+        assistant_event = container.run_store.append_session_event(
+            run.context,
+            RuntimeEventType.ASSISTANT_MESSAGE,
+            status=result.status,
+            metadata={"termination_reason": result.termination_reason, "resumed": True},
+            model_message=model_visible_message(
+                "assistant", result.answer, source="runtime-api.assistant-message"
+            ),
+        )
+        container.publish_session_event(assistant_event)
     event = container.governance.event_for_run(run.context, result.status, body)
-    persisted_result = {**body, "_compiled_plan": compiled_plan.model_dump(mode="json")}
+    persisted_result = {
+        **body,
+        "_compiled_plan": compiled_plan.model_dump(mode="json"),
+        "_runtime_environment": run.result.get("_runtime_environment", "production"),
+    }
     session_event = container.run_store.finish_and_enqueue(
         run_id, result.status, persisted_result, event
     )
@@ -440,6 +493,76 @@ def resume_run(
     if session_event is not None:
         container.publish_session_event(session_event)
     return body
+
+
+@router.post("/runs/{run_id}/followups")
+def followup_subagent_run(
+    run_id: str,
+    payload: AgentFollowupRequest,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
+) -> dict:
+    """以谱系授权启动子 Agent 的下一轮任务，实现跨进程的冷继续而非任意互调。
+
+    新运行继承子会话、父运行关联及已绑定 Release；它不会重用旧检查点或把新输入写入
+    另一个 Agent 的内存。等待审批的子运行仍只能走原有 ``resume`` 流程。
+    """
+    x_tenant_id, x_user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if "agent:subagent:control" not in permissions:
+        raise HTTPException(status_code=403, detail="agent:subagent:control permission is required")
+    container = request.app.state.container
+    target = container.run_store.get(x_tenant_id, run_id)
+    parent = container.run_store.get(x_tenant_id, payload.parent_run_id)
+    if target is None or parent is None:
+        raise HTTPException(status_code=404, detail="subagent run or parent run not found")
+    if target.status == "RUNNING" or target.status == "WAITING_APPROVAL":
+        raise HTTPException(status_code=409, detail="active subagent must be resumed or cancelled")
+    if parent.user_id != x_user_id or target.user_id != x_user_id:
+        raise HTTPException(status_code=403, detail="subagent lineage belongs to a different user")
+    if not container.run_store.is_run_ancestor(x_tenant_id, payload.parent_run_id, run_id):
+        raise HTTPException(status_code=403, detail="parent run is not an ancestor of the subagent")
+    continuation = AgentRunRequest(
+        task=payload.task,
+        agent_id=target.agent_id,
+        environment=str(target.result.get("_runtime_environment", "production")),
+        session_id=target.context.session_id,
+        metadata={
+            "_parent_run_id": run_id,
+            "_continuation_of": run_id,
+            "_lineage_root_run_id": payload.parent_run_id,
+        },
+        max_steps=payload.max_steps,
+        max_cost_usd=payload.max_cost_usd,
+    )
+    try:
+        target_plan = CompiledAgentPlan.model_validate(target.result.get("_compiled_plan"))
+    except Exception:
+        target_plan = None
+    if target_plan is not None and target_plan.executor_profile == "temporal-workflow/v1":
+        return submit_agent_run(
+            continuation,
+            request,
+            x_tenant_id=x_tenant_id,
+            x_user_id=x_user_id,
+            x_permissions=",".join(sorted(permissions)),
+            x_request_id=x_request_id or f"followup-{uuid4().hex}",
+            x_trace_id=x_trace_id or target.context.trace_id,
+        )
+    return run_agent(
+        continuation,
+        request,
+        x_tenant_id=x_tenant_id,
+        x_user_id=x_user_id,
+        x_permissions=",".join(sorted(permissions)),
+        x_request_id=x_request_id or f"followup-{uuid4().hex}",
+        x_trace_id=x_trace_id or target.context.trace_id,
+    )
 
 
 @router.get("/runs/{run_id}")
@@ -471,7 +594,7 @@ def get_session_events(
     limit: int = 200,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
 ) -> dict:
-    """按租户读取只含运行关联信息的追加事件流，供 Agent Lab 回放而非恢复 Prompt 正文。"""
+    """按租户读取受限 Session 事件流，返回脱敏模型投影而不泄露原始数据域正文。"""
     x_tenant_id, _, _ = _trusted_identity(request, x_tenant_id, "anonymous", "")
     try:
         events = request.app.state.container.run_store.session_events(

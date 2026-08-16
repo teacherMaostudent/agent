@@ -148,6 +148,15 @@ def compile_runtime_snapshot(
         raise RuntimeSnapshotCompileError(
             "published runtime executor profile is missing"
         )
+    if executor_profile == "code-runner/v1":
+        code_runner_bindings = [
+            item for item in spec.get("tools") or []
+            if isinstance(item, dict) and item.get("tool_name") == "controlled_code_runner"
+        ]
+        if len(code_runner_bindings) != 1 or not code_runner_bindings[0].get("version"):
+            raise RuntimeSnapshotCompileError(
+                "code-runner/v1 requires one version-pinned controlled_code_runner tool binding"
+            )
     snapshot_hash = canonical_snapshot_hash(snapshot)
     return RuntimeSnapshotArtifact(
         snapshot_hash=snapshot_hash,

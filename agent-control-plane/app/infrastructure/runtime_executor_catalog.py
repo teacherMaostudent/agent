@@ -63,10 +63,19 @@ class RuntimeExecutorCatalog:
                         "capabilities missing from runtime instance: "
                         + ", ".join(sorted(required - actual))
                     )
+                expected_manifest = str(cluster.get("capability_manifest_digest", "")).strip()
+                actual_manifest = str(capability.get("capability_manifest_digest", "")).strip()
+                # v1 catalogs predate Manifest proof. They remain readable during migration;
+                # production authors opt into the stronger check by pinning the digest.
+                if expected_manifest and not actual_manifest:
+                    raise ValueError("runtime instance did not provide capability manifest proof")
+                if expected_manifest and expected_manifest != actual_manifest:
+                    raise ValueError("capability manifest digest mismatch")
                 return {
                     "catalog_version": catalog_version,
                     "cluster_id": cluster.get("cluster_id"),
                     "catalog_hash": self._hash(catalog),
+                    "capability_manifest_digest": actual_manifest,
                 }
             except (httpx.HTTPError, ValueError) as exc:
                 errors.append(f"{cluster.get('cluster_id', 'unknown')}: {exc}")

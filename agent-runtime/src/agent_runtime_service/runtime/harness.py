@@ -72,6 +72,10 @@ class CapabilityResolver(Protocol):
         """确认发布计划需要的能力已部署于当前 Runtime 实例。"""
         ...
 
+    def validate_profiles(self, required: list[str], executor_profile: str) -> None:
+        """验证能力与执行器 Profile 的兼容性，避免已部署但不适用的 Provider 被选择。"""
+        ...
+
 
 @dataclass(frozen=True)
 class LoadedSnapshot:
@@ -239,7 +243,9 @@ class AgentHarness:
                 fallback_model=self._fallback_model,
             )
         if self._capability_resolver is not None:
-            self._capability_resolver.validate(plan.required_capabilities)
+            self._capability_resolver.validate_profiles(
+                plan.required_capabilities, plan.executor_profile
+            )
         return LoadedSnapshot(
             snapshot=snapshot,
             snapshot_id=str(resolution.get("version_id") or "local-unversioned"),

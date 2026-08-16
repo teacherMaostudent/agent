@@ -425,6 +425,7 @@ class ControlPlaneService:
             runtime_executor_catalog_version=runtime_executor.get("catalog_version"),
             runtime_executor_cluster_id=runtime_executor.get("cluster_id"),
             runtime_executor_catalog_hash=runtime_executor.get("catalog_hash"),
+            runtime_capability_manifest_digest=runtime_executor.get("capability_manifest_digest"),
             created_by=identity.user_id,
             created_at=now,
             updated_at=now,
@@ -452,6 +453,7 @@ class ControlPlaneService:
                 "runtime_executor_catalog_version": release.runtime_executor_catalog_version,
                 "runtime_executor_cluster_id": release.runtime_executor_cluster_id,
                 "runtime_executor_catalog_hash": release.runtime_executor_catalog_hash,
+                "runtime_capability_manifest_digest": release.runtime_capability_manifest_digest,
             },
         )
         await self._repository.create_release(

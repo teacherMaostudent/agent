@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS releases (
     runtime_executor_catalog_version TEXT,
     runtime_executor_cluster_id TEXT,
     runtime_executor_catalog_hash TEXT,
+    runtime_capability_manifest_digest TEXT,
     created_by TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL

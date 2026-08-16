@@ -233,6 +233,7 @@ class ReleaseManifest(StrictModel):
     runtime_executor_catalog_version: str | None = None
     runtime_executor_cluster_id: str | None = None
     runtime_executor_catalog_hash: str | None = None
+    runtime_capability_manifest_digest: str | None = None
     created_by: str
     created_at: datetime
     updated_at: datetime

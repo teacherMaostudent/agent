@@ -48,7 +48,9 @@ AGENT_LAB_SERVICE_API_KEY=<same-long-random-secret>
 `runtime-executors.json`：`cluster_id`、`environment`、`base_url` 和 `executor_profiles` 缺一不可。
 生产 Control Plane 启用 `CONTROL_PLANE_RUNTIME_EXECUTOR_CATALOG_REQUIRED=true` 后，创建 Release 会同时
 检查目录和 Runtime `/api/v1/agent/capabilities` 实例证明；任一候选实例不可达、版本不一致或缺少
-`runtime_executor` Profile，发布即被拒绝。发布记录会保存 Catalog Version、SHA-256 摘要和被验证的
+`runtime_executor` Profile，发布即被拒绝。生产目录还应固定实例返回的 `capability_manifest_digest`：
+它覆盖 Provider、契约版本、工件摘要、隔离级别和 Profile 兼容范围，可发现“目录版本未变但实际部署
+Provider 已漂移”的情况。发布记录会保存 Catalog Version、SHA-256 摘要、Manifest 摘要和被验证的
 Cluster ID，供审计和回滚对账。
 
 ## 发布 Artifact 与执行器选择
@@ -63,6 +65,8 @@ Runtime 启动期固定装配只读 Executor Catalog，当前 Profile 为：
 1. `simple/v1`：无状态短执行；
 2. `declarative-langgraph/v1`：默认的 LangGraph Agent 状态机；
 3. `temporal-workflow/v1`：仅由异步 `POST /runs` 提交的长期可靠 Workflow。
+4. `code-runner/v1`：仅用于已显式启用隔离 Sandbox Provider 的研发型 Agent；必须绑定版本固定的
+   `controlled_code_runner` 工具，默认不会出现在 Runtime Catalog。
 
 第三类 Profile 进入 `WAITING_APPROVAL` 时不会结束 Workflow。`POST /runs/{run_id}/resume` 只发送带审批人
 和决定的 Temporal Signal；Worker 从已持久化的 LangGraph checkpoint 续跑。部署时应为 API 与 Worker 配置相同的

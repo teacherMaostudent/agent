@@ -93,16 +93,19 @@ flowchart LR
    任意代码。
 4. Context Service 读取会话消息，并按角色、时间、相关性与来源可信度进行排序。需要知识时调用
    RAG Service；若检索被声明为可选且不可用，则显式标记为 `memory-only` 降级。
-5. Runtime 在启动期冻结 Context、LLM、RAG、Tool 与 Workflow Provider；Snapshot Compiler 从
-   发布 Spec 推导必需能力，Harness 会在选执行器前拒绝“快照需要、目标实例未部署”的能力组合。随后
+5. Runtime 在启动期冻结 Context、LLM、RAG、Tool、Workflow、Session、SubAgent 与可选 Sandbox/Code
+   Runner Provider；每项 Provider 以 Capability Manifest 声明契约、工件摘要、隔离级别和执行器兼容性。
+   Snapshot Compiler 从发布 Spec 推导必需能力，Harness 会在选执行器前拒绝“快照需要、目标实例未部署”
+   或 Manifest/Profile 不兼容的组合。随后
    Harness 解析 Release、加载 Artifact、创建执行上下文并按已部署的 Profile 选择执行器。短任务使用
    `simple/v1`，默认 Agent Loop 使用 `declarative-langgraph/v1`，长期可靠任务使用 `temporal-workflow/v1`。
    后两者由 LangGraph 在发布计划允许范围内循环规划、决策、检索、调用工具和观察；Harness 不承载这些业务能力。
-6. Runtime 在状态成功提交后发布仅含关联 ID 与状态的进程内生命周期事件；它用于本地扩展与后续
-   Session 回放，不承载跨服务审计。可靠事件仍经 Transactional Outbox、CDC/Kafka Connect 进入
+6. Runtime 在状态成功提交后发布进程内生命周期事件，并以固定 Hook 阶段拦截 Prompt、模型和工具操作；
+   Session Event Store 会保存脱敏、限长的模型可见投影及原文摘要，用于解释 Prompt 与回放受限上下文，
+   不复制原始敏感正文。可靠事件仍经 Transactional Outbox、CDC/Kafka Connect 进入
    Governance，因而观测订阅失败不会影响用户运行。
 7. Runtime 同一事务还会写入按 `(tenant_id, session_id, sequence)` 单调递增的 Session Event Store。
-   Agent Lab 可分页读取该无敏感正文的事件流来关联冻结快照和离线回放；Context Service 仍是历史
+   Agent Lab 可分页读取该事件流来关联冻结快照、离线回放和模型决策；Context Service 仍是原始历史
    消息与上下文证据的唯一所有者，二者不会互相复制。
 8. LLM Gateway 负责实际模型调用与路由。Tool Gateway 负责工具输入/输出 Schema、租户、权限、
    风险审批、一次性消费和幂等键。
