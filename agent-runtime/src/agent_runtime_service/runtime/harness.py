@@ -65,6 +65,18 @@ class ReleaseResolver(Protocol):
         ...
 
 
+class CapabilityResolver(Protocol):
+    """启动期冻结能力目录向 Harness 提供的只读验证契约。"""
+
+    def validate(self, required: list[str]) -> None:
+        """确认发布计划需要的能力已部署于当前 Runtime 实例。"""
+        ...
+
+    def validate_profiles(self, required: list[str], executor_profile: str) -> None:
+        """验证能力与执行器 Profile 的兼容性，避免已部署但不适用的 Provider 被选择。"""
+        ...
+
+
 @dataclass(frozen=True)
 class LoadedSnapshot:
     """已解析且已编译的发布快照，作为 Harness 与执行器之间的边界对象。"""
@@ -164,6 +176,7 @@ class AgentHarness:
         fallback_model: str,
         snapshot_required: bool,
         cancel_execution: Callable[[str, str], Any],
+        capability_resolver: CapabilityResolver | None = None,
     ) -> None:
         """注入边界依赖；Harness 不创建客户端、不注册执行器、不拥有运行状态。"""
         self._release_resolver = release_resolver
@@ -171,6 +184,7 @@ class AgentHarness:
         self._fallback_model = fallback_model
         self._snapshot_required = snapshot_required
         self._cancel_execution = cancel_execution
+        self._capability_resolver = capability_resolver
 
     @property
     def executor_profiles(self) -> tuple[str, ...]:
@@ -228,6 +242,10 @@ class AgentHarness:
                 agent_id=agent_id,
                 fallback_model=self._fallback_model,
             )
+        if self._capability_resolver is not None:
+            self._capability_resolver.validate_profiles(
+                plan.required_capabilities, plan.executor_profile
+            )
         return LoadedSnapshot(
             snapshot=snapshot,
             snapshot_id=str(resolution.get("version_id") or "local-unversioned"),
@@ -250,6 +268,7 @@ class AgentHarness:
         deadline_seconds: int,
         attempt_budget: int,
         run_id: str | None,
+        parent_run_id: str = "",
     ) -> ExecutionContext:
         """创建不可变执行关联标识；额度策略由调用方计算，Harness 只封装上下文。"""
         return ExecutionContext.create(
@@ -266,6 +285,7 @@ class AgentHarness:
             deadline_seconds=deadline_seconds,
             attempt_budget=attempt_budget,
             run_id=run_id,
+            parent_run_id=parent_run_id,
         )
 
     def resolve_executor(self, plan: CompiledAgentPlan) -> ExecutorAdapter:

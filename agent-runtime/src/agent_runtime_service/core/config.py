@@ -49,6 +49,8 @@ class RuntimeSettings(BaseSettings):
     runtime_flow_version: int = 1
     snapshot_required: bool = False
     executor_catalog_version: str = "runtime-executor-catalog/v1"
+    capability_catalog_version: str = "runtime-capability-catalog/v1"
+    code_runner_enabled: bool = False
     control_plane_base_url: str = ""
     control_plane_runtime_key: str = Field(default="", repr=False)
     governance_base_url: str = ""

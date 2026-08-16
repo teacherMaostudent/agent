@@ -13,6 +13,7 @@ import sqlite3
 from typing import Any
 from uuid import uuid4
 
+from platform_sdk.contracts.capabilities import required_runtime_capabilities
 from platform_sdk.contracts.runtime_snapshot import (
     RuntimeSnapshotCompileError,
     compile_runtime_snapshot,
@@ -333,7 +334,11 @@ class ControlPlaneService:
         if self._runtime_executor_catalog is not None:
             try:
                 runtime_executor = self._runtime_executor_catalog.validate(
-                    request.environment, version.snapshot.spec.runtime_executor
+                    request.environment,
+                    version.snapshot.spec.runtime_executor,
+                    required_capabilities=required_runtime_capabilities(
+                        version.snapshot.spec.model_dump(mode="json")
+                    ),
                 )
             except ValueError as exc:
                 raise PolicyViolationError(
@@ -420,6 +425,7 @@ class ControlPlaneService:
             runtime_executor_catalog_version=runtime_executor.get("catalog_version"),
             runtime_executor_cluster_id=runtime_executor.get("cluster_id"),
             runtime_executor_catalog_hash=runtime_executor.get("catalog_hash"),
+            runtime_capability_manifest_digest=runtime_executor.get("capability_manifest_digest"),
             created_by=identity.user_id,
             created_at=now,
             updated_at=now,
@@ -447,6 +453,7 @@ class ControlPlaneService:
                 "runtime_executor_catalog_version": release.runtime_executor_catalog_version,
                 "runtime_executor_cluster_id": release.runtime_executor_cluster_id,
                 "runtime_executor_catalog_hash": release.runtime_executor_catalog_hash,
+                "runtime_capability_manifest_digest": release.runtime_capability_manifest_digest,
             },
         )
         await self._repository.create_release(

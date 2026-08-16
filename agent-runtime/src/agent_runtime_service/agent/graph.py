@@ -31,6 +31,7 @@ from agent_runtime_service.agent.models import (
     AgentState,
 )
 from agent_runtime_service.runtime.budget import BudgetGuard
+from agent_runtime_service.runtime.event_bus import RuntimeHookPhase, RuntimeInterceptionPipeline
 from agent_runtime_service.runtime.models import (
     ApprovalResume,
     RouteType,
@@ -39,7 +40,13 @@ from agent_runtime_service.runtime.models import (
     RuntimeLimitExceeded,
 )
 from agent_runtime_service.runtime.planner import HeuristicSemanticAnalyzer, RuntimePlanner
+from agent_runtime_service.runtime.session_events import (
+    ModelVisibleMessage,
+    RuntimeEventType,
+    model_visible_message,
+)
 from agent_runtime_service.runtime.snapshot_compiler import validate_final_output
+from agent_runtime_service.runtime.subagents import SubAgentManager, SubAgentPolicyError
 
 
 class AgentGraph:
@@ -61,6 +68,12 @@ class AgentGraph:
         budget_guard: BudgetGuard | None = None,
         checkpointer=None,
         cancellation_checker: Callable[[str, str], bool] | None = None,
+        subagent_manager: SubAgentManager | None = None,
+        subagent_executor: Callable[[Any, str, dict[str, Any]], dict[str, Any]] | None = None,
+        session_event_recorder: Callable[
+            [AgentState, RuntimeEventType, dict[str, Any], ModelVisibleMessage | None], None
+        ] | None = None,
+        interception_pipeline: RuntimeInterceptionPipeline | None = None,
     ) -> None:
         """组装受控执行图。
 
@@ -80,6 +93,12 @@ class AgentGraph:
         self.planner = planner or RuntimePlanner(HeuristicSemanticAnalyzer())
         self.budget_guard = budget_guard or BudgetGuard(0.0, 0.0)
         self.cancellation_checker = cancellation_checker
+        self.subagent_manager = subagent_manager
+        self.subagent_executor = subagent_executor
+        # Recorder is an append-only audit boundary owned by Runtime Store. It observes completed facts
+        # only and cannot replace a Tool Gateway, alter a LangGraph edge or make policy decisions.
+        self.session_event_recorder = session_event_recorder
+        self.interception_pipeline = interception_pipeline or RuntimeInterceptionPipeline()
         self.graph = self._build().compile(checkpointer=checkpointer or InMemorySaver())
 
     def _build(self):
@@ -209,6 +228,15 @@ class AgentGraph:
         if self.planner.analyzer.uses_llm:
             budget = self.budget_guard.reserve_llm(budget)
         working = {**state, "budget": budget.model_dump(mode="json")}
+        self._record_session_event(
+            state,
+            RuntimeEventType.STEP_STARTED,
+            {"step": state.get("step_count", 0) + 1},
+        )
+        self.interception_pipeline.apply(
+            RuntimeHookPhase.PRE_PROMPT,
+            self._hook_payload(state, {"step": state.get("step_count", 0)}),
+        )
         analysis = self.planner.analyze(working)
         if self.planner.analyzer.uses_llm:
             cost_reader = getattr(self.planner.analyzer, "last_cost_usd", None)
@@ -316,8 +344,40 @@ class AgentGraph:
         if getattr(self.decision_engine, "uses_llm", False):
             budget = self.budget_guard.reserve_llm(budget)
         working = {**state, "budget": budget.model_dump(mode="json")}
+        self._record_session_event(
+            state,
+            RuntimeEventType.PROMPT_ASSEMBLED,
+            {
+                "prompt_version": str(state.get("compiled_plan", {}).get("contract_hash", "")),
+                "history_count": len(state.get("conversation_history", [])),
+                "evidence_count": len(state.get("evidence", [])),
+                "tool_count": len(state.get("compiled_plan", {}).get("tools", [])),
+            },
+            model_visible_message("user", state.get("task", ""), source="runtime.prompt.task"),
+        )
+        self._record_session_event(
+            state,
+            RuntimeEventType.MODEL_REQUESTED,
+            {"logical_model": str(state.get("compiled_plan", {}).get("logical_model", ""))},
+        )
+        self.interception_pipeline.apply(
+            RuntimeHookPhase.PRE_MODEL_REQUEST,
+            self._hook_payload(state, {"logical_model": str(state.get("compiled_plan", {}).get("logical_model", ""))}),
+        )
         with trace.get_tracer(__name__).start_as_current_span("agent.decide"):
             decision = self.decision_engine.decide(working, self.tool_registry)
+        self.interception_pipeline.apply(
+            RuntimeHookPhase.POST_MODEL_RESPONSE,
+            self._hook_payload(state, {"action": decision.action.value}),
+        )
+        self._record_session_event(
+            state,
+            RuntimeEventType.MODEL_RESPONDED,
+            {"action": decision.action.value, "step": state.get("step_count", 0) + 1},
+            model_visible_message(
+                "assistant", decision.model_dump_json(), source="runtime.model.decision"
+            ),
+        )
         next_node = self._workflow_next_node(state, decision.action)
         if getattr(self.decision_engine, "uses_llm", False):
             cost_reader = getattr(self.decision_engine, "last_cost_usd", None)
@@ -327,6 +387,13 @@ class AgentGraph:
                 reserved_usd=self.budget_guard.llm_call_reservation_usd,
                 actual_usd=actual_cost,
             )
+        self.interception_pipeline.apply(
+            RuntimeHookPhase.POST_STEP,
+            self._hook_payload(
+                state,
+                {"step": state.get("step_count", 0) + 1, "action": decision.action.value},
+            ),
+        )
         return {
             "decision": decision.model_dump(mode="json"),
             "workflow_cursor": next_node or state.get("workflow_cursor", ""),
@@ -347,6 +414,7 @@ class AgentGraph:
         return {
             AgentAction.RETRIEVE: "retrieve",
             AgentAction.TOOL: "tool",
+            AgentAction.SUBAGENT: "tool",
             AgentAction.ANSWER: "answer",
         }[action]
 
@@ -519,13 +587,30 @@ class AgentGraph:
         """
         self._ensure_active(state)
         decision = AgentDecision.model_validate(state["decision"])
+        if decision.action == AgentAction.SUBAGENT:
+            return self._subagent(state, decision)
         published_version = self._published_tool_version(state, decision.tool_name)
+        self._record_session_event(
+            state,
+            RuntimeEventType.TOOL_CALLED,
+            {"tool_name": decision.tool_name, "tool_version": published_version},
+            model_visible_message(
+                "tool",
+                str(bound_untrusted(decision.tool_arguments, 4_000)),
+                source="runtime.tool.arguments",
+                max_chars=4_000,
+            ),
+        )
         approval_ids = state.get("metadata", {}).get("tool_approval_ids", {})
         approval_id = (
             str(approval_ids.get(decision.tool_name, "")) if isinstance(approval_ids, dict) else ""
         )
         context = self._tool_context(state, approval_id, published_version)
         try:
+            self.interception_pipeline.apply(
+                RuntimeHookPhase.PRE_TOOL_EXECUTE,
+                self._hook_payload(state, {"tool_name": decision.tool_name, "tool_version": published_version}),
+            )
             result = self.tool_registry.execute(
                 decision.tool_name, decision.tool_arguments, context
             )
@@ -548,6 +633,14 @@ class AgentGraph:
                         "status": "REJECTED",
                         "reason": approval.reason,
                     }
+                    self._record_session_event(
+                        state,
+                        RuntimeEventType.TOOL_RESULT,
+                        {"tool_name": decision.tool_name, "success": False, "status": "REJECTED"},
+                        model_visible_message(
+                            "tool", str(observation), source="runtime.tool.rejected"
+                        ),
+                    )
                     return {
                         "observations": [*state.get("observations", []), observation],
                         "final_answer": "The requested tool action was not approved.",
@@ -584,6 +677,21 @@ class AgentGraph:
                 "error_type": type(exc).__name__,
                 "error": str(exc),
             }
+        self._record_session_event(
+            state,
+            RuntimeEventType.TOOL_RESULT,
+            {"tool_name": decision.tool_name, "success": bool(observation["success"])},
+            model_visible_message(
+                "tool",
+                str(observation),
+                source="runtime.tool.result",
+                max_chars=int(state.get("metadata", {}).get("tool_result_max_chars", 12_000)),
+            ),
+        )
+        self.interception_pipeline.apply(
+            RuntimeHookPhase.POST_TOOL_RESULT,
+            self._hook_payload(state, {"tool_name": decision.tool_name, "success": bool(observation["success"])}),
+        )
         return {
             "observations": [*state.get("observations", []), observation],
             "workflow_cursor": self._workflow_after_side_effect(state, "tool"),
@@ -592,6 +700,57 @@ class AgentGraph:
                 "tool",
                 {"tool": decision.tool_name, "success": observation["success"]},
             ),
+        }
+
+    def _subagent(self, state: AgentState, decision: AgentDecision) -> dict:
+        """执行已发布子 Agent 委派；目标 Agent 仍经自身 Release/快照运行。"""
+        self._ensure_active(state)
+        if self.subagent_manager is None or self.subagent_executor is None:
+            raise RuntimeLimitExceeded("SUBAGENT_UNAVAILABLE", "Subagent execution is not deployed.")
+        try:
+            self._record_session_event(
+                state,
+                RuntimeEventType.SUBAGENT_DELEGATED,
+                {"target_agent_id": decision.subagent_id},
+                model_visible_message(
+                    "tool", decision.subagent_task, source="runtime.subagent.task", max_chars=4_000
+                ),
+            )
+            delegation, result = self.subagent_manager.dispatch(
+                state,
+                target_agent_id=decision.subagent_id,
+                task=decision.subagent_task,
+                executor=self.subagent_executor,
+            )
+        except SubAgentPolicyError as exc:
+            raise RuntimeLimitExceeded("SUBAGENT_POLICY", str(exc)) from exc
+        invocations = dict(state.get("subagent_invocations", {}))
+        invocations[delegation.target_agent_id] = invocations.get(delegation.target_agent_id, 0) + 1
+        observation = {
+            "type": "subagent",
+            "agent_id": delegation.target_agent_id,
+            "success": result.get("status") == "COMPLETED",
+            "result": bound_untrusted(result, int(state.get("metadata", {}).get("tool_result_max_chars", 12_000))),
+        }
+        self._record_session_event(
+            state,
+            RuntimeEventType.SUBAGENT_RESULT,
+            {"target_agent_id": delegation.target_agent_id, "success": observation["success"]},
+            model_visible_message(
+                "tool", str(observation["result"]), source="runtime.subagent.result"
+            ),
+        )
+        budget = self._budget(state)
+        child_cost = float(result.get("budget", {}).get("spent_cost_usd", 0))
+        budget = budget.model_copy(
+            update={"spent_cost_usd": min(budget.max_cost_usd, budget.spent_cost_usd + child_cost)}
+        )
+        return {
+            "subagent_invocations": invocations,
+            "observations": [*state.get("observations", []), observation],
+            "budget": budget.model_dump(mode="json"),
+            "workflow_cursor": self._workflow_after_side_effect(state, "tool"),
+            "execution_trace": self._trace(state, "subagent", {"agent_id": delegation.target_agent_id}),
         }
 
     @staticmethod
@@ -792,6 +951,30 @@ class AgentGraph:
         ):
             raise RuntimeCancelled("Run cancellation was requested.")
 
+    def _record_session_event(
+        self,
+        state: AgentState,
+        event_type: RuntimeEventType,
+        metadata: dict[str, Any],
+        model_message: ModelVisibleMessage | None = None,
+    ) -> None:
+        """记录已形成的运行事实；审计写入失败必须中断而不是制造不可解释执行。"""
+        if self.session_event_recorder is not None:
+            self.session_event_recorder(state, event_type, metadata, model_message)
+
+    @staticmethod
+    def _hook_payload(state: AgentState, extra: dict[str, Any]) -> dict[str, Any]:
+        """为 Hook 提供最小且身份受保护的上下文，不暴露未裁剪的证据或工具正文。"""
+        return {
+            "tenant_id": state.get("tenant_id", ""),
+            "user_id": state.get("user_id", ""),
+            "run_id": state.get("run_id", ""),
+            "trace_id": state.get("trace_id", ""),
+            "snapshot_id": state.get("snapshot_id", ""),
+            "agent_id": state.get("agent_id", ""),
+            **extra,
+        }
+
     @staticmethod
     def _workflow_next_node(state: AgentState, action: AgentAction) -> str:
         """验证模型动作是当前发布节点允许的直接迁移，并返回目标节点。
@@ -809,6 +992,7 @@ class AgentGraph:
         requested_role = {
             AgentAction.RETRIEVE: "retrieval",
             AgentAction.TOOL: "tool",
+            AgentAction.SUBAGENT: "tool",
             AgentAction.ANSWER: "answer",
         }[action]
         if role == "answer" and action == AgentAction.ANSWER and cursor in workflow.get("terminals", []):

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
+from platform_sdk.contracts.subagents import SubAgentBinding
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -115,6 +116,7 @@ class AgentDraftSpec(StrictModel):
     runtime_executor: str = Field(default="declarative-langgraph/v1", min_length=1, max_length=100)
     labels: dict[str, str] = Field(default_factory=dict)
     retrieval_policy: dict[str, Any] = Field(default_factory=dict)
+    subagents: list[SubAgentBinding] = Field(default_factory=list)
 
 
 class AgentCreate(StrictModel):
@@ -231,6 +233,7 @@ class ReleaseManifest(StrictModel):
     runtime_executor_catalog_version: str | None = None
     runtime_executor_cluster_id: str | None = None
     runtime_executor_catalog_hash: str | None = None
+    runtime_capability_manifest_digest: str | None = None
     created_by: str
     created_at: datetime
     updated_at: datetime

@@ -67,6 +67,7 @@ class SqliteRepository:
                     "runtime_executor_catalog_version",
                     "runtime_executor_cluster_id",
                     "runtime_executor_catalog_hash",
+                    "runtime_capability_manifest_digest",
                 ):
                     if column not in columns:
                         connection.execute(f"ALTER TABLE releases ADD COLUMN {column} TEXT")
@@ -323,9 +324,9 @@ class SqliteRepository:
                     rollout_percentage, tenant_allowlist_json, status, previous_release_id,
                     reason, quality_gate_id, quality_gate_metrics_json, agent_lab_experiment_id,
                     runtime_executor_catalog_version, runtime_executor_cluster_id,
-                    runtime_executor_catalog_hash,
+                    runtime_executor_catalog_hash, runtime_capability_manifest_digest,
                     created_by, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     release.tenant_id,
@@ -344,6 +345,7 @@ class SqliteRepository:
                     release.runtime_executor_catalog_version,
                     release.runtime_executor_cluster_id,
                     release.runtime_executor_catalog_hash,
+                    release.runtime_capability_manifest_digest,
                     release.created_by,
                     release.created_at.isoformat(),
                     release.updated_at.isoformat(),
@@ -870,6 +872,7 @@ def _release_from_row(row: sqlite3.Row) -> ReleaseManifest:
             "runtime_executor_catalog_version": row["runtime_executor_catalog_version"],
             "runtime_executor_cluster_id": row["runtime_executor_cluster_id"],
             "runtime_executor_catalog_hash": row["runtime_executor_catalog_hash"],
+            "runtime_capability_manifest_digest": row["runtime_capability_manifest_digest"],
             "created_by": row["created_by"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],

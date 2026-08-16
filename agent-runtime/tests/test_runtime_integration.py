@@ -83,3 +83,26 @@ def test_runtime_store_replays_request_id_and_atomically_enqueues_completion(
     assert persisted.status == "COMPLETED"
     assert store.pending_events()[0]["payload"]["intent"] == "knowledge_query"
     store.close()
+
+
+def test_runtime_store_appends_replayable_session_events_in_same_state_transactions(tmp_path) -> None:
+    """开始、取消和终态与 Run 状态同一事务提交，并形成单调会话序号。"""
+    store = RuntimeStore(tmp_path / "runtime.db")
+    context = _context()
+    store.create(context)
+    store.cancel("tenant-a", context.run_id)
+    publisher = GovernanceOutboxPublisher(store, "", "", 1)
+    event = publisher.event_for_run(context, "COMPLETED", {"steps": 3})
+    store.finish_and_enqueue(context.run_id, "COMPLETED", {"steps": 3}, event)
+
+    events = store.session_events("tenant-a", "session-1")
+
+    assert [item.sequence for item in events] == [1, 2, 3]
+    assert [item.event_type.value for item in events] == [
+        "runtime.run.started",
+        "runtime.run.cancel_requested",
+        "runtime.run.completed",
+    ]
+    assert events[-1].metadata == {"steps": 3}
+    assert store.session_events("tenant-a", "session-1", after_sequence=2) == [events[-1]]
+    store.close()

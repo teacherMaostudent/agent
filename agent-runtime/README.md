@@ -26,13 +26,65 @@ Runtime 将“可配置”限制在可审计的声明式边界内，而不是让
    检索档位。它不能新增快照未绑定的模型、知识源、权限或工具，也不能直接执行副作用。
 3. **LangGraph** 是固定的可靠状态机与检查点实现。它在模型决策、检索和工具之后都验证
    Workflow Policy 的 cursor；模型只能建议 `RETRIEVE`、`TOOL` 或 `ANSWER`，不能改图。
-4. **Harness** 是 API 与 Worker 唯一的执行门面，统一 `run/resume` 契约，并按快照中的
+4. **Capability Runtime** 在启动期冻结 Context、LLM、Retrieval、Tool、Workflow、Session、
+   SubAgent 以及可选 Sandbox/Code Runner Provider。每项能力都有 `CapabilityManifest`（Provider、
+   契约版本、工件摘要、隔离级别和执行器兼容范围）；Harness 在选择执行器前校验名称与 Profile
+   兼容性。未部署或摘要漂移的能力均拒绝，不能在请求中临时注册插件或静默降级。
+5. **Harness** 是 API 与 Worker 唯一的执行门面，统一 `run/resume` 契约，并按快照中的
    `runtime_executor` Profile 选择本集群已部署的执行器。生产未知 Profile 一律拒绝；默认图
    仅在未启用 `RUNTIME_SNAPSHOT_REQUIRED` 的本地兼容模式可用。
 
-Runtime 提供内部 `GET /api/v1/agent/capabilities`，只返回已部署的 `runtime_executor` Profiles 和
-`RUNTIME_EXECUTOR_CATALOG_VERSION`。Control Plane 在生产发布前用它证明目标实例确实具备快照
-要求的执行器；该接口必须使用服务身份、mTLS 与网络策略保护，不能暴露给终端用户。
+Runtime 提供内部 `GET /api/v1/agent/capabilities`，返回已部署的 `runtime_executor` Profiles、
+能力目录版本、Manifest 摘要与 Provider 声明。Control Plane 在生产发布前用它证明目标实例确实具备
+快照要求的执行器与外围能力；生产目录应固定 `capability_manifest_digest`，以拒绝同版本目录下的
+Provider 漂移。该接口必须使用服务身份、mTLS 与网络策略保护，不能暴露给终端用户。
+
+### Runtime Event Bus
+
+`RuntimeEventBus` 是 Runtime **进程内**的提交后通知边界；`RuntimeInterceptionPipeline` 则提供
+固定的 `pre_prompt → pre_model_request → post_model_response → pre_tool_execute → post_tool_result → post_step`
+策略阶段。订阅者与 Hook 都只能在容器启动时装配，运行中不能注册插件；Hook 不得改写租户、用户、
+Run、Trace 或 Snapshot 身份，异常一律拒绝操作。这样可把 Prompt 准入、模型治理、工具策略和结果净化
+放在明确阶段，而不把它们塞入 Harness 或业务 Graph。
+
+它不是 Kafka、Temporal 或 Governance 的替代品：跨进程投递、审计耐久性与重放仍由 Transactional
+Outbox、CDC/Kafka Connect 和 Governance 负责。Session Event Store 使用同一生命周期契约并与状态
+事务一起写入，不会另建一套状态事实来源。
+
+### Session Event Store
+
+每次 `RUN_STARTED`、取消、等待审批、完成或失败，都会与 `runtime_runs` 状态变更、必要时的
+Governance Outbox 写入处于同一数据库事务；Graph 还会追加用户/助手消息、Prompt 组装、模型请求与
+决策、工具调用和结果、子 Agent 委派等步骤事实。事件在 `(tenant_id, session_id)` 内分配严格递增的
+`sequence`。`GET /api/v1/agent/sessions/{session_id}/events` 可按序号分页读取这一事件流。
+
+模型可见正文不会以原文复制到 Runtime：事件只保存经过脱敏、长度限制的 `ModelVisibleMessage` 投影与
+原文 SHA-256 摘要，`derive_model_messages()` 只能重建该受限投影。原始消息、证据和工具结果仍分别由
+Context、RAG、Tool Gateway 在其 ACL、保留期和加密策略内保管。这样既能解释 Prompt 组成，又避免
+Session 日志演变成无边界的明文数据仓库。
+
+### SubAgent Manager
+
+发布 Spec 可声明 `subagents` 绑定。`SubAgentManager` 只接受这些冻结目标，并按绑定的最大深度、
+调用次数和预算比例切分父运行的剩余资源；未声明目标、超深度或超次数均 fail-closed。子 Agent
+实际执行仍必须解析其自身 Release 和 Snapshot，经 Harness 与其独立权限/工具策略运行，不能继承
+父 Agent 的任意工具或模型权限。
+
+Graph 的模型动作新增受控 `SUBAGENT`：仅当发布 Workflow 当前允许 `tool` 角色时才可进入委派节点；
+委派结果会作为脱敏、截断后的观察写回父 Graph。父 `tenant_id`、用户权限、Session 和 Trace 仅作为
+身份关联传递，目标 Agent 的模型、知识、工具与审批策略一律从其自己的发布快照重新解析。
+子运行会保存不可伪造的 `parent_run_id`，因此 Session Event Store 可同时按会话顺序和父子链路还原
+一次委派。`POST /runs/{run_id}/followups` 只允许具有 `agent:subagent:control` 权限、且其指定父运行
+确为目标运行祖先的调用方发起冷继续；新运行继承子会话并以旧子运行为直接父级。等待审批时仍必须走
+`resume`，不能用 follow-up 绕过一次性审批。
+
+### 可选 Code Runner
+
+`code-runner/v1` 默认不部署。启用 `RUNTIME_CODE_RUNNER_ENABLED=true` 后，Runtime 才公布
+`sandbox` 与 `code_runner` 能力，并只将代码交给 Tool Gateway 的版本固定
+`controlled_code_runner` 工具；Runtime 本机没有 `exec`、Shell 或宿主文件系统回退。发布该 Profile
+必须绑定该工具的精确版本，目标集群必须证明 Sandbox/Code Runner Manifest。真正的镜像、网络出口、
+只读挂载、CPU/内存/时限与工件签名由远端 Sandbox Provider 强制执行。
 
 每份 Execution Plan 都保存 `plan_hash`、Planner/Analyzer 版本、输入摘要和策略摘要，并随
 Run 结果和 Governance Outbox 事件输出，供 Agent Lab 回放和线上审计关联。摘要不重复保存

@@ -37,5 +37,5 @@ exclude = [".venv", ".venv312"]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 # SQL DDL and framework signatures are formatter-managed; long literals should
 # not obscure the execution-state invariants merely to satisfy line wrapping.
-# RUF002 reports normal Chinese punctuation inside explanatory docstrings.
-ignore = ["E501", "RUF002"]
+# RUF002/RUF003 report normal Chinese punctuation inside explanatory comments and docstrings.
+ignore = ["E501", "RUF002", "RUF003"]

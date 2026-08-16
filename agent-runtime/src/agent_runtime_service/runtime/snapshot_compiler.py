@@ -14,6 +14,7 @@ from collections import deque
 from typing import Any
 
 from jsonschema import Draft202012Validator
+from platform_sdk.contracts.capabilities import required_runtime_capabilities
 from platform_sdk.contracts.workflow import WorkflowConditionError, compile_workflow_condition
 from pydantic import BaseModel, Field
 
@@ -33,6 +34,7 @@ class CompiledAgentPlan(BaseModel):
     graph_execution_order: list[str]
     graph_node_kinds: dict[str, str]
     executor_profile: str
+    required_capabilities: list[str] = Field(default_factory=list)
     workflow_policy: dict[str, Any] = Field(default_factory=dict)
     prompt_template: str
     prompt_variables: list[str] = Field(default_factory=list)
@@ -43,6 +45,7 @@ class CompiledAgentPlan(BaseModel):
     fallback_models: list[str] = Field(default_factory=list)
     data_region: str | None = None
     retrieval_policy: dict[str, Any] = Field(default_factory=dict)
+    subagents: list[dict[str, Any]] = Field(default_factory=list)
 
     @property
     def retrieval_top_k(self) -> int:
@@ -138,6 +141,7 @@ def compile_snapshot(
         graph_execution_order=order,
         graph_node_kinds=node_kinds,
         executor_profile=executor_profile,
+        required_capabilities=required_runtime_capabilities(spec),
         workflow_policy=workflow_policy,
         prompt_template=template,
         prompt_variables=declared,
@@ -148,6 +152,7 @@ def compile_snapshot(
         fallback_models=list(dict.fromkeys(fallback_models)),
         data_region=default_route.get("data_region"),
         retrieval_policy=dict(spec.get("retrieval_policy") or {}),
+        subagents=[dict(item) for item in spec.get("subagents") or []],
     )
 
 
@@ -350,6 +355,7 @@ def _local_plan(model: str) -> CompiledAgentPlan:
         graph_execution_order=["agent-loop"],
         graph_node_kinds={"agent-loop": "agent"},
         executor_profile="local-default/v1",
+        required_capabilities=[],
         workflow_policy={
             "version": "workflow-policy/v1",
             "entrypoint": "agent-loop",

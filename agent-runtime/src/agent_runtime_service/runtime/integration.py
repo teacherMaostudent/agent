@@ -19,6 +19,13 @@ import httpx
 from platform_infra.identity import WorkloadTokenProvider
 from platform_sdk.contracts.execution import ExecutionContext, RuntimeRun
 
+from agent_runtime_service.runtime.session_events import (
+    ModelVisibleMessage,
+    RuntimeEventType,
+    RuntimeLifecycleEvent,
+    event_type_for_status,
+)
+
 
 class ControlPlaneClient:
     def __init__(
@@ -91,6 +98,16 @@ class RuntimeStore:
                     attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT,
                     last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS runtime_session_events (
+                    event_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL, parent_run_id TEXT NOT NULL DEFAULT '', trace_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+                    snapshot_id TEXT NOT NULL, sequence INTEGER NOT NULL, event_type TEXT NOT NULL,
+                    status TEXT NOT NULL, error_code TEXT NOT NULL DEFAULT '',
+                    metadata_json TEXT NOT NULL, occurred_at TEXT NOT NULL,
+                    UNIQUE (tenant_id, session_id, sequence)
+                );
+                CREATE INDEX IF NOT EXISTS runtime_session_events_lookup_idx
+                    ON runtime_session_events(tenant_id, session_id, sequence);
                 """
             )
             columns = {
@@ -107,6 +124,14 @@ class RuntimeStore:
                 ON runtime_runs(tenant_id, request_id) WHERE request_id <> ''
                 """
             )
+            session_columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(runtime_session_events)").fetchall()
+            }
+            if "parent_run_id" not in session_columns:
+                self._connection.execute(
+                    "ALTER TABLE runtime_session_events ADD COLUMN parent_run_id TEXT NOT NULL DEFAULT ''"
+                )
             outbox_columns = {
                 row["name"]
                 for row in self._connection.execute("PRAGMA table_info(runtime_outbox)").fetchall()
@@ -128,6 +153,13 @@ class RuntimeStore:
 
     def create(self, context: ExecutionContext) -> RuntimeRun:
         """以 ``tenant_id + request_id`` 幂等创建运行，重复请求返回原运行不重执行。"""
+        run, _ = self.create_with_session_event(context)
+        return run
+
+    def create_with_session_event(
+        self, context: ExecutionContext
+    ) -> tuple[RuntimeRun, RuntimeLifecycleEvent | None]:
+        """原子创建运行和 ``RUN_STARTED`` 事件；幂等重试不追加虚假的第二个开始事件。"""
         now = datetime.now(UTC)
         run = RuntimeRun(
             run_id=context.run_id,
@@ -146,8 +178,10 @@ class RuntimeStore:
                 (context.tenant_id, context.request_id),
             ).fetchone()
             if existing:
-                return self._from_row(existing)
-            self._connection.execute(
+                return self._from_row(existing), None
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._connection.execute(
                 """
                 INSERT INTO runtime_runs (
                     run_id, tenant_id, user_id, agent_id, snapshot_id, request_id, status,
@@ -169,9 +203,17 @@ class RuntimeStore:
                     now.isoformat(),
                     now.isoformat(),
                 ),
-            )
-            self._connection.commit()
-        return run
+                )
+                event = self._append_session_event_locked(
+                    context,
+                    RuntimeEventType.RUN_STARTED,
+                    status="RUNNING",
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return run, event
 
     def get(self, tenant_id: str, run_id: str) -> RuntimeRun | None:
         """按租户读取运行，防止 run_id 碰撞或越权查询。"""
@@ -182,24 +224,67 @@ class RuntimeStore:
             ).fetchone()
         return self._from_row(row) if row else None
 
+    def is_run_ancestor(self, tenant_id: str, ancestor_run_id: str, descendant_run_id: str) -> bool:
+        """沿持久化 ``parent_run_id`` 链验证谱系控制权，禁止并列 Agent 相互操控。"""
+        if not ancestor_run_id or not descendant_run_id or ancestor_run_id == descendant_run_id:
+            return False
+        current = self.get(tenant_id, descendant_run_id)
+        visited: set[str] = set()
+        while current is not None and current.run_id not in visited:
+            visited.add(current.run_id)
+            parent_run_id = current.context.parent_run_id
+            if parent_run_id == ancestor_run_id:
+                return True
+            if not parent_run_id:
+                return False
+            current = self.get(tenant_id, parent_run_id)
+        return False
+
     def cancel(self, tenant_id: str, run_id: str) -> RuntimeRun | None:
         """仅对活动/待审批运行写协作取消标记，终态不可被取消改写。"""
+        run, _ = self.cancel_with_session_event(tenant_id, run_id)
+        return run
+
+    def cancel_with_session_event(
+        self, tenant_id: str, run_id: str
+    ) -> tuple[RuntimeRun | None, RuntimeLifecycleEvent | None]:
+        """原子写入取消标记和取消事件；终态或重复取消不得制造额外事件。"""
         now = datetime.now(UTC).isoformat()
         with self._lock:
-            self._connection.execute(
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                changed = self._connection.execute(
                 """
                 UPDATE runtime_runs SET cancel_requested = 1, updated_at = ?
-                WHERE tenant_id = ? AND run_id = ? AND status IN ('RUNNING', 'WAITING_APPROVAL')
+                WHERE tenant_id = ? AND run_id = ? AND cancel_requested = 0
+                    AND status IN ('RUNNING', 'WAITING_APPROVAL')
                 """,
                 (now, tenant_id, run_id),
-            )
-            self._connection.commit()
-        return self.get(tenant_id, run_id)
+                )
+                row = self._connection.execute(
+                    "SELECT * FROM runtime_runs WHERE tenant_id = ? AND run_id = ?",
+                    (tenant_id, run_id),
+                ).fetchone()
+                run = self._from_row(row) if row else None
+                event = None
+                if run is not None and changed.rowcount:
+                    event = self._append_session_event_locked(
+                        run.context,
+                        RuntimeEventType.RUN_CANCEL_REQUESTED,
+                        status=run.status,
+                    )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return run, event
 
     def finish(self, run_id: str, status: str, result: dict, error_code: str = "") -> None:
         """持久化运行结果；需治理事件时应优先用原子 ``finish_and_enqueue``。"""
         with self._lock:
-            self._connection.execute(
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._connection.execute(
                 "UPDATE runtime_runs SET status = ?, result_json = ?, error_code = ?, updated_at = ? WHERE run_id = ?",
                 (
                     status,
@@ -208,8 +293,16 @@ class RuntimeStore:
                     datetime.now(UTC).isoformat(),
                     run_id,
                 ),
-            )
-            self._connection.commit()
+                )
+                context = self._context_for_run_locked(run_id)
+                if context is not None:
+                    self._append_session_event_locked(
+                        context, event_type_for_status(status), status=status, error_code=error_code
+                    )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
 
     def finish_and_enqueue(
         self,
@@ -218,7 +311,7 @@ class RuntimeStore:
         result: dict[str, Any],
         event: dict[str, Any],
         error_code: str = "",
-    ) -> None:
+    ) -> RuntimeLifecycleEvent | None:
         """原子持久化终态或中断态及对应治理事件，避免状态成功但审计事件丢失。"""
         now = datetime.now(UTC).isoformat()
         with self._lock:
@@ -245,10 +338,70 @@ class RuntimeStore:
                     """,
                     (event["event_id"], json.dumps(event, ensure_ascii=False), now),
                 )
+                context = self._context_for_run_locked(run_id)
+                session_event = (
+                    self._append_session_event_locked(
+                        context,
+                        event_type_for_status(status),
+                        status=status,
+                        error_code=error_code,
+                        metadata={"steps": int(result.get("steps", 0))},
+                    )
+                    if context is not None
+                    else None
+                )
                 self._connection.commit()
             except Exception:
                 self._connection.rollback()
                 raise
+        return session_event
+
+    def session_events(
+        self, tenant_id: str, session_id: str, *, after_sequence: int = 0, limit: int = 200
+    ) -> list[RuntimeLifecycleEvent]:
+        """按租户、会话和序号读取追加日志，为回放提供稳定且不含敏感正文的事实流。"""
+        if after_sequence < 0 or limit < 1 or limit > 1_000:
+            raise ValueError("invalid session event pagination")
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM runtime_session_events
+                WHERE tenant_id = ? AND session_id = ? AND sequence > ?
+                ORDER BY sequence ASC LIMIT ?
+                """,
+                (tenant_id, session_id, after_sequence, limit),
+            ).fetchall()
+        return [self._session_event_from_row(row) for row in rows]
+
+    def append_session_event(
+        self,
+        context: ExecutionContext,
+        event_type: RuntimeEventType,
+        *,
+        status: str = "RUNNING",
+        metadata: dict[str, Any] | None = None,
+        model_message: ModelVisibleMessage | None = None,
+    ) -> RuntimeLifecycleEvent:
+        """独立追加已发生的步骤事实；每条事件仍以单事务获得会话单调序号。
+
+        运行开始/结束事件与 Run 状态同事务写入；图内 Prompt、模型和工具事实在其副作用
+        已完成后追加，不能被本地观察订阅者反向影响。
+        """
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                event = self._append_session_event_locked(
+                    context,
+                    event_type,
+                    status=status,
+                    metadata=metadata,
+                    model_message=model_message,
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return event
 
     def enqueue_governance(self, event: dict[str, Any]) -> None:
         """写入幂等治理 Outbox；业务事务内不直接同步调用 Kafka/HTTP。"""
@@ -308,6 +461,114 @@ class RuntimeStore:
         """关闭开发 SQLite 连接；生产 PostgreSQL 适配器拥有独立生命周期。"""
         with self._lock:
             self._connection.close()
+
+    def _context_for_run_locked(self, run_id: str) -> ExecutionContext | None:
+        """在当前事务中读取运行上下文，避免 Session 事件跨事务丢失关联身份。"""
+        row = self._connection.execute(
+            "SELECT context_json FROM runtime_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return ExecutionContext.model_validate_json(row["context_json"]) if row else None
+
+    def _append_session_event_locked(
+        self,
+        context: ExecutionContext,
+        event_type: RuntimeEventType,
+        *,
+        status: str,
+        error_code: str = "",
+        metadata: dict[str, Any] | None = None,
+        model_message: ModelVisibleMessage | None = None,
+    ) -> RuntimeLifecycleEvent:
+        """在调用方事务内分配会话序号并追加事件，禁止单独提交造成状态与回放分叉。"""
+        self._lock_session_stream(context.tenant_id, context.session_id)
+        row = self._connection.execute(
+            """
+            SELECT COALESCE(MAX(sequence), 0) AS last_sequence
+            FROM runtime_session_events WHERE tenant_id = ? AND session_id = ?
+            """,
+            (context.tenant_id, context.session_id),
+        ).fetchone()
+        event = RuntimeLifecycleEvent.from_execution(
+            context,
+            event_type,
+            sequence=int(row["last_sequence"]) + 1,
+            status=status,
+            error_code=error_code,
+            metadata=metadata,
+            model_message=model_message,
+        )
+        self._connection.execute(
+            """
+            INSERT INTO runtime_session_events(
+                event_id, tenant_id, session_id, run_id, parent_run_id, trace_id, agent_id, snapshot_id,
+                sequence, event_type, status, error_code, metadata_json, occurred_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.event_id,
+                event.tenant_id,
+                event.session_id,
+                event.run_id,
+                event.parent_run_id,
+                event.trace_id,
+                event.agent_id,
+                event.snapshot_id,
+                event.sequence,
+                event.event_type.value,
+                event.status,
+                event.error_code,
+                json.dumps(
+                    {
+                        "metadata": event.metadata,
+                        "model_message": (
+                            event.model_message.model_dump(mode="json")
+                            if event.model_message is not None
+                            else None
+                        ),
+                    },
+                    ensure_ascii=False,
+                ),
+                event.occurred_at.isoformat(),
+            ),
+        )
+        return event
+
+    def _lock_session_stream(self, tenant_id: str, session_id: str) -> None:
+        """SQLite 已由进程内写锁串行化；PostgreSQL 适配器会覆盖为跨副本事务锁。"""
+        del tenant_id, session_id
+
+    @staticmethod
+    def _session_event_from_row(row: sqlite3.Row) -> RuntimeLifecycleEvent:
+        """恢复持久化事件的严格序号和类型，拒绝把裸 SQL 行泄漏给回放调用方。"""
+        return RuntimeLifecycleEvent(
+            event_id=row["event_id"],
+            sequence=int(row["sequence"]),
+            event_type=RuntimeEventType(row["event_type"]),
+            occurred_at=datetime.fromisoformat(row["occurred_at"]),
+            run_id=row["run_id"],
+            parent_run_id=row["parent_run_id"],
+            trace_id=row["trace_id"],
+            tenant_id=row["tenant_id"],
+            agent_id=row["agent_id"],
+            snapshot_id=row["snapshot_id"],
+            session_id=row["session_id"],
+            status=row["status"],
+            error_code=row["error_code"],
+            metadata=RuntimeStore._event_payload(row["metadata_json"])[0],
+            model_message=RuntimeStore._event_payload(row["metadata_json"])[1],
+        )
+
+    @staticmethod
+    def _event_payload(value: str) -> tuple[dict[str, Any], ModelVisibleMessage | None]:
+        """兼容旧版纯 metadata JSON，并恢复新版受限模型消息投影。"""
+        decoded = json.loads(value)
+        if not isinstance(decoded, dict) or "metadata" not in decoded:
+            return (decoded if isinstance(decoded, dict) else {}, None)
+        message = decoded.get("model_message")
+        return (
+            dict(decoded.get("metadata") or {}),
+            ModelVisibleMessage.model_validate(message) if message else None,
+        )
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> RuntimeRun:

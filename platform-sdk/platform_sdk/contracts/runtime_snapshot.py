@@ -11,6 +11,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, Field
 
+from platform_sdk.contracts.capabilities import required_runtime_capabilities
 from platform_sdk.contracts.workflow import (
     WorkflowConditionError,
     compile_workflow_condition,
@@ -34,6 +35,7 @@ class CompiledRuntimePlan(BaseModel):
     graph_execution_order: list[str]
     graph_node_kinds: dict[str, str]
     executor_profile: str
+    required_capabilities: list[str] = Field(default_factory=list)
     workflow_policy: dict[str, Any] = Field(default_factory=dict)
     prompt_template: str
     prompt_variables: list[str] = Field(default_factory=list)
@@ -44,6 +46,7 @@ class CompiledRuntimePlan(BaseModel):
     fallback_models: list[str] = Field(default_factory=list)
     data_region: str | None = None
     retrieval_policy: dict[str, Any] = Field(default_factory=dict)
+    subagents: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RuntimeSnapshotArtifact(BaseModel):
@@ -145,6 +148,15 @@ def compile_runtime_snapshot(
         raise RuntimeSnapshotCompileError(
             "published runtime executor profile is missing"
         )
+    if executor_profile == "code-runner/v1":
+        code_runner_bindings = [
+            item for item in spec.get("tools") or []
+            if isinstance(item, dict) and item.get("tool_name") == "controlled_code_runner"
+        ]
+        if len(code_runner_bindings) != 1 or not code_runner_bindings[0].get("version"):
+            raise RuntimeSnapshotCompileError(
+                "code-runner/v1 requires one version-pinned controlled_code_runner tool binding"
+            )
     snapshot_hash = canonical_snapshot_hash(snapshot)
     return RuntimeSnapshotArtifact(
         snapshot_hash=snapshot_hash,
@@ -156,6 +168,7 @@ def compile_runtime_snapshot(
             graph_execution_order=order,
             graph_node_kinds=node_kinds,
             executor_profile=executor_profile,
+            required_capabilities=required_runtime_capabilities(spec),
             workflow_policy=workflow_policy,
             prompt_template=template,
             prompt_variables=variables,
@@ -166,6 +179,7 @@ def compile_runtime_snapshot(
             fallback_models=list(dict.fromkeys(fallback_models)),
             data_region=default_route.get("data_region"),
             retrieval_policy=dict(spec.get("retrieval_policy") or {}),
+            subagents=[dict(item) for item in spec.get("subagents") or []],
         ),
     )
 

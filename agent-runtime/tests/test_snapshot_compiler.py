@@ -76,6 +76,7 @@ def test_snapshot_compiles_every_runtime_binding() -> None:
     assert plan.graph_execution_order == ["retrieve", "answer"]
     assert plan.workflow_policy["node_roles"] == {"retrieve": "retrieval", "answer": "answer"}
     assert plan.executor_profile == "declarative-langgraph/v1"
+    assert plan.required_capabilities == ["context", "llm", "retrieval", "tool"]
     assert plan.retrieval_top_k == 12
     assert plan.logical_model == "model-a"
     assert plan.fallback_models == ["model-b"]
