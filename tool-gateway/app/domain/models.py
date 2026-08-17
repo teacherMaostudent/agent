@@ -223,12 +223,22 @@ class InvocationResponse(StrictModel):
     duration_ms: int = 0
 
 
+class ToolExecutionState(StrictModel):
+    """供 Runtime 恢复查询的只读幂等执行状态, 绝不重新触发业务副作用。"""
+
+    tool_name: str
+    idempotency_key_sha256: str
+    status: Literal["NOT_FOUND", "IN_PROGRESS", "COMPLETED"]
+    response: InvocationResponse | None = None
+
+
 class InvocationContext(StrictModel):
     tenant_id: str
     user_id: str
     permissions: frozenset[str] = Field(default_factory=frozenset)
     request_id: str
     idempotency_key: str | None = None
+    tool_execution_id: str = ""
     trace_id: str = ""
     run_id: str = ""
     session_id: str = ""

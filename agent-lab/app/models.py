@@ -97,6 +97,8 @@ class CaseRun(StrictModel):
     evidence_ids: list[str] = Field(default_factory=list)
     latency_ms: int | None = None
     cost_usd: float | None = None
+    session_event_count: int | None = Field(default=None, ge=0)
+    session_last_sequence: int | None = Field(default=None, ge=0)
     error: str | None = None
 
 

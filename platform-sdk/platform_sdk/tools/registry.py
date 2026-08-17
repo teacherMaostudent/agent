@@ -33,6 +33,9 @@ class ToolContext:
     permissions: frozenset[str] = field(default_factory=frozenset)
     request_id: str = ""
     approval_id: str = ""
+    # 由 Session Runtime 在副作用前固定；重放同一 Step 必须复用它，而不是重新生成。
+    tool_execution_id: str = ""
+    idempotency_key: str = ""
     trace_id: str = ""
     run_id: str = ""
     session_id: str = ""

@@ -53,15 +53,33 @@ Outbox、CDC/Kafka Connect 和 Governance 负责。Session Event Store 使用同
 
 ### Session Event Store
 
-每次 `RUN_STARTED`、取消、等待审批、完成或失败，都会与 `runtime_runs` 状态变更、必要时的
-Governance Outbox 写入处于同一数据库事务；Graph 还会追加用户/助手消息、Prompt 组装、模型请求与
-决策、工具调用和结果、子 Agent 委派等步骤事实。事件在 `(tenant_id, session_id)` 内分配严格递增的
-`sequence`。`GET /api/v1/agent/sessions/{session_id}/events` 可按序号分页读取这一事件流。
+Session Runtime 是 Runtime 内部的语义执行账本，而不是新的线上微服务。`runtime_sessions` 保存不可变
+`SessionHeader`：租户、所有者、Agent/Release、Snapshot、父会话、分支起点和保留等级；`runtime_session_events`
+保存追加式事实；`runtime_session_projections` 是可丢弃、可由 Ledger 重建的读取优化。
+
+一个 Session 包含多个 Turn；一个 Turn 包含多个 Step；每个模型请求有独立 `RequestEpoch`。事件会携带
+`turn_id`、`step_id`、`epoch_id`、`attempt_id`、`run_id` 与 `trace_id`。模型请求固定记录实际路由、Prompt
+版本、知识/工具绑定、预算与输出约束，因此发布或路由在之后变化不会改写历史决策边界。
+
+`RUN_STARTED`、取消、等待审批、完成或失败会与 `runtime_runs` 状态变更、必要时的 Governance Outbox 写入
+处于同一数据库事务；Graph 还会追加用户/助手消息、上下文注入、Prompt 组装、模型请求与决策、工具意图、
+工具观察和结果、子 Agent 委派等步骤事实。事件在 `(tenant_id, session_id)` 内分配严格递增的 `sequence`。
+`GET /api/v1/agent/sessions/{session_id}/events` 可按序号分页读取这一事件流。
+
+写工具在实际调用 Gateway 前必须落 `TOOL_INTENT_RECORDED`，其中含稳定 `tool_execution_id` 与幂等键；恢复
+同一 Run 时 Runtime 会先查询 Tool Gateway 的幂等执行账本。执行仍在进行时 fail-closed 并等待重试；已完成
+时复用同一幂等键读取结果；未找到时才允许首次执行。因此进程在副作用返回前崩溃不会盲目重复业务动作。
 
 模型可见正文不会以原文复制到 Runtime：事件只保存经过脱敏、长度限制的 `ModelVisibleMessage` 投影与
 原文 SHA-256 摘要，`derive_model_messages()` 只能重建该受限投影。原始消息、证据和工具结果仍分别由
 Context、RAG、Tool Gateway 在其 ACL、保留期和加密策略内保管。这样既能解释 Prompt 组成，又避免
 Session 日志演变成无边界的明文数据仓库。
+
+`POST /sessions/{id}/compact` 会追加一个摘要替换事件，不删除旧事实；模型 Surface 随后忽略被替换范围而
+使用摘要。`POST /sessions/{id}/fork` 仅保存 `parent_session_id + seed_sequence`，子会话按需继承父前缀，
+不会复制 Message 表。若启用 `RUNTIME_SESSION_ARCHIVE_ENABLED=true`，具备 `agent:session:archive` 权限的
+调用方可将完整 Ledger 写入配置的 S3/OSS/MinIO 兼容对象存储，并保存对象键、SHA-256 与归档水位；生产建议
+开启 KMS 和 Object Lock/WORM。
 
 ### SubAgent Manager
 

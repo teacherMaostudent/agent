@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://enterprise-agent-platform.local/contracts/session-event.v1.json",
+  "title": "SessionEventV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id", "sequence", "event_type", "occurred_at", "run_id", "trace_id",
+    "tenant_id", "agent_id", "snapshot_id", "session_id", "status", "payload_version"
+  ],
+  "properties": {
+    "event_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "sequence": {"type": "integer", "minimum": 1},
+    "event_type": {"type": "string", "pattern": "^runtime\\.[a-z_.]+$"},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "run_id": {"type": "string", "maxLength": 160},
+    "parent_run_id": {"type": "string", "maxLength": 160},
+    "trace_id": {"type": "string", "maxLength": 160},
+    "tenant_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "agent_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "snapshot_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "session_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "turn_id": {"type": "string", "maxLength": 160},
+    "step_id": {"type": "string", "maxLength": 160},
+    "epoch_id": {"type": "string", "maxLength": 160},
+    "attempt_id": {"type": "string", "maxLength": 160},
+    "payload_version": {"type": "string", "minLength": 1, "maxLength": 80},
+    "status": {"type": "string", "minLength": 1, "maxLength": 80},
+    "error_code": {"type": "string", "maxLength": 160},
+    "metadata": {"type": "object"},
+    "model_message": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["role", "content", "content_sha256", "source"],
+      "properties": {
+        "role": {"enum": ["user", "assistant", "tool", "system"]},
+        "content": {"type": "string", "maxLength": 16000},
+        "content_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "source": {"type": "string", "maxLength": 80},
+        "redacted": {"type": "boolean"},
+        "truncated": {"type": "boolean"}
+      }
+    }
+  }
+}

@@ -16,6 +16,7 @@ from app.domain.models import (
     InvocationRequest,
     InvocationResponse,
     InvocationStatus,
+    ToolExecutionState,
     ToolManifest,
 )
 
@@ -34,6 +35,7 @@ def _context(
         alias="X-Idempotency-Key",
     ),
     x_trace_id: str = Header(default="", alias="X-Trace-Id"),
+    x_tool_execution_id: str = Header(default="", alias="X-Tool-Execution-Id"),
     x_run_id: str = Header(default="", alias="X-Run-Id"),
     x_session_id: str = Header(default="", alias="X-Session-Id"),
     x_agent_id: str = Header(default="", alias="X-Agent-Id"),
@@ -62,6 +64,7 @@ def _context(
         permissions=frozenset(item.strip() for item in x_permissions.split(",") if item.strip()),
         request_id=x_request_id or f"tool-request-{uuid4().hex}",
         idempotency_key=x_idempotency_key,
+        tool_execution_id=x_tool_execution_id,
         trace_id=x_trace_id,
         run_id=x_run_id,
         session_id=x_session_id,
@@ -111,6 +114,30 @@ async def invoke_tool(
     if response.status == InvocationStatus.PENDING_APPROVAL:
         request.scope["tool_gateway_status_code"] = status.HTTP_202_ACCEPTED
     return response
+
+
+@router.get(
+    "/tools/{tool_name}/executions/current",
+    response_model=ToolExecutionState,
+    tags=["tools"],
+)
+def get_current_execution(
+    tool_name: str,
+    request: Request,
+    context: Annotated[InvocationContext, Depends(_context)],
+) -> ToolExecutionState:
+    """按调用方幂等键查询工具执行账本, 供 Runtime 从崩溃窗口安全恢复。
+
+    不接受 URL 参数形式的幂等键, 避免该敏感关联键进入代理日志; 缺失键返回校验错误,
+    不能用 request_id 或工具参数替代查询条件。
+    """
+    if not context.idempotency_key:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=422, detail="X-Idempotency-Key is required")
+    return request.app.state.container.repository.idempotency_state(
+        context.tenant_id, tool_name, context.idempotency_key
+    )
 
 
 @router.get(

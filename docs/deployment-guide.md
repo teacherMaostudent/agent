@@ -80,6 +80,16 @@ Artifact 校验密钥、区域化 Task Queue 路由和 Runtime Executor Catalog 
 `runtime_platform.runtime_outbox`。升级时必须同时更新运行服务、Worker 和 Kafka Connect 的表白名单，
 不能仅修改 API 容器。
 
+Session Runtime 的 PostgreSQL Ledger 是在线语义事实源：`runtime_sessions` 保存不可变 Header，
+`runtime_session_events` 保存按会话递增的事实，`runtime_session_projections` 只是可重建读取视图。
+`RUNTIME_SESSION_ARCHIVE_ENABLED=true` 时，`SESSION_ARCHIVE_BUCKET` 必须是独立的版本化对象桶，并启用
+KMS、Object Lock/合规保留与生命周期策略；Runtime 仅保存对象键、SHA-256 和归档水位。Kafka/CDC 用于
+Governance 下游消费，不可替代 Ledger；Redis 只可用作缓存，不能承载 Session 真源。
+
+恢复演练必须覆盖“Tool Intent 已写入、业务副作用已执行、Tool Result 尚未写入”的崩溃窗口。Runtime 应先以
+`tool_execution_id`/幂等键查询 Tool Gateway：`COMPLETED` 复用结果，`IN_PROGRESS` 等待重试，`NOT_FOUND`
+才允许首次执行；不得通过重跑整个 LangGraph Step 直接重试写工具。
+
 ## Control Plane 与 Governance 容器级 mTLS
 
 生产镜像中的 Control Plane 与 Governance 都由 `platform_infra.asgi_runner` 启动，而非直接运行

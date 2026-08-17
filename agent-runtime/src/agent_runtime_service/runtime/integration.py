@@ -17,12 +17,17 @@ from uuid import uuid4
 
 import httpx
 from platform_infra.identity import WorkloadTokenProvider
+from platform_infra.schema_registry import SchemaRegistry
 from platform_sdk.contracts.execution import ExecutionContext, RuntimeRun
 
 from agent_runtime_service.runtime.session_events import (
     ModelVisibleMessage,
     RuntimeEventType,
     RuntimeLifecycleEvent,
+    SessionHeader,
+    SessionProjection,
+    derive_model_messages,
+    derive_session_projection,
     event_type_for_status,
 )
 
@@ -77,12 +82,13 @@ class ControlPlaneClient:
 class RuntimeStore:
     """Small durable Run + transactional-outbox store; PostgreSQL is the production adapter."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, schema_registry: SchemaRegistry | None = None) -> None:
         """初始化本地 Run 与 Transactional Outbox 存储，仅作 PostgreSQL 的开发替身。"""
         path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._lock = Lock()
+        self._schema_registry = schema_registry
         with self._lock:
             self._connection.executescript(
                 """
@@ -103,11 +109,30 @@ class RuntimeStore:
                     run_id TEXT NOT NULL, parent_run_id TEXT NOT NULL DEFAULT '', trace_id TEXT NOT NULL, agent_id TEXT NOT NULL,
                     snapshot_id TEXT NOT NULL, sequence INTEGER NOT NULL, event_type TEXT NOT NULL,
                     status TEXT NOT NULL, error_code TEXT NOT NULL DEFAULT '',
+                    turn_id TEXT NOT NULL DEFAULT '', step_id TEXT NOT NULL DEFAULT '',
+                    epoch_id TEXT NOT NULL DEFAULT '', attempt_id TEXT NOT NULL DEFAULT '',
+                    payload_version TEXT NOT NULL DEFAULT 'session-event/v1',
                     metadata_json TEXT NOT NULL, occurred_at TEXT NOT NULL,
                     UNIQUE (tenant_id, session_id, sequence)
                 );
                 CREATE INDEX IF NOT EXISTS runtime_session_events_lookup_idx
                     ON runtime_session_events(tenant_id, session_id, sequence);
+                CREATE TABLE IF NOT EXISTS runtime_sessions (
+                    tenant_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                    header_json TEXT NOT NULL, created_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, session_id)
+                );
+                CREATE TABLE IF NOT EXISTS runtime_session_projections (
+                    tenant_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                    projection_json TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, session_id)
+                );
+                CREATE TABLE IF NOT EXISTS runtime_session_archives (
+                    tenant_id TEXT NOT NULL, session_id TEXT NOT NULL, archive_key TEXT NOT NULL,
+                    archive_sha256 TEXT NOT NULL, archived_through_sequence INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, session_id, archived_through_sequence)
+                );
                 """
             )
             columns = {
@@ -128,10 +153,16 @@ class RuntimeStore:
                 row["name"]
                 for row in self._connection.execute("PRAGMA table_info(runtime_session_events)").fetchall()
             }
-            if "parent_run_id" not in session_columns:
-                self._connection.execute(
-                    "ALTER TABLE runtime_session_events ADD COLUMN parent_run_id TEXT NOT NULL DEFAULT ''"
-                )
+            for statement, column in [
+                ("ALTER TABLE runtime_session_events ADD COLUMN parent_run_id TEXT NOT NULL DEFAULT ''", "parent_run_id"),
+                ("ALTER TABLE runtime_session_events ADD COLUMN turn_id TEXT NOT NULL DEFAULT ''", "turn_id"),
+                ("ALTER TABLE runtime_session_events ADD COLUMN step_id TEXT NOT NULL DEFAULT ''", "step_id"),
+                ("ALTER TABLE runtime_session_events ADD COLUMN epoch_id TEXT NOT NULL DEFAULT ''", "epoch_id"),
+                ("ALTER TABLE runtime_session_events ADD COLUMN attempt_id TEXT NOT NULL DEFAULT ''", "attempt_id"),
+                ("ALTER TABLE runtime_session_events ADD COLUMN payload_version TEXT NOT NULL DEFAULT 'session-event/v1'", "payload_version"),
+            ]:
+                if column not in session_columns:
+                    self._connection.execute(statement)
             outbox_columns = {
                 row["name"]
                 for row in self._connection.execute("PRAGMA table_info(runtime_outbox)").fetchall()
@@ -181,6 +212,7 @@ class RuntimeStore:
                 return self._from_row(existing), None
             self._connection.execute("BEGIN IMMEDIATE")
             try:
+                self._ensure_session_header_locked(context)
                 self._connection.execute(
                 """
                 INSERT INTO runtime_runs (
@@ -209,10 +241,12 @@ class RuntimeStore:
                     RuntimeEventType.RUN_STARTED,
                     status="RUNNING",
                 )
+                self._refresh_projection_locked(context.tenant_id, context.session_id)
                 self._connection.commit()
             except Exception:
                 self._connection.rollback()
                 raise
+        # SessionCreated 与 RunStarted 已原子落账；进程内总线仅通知本次 Run 的观察者。
         return run, event
 
     def get(self, tenant_id: str, run_id: str) -> RuntimeRun | None:
@@ -273,6 +307,7 @@ class RuntimeStore:
                         RuntimeEventType.RUN_CANCEL_REQUESTED,
                         status=run.status,
                     )
+                    self._refresh_projection_locked(tenant_id, run.context.session_id)
                 self._connection.commit()
             except Exception:
                 self._connection.rollback()
@@ -299,6 +334,7 @@ class RuntimeStore:
                     self._append_session_event_locked(
                         context, event_type_for_status(status), status=status, error_code=error_code
                     )
+                    self._refresh_projection_locked(context.tenant_id, context.session_id)
                 self._connection.commit()
             except Exception:
                 self._connection.rollback()
@@ -350,6 +386,8 @@ class RuntimeStore:
                     if context is not None
                     else None
                 )
+                if context is not None:
+                    self._refresh_projection_locked(context.tenant_id, context.session_id)
                 self._connection.commit()
             except Exception:
                 self._connection.rollback()
@@ -373,6 +411,277 @@ class RuntimeStore:
             ).fetchall()
         return [self._session_event_from_row(row) for row in rows]
 
+    def session_header(self, tenant_id: str, session_id: str) -> SessionHeader | None:
+        """读取会话不可变锚点；Header 不由调用方提交，避免会话在运行中串版本。"""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT header_json FROM runtime_sessions WHERE tenant_id = ? AND session_id = ?",
+                (tenant_id, session_id),
+            ).fetchone()
+        return SessionHeader.model_validate_json(row["header_json"]) if row else None
+
+    def session_projection(self, tenant_id: str, session_id: str) -> SessionProjection | None:
+        """读取可再生的会话投影；不存在时从追加账本重放，不能把缓存误作事实源。"""
+        header = self.session_header(tenant_id, session_id)
+        if header is None:
+            return None
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT projection_json FROM runtime_session_projections "
+                "WHERE tenant_id = ? AND session_id = ?",
+                (tenant_id, session_id),
+            ).fetchone()
+        if row is not None:
+            return SessionProjection.model_validate_json(row["projection_json"])
+        projection = derive_session_projection(
+            header, self._all_session_events(tenant_id, session_id)
+        )
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._save_projection_locked(projection)
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return projection
+
+    def session_model_surface(self, tenant_id: str, session_id: str) -> list[dict[str, str]]:
+        """派生当前模型可见 Surface，Fork 只继承父会话指定前缀而不复制原始事件。"""
+        return self._session_model_surface(tenant_id, session_id, set(), None)
+
+    def _session_model_surface(
+        self,
+        tenant_id: str,
+        session_id: str,
+        visited: set[str],
+        max_local_sequence: int | None,
+    ) -> list[dict[str, str]]:
+        """递归合并父前缀与本地替换 Surface；环形谱系直接拒绝，不能无限读取。"""
+        if session_id in visited:
+            raise ValueError("session fork lineage contains a cycle")
+        header = self.session_header(tenant_id, session_id)
+        if header is None:
+            raise ValueError("session does not exist")
+        lineage = {*visited, session_id}
+        inherited: list[dict[str, str]] = []
+        if header.parent_session_id:
+            inherited = self._session_model_surface(
+                tenant_id,
+                header.parent_session_id,
+                lineage,
+                header.seed_sequence,
+            )
+        local_events = self._all_session_events(tenant_id, session_id)
+        if max_local_sequence is not None:
+            local_events = [
+                event for event in local_events if event.sequence <= max_local_sequence
+            ]
+        return [*inherited, *derive_model_messages(local_events)]
+
+    def _all_session_events(self, tenant_id: str, session_id: str) -> list[RuntimeLifecycleEvent]:
+        """分页读取完整账本，防止 Surface、归档和回放被单页上限静默截断。"""
+        events: list[RuntimeLifecycleEvent] = []
+        after = 0
+        while True:
+            page = self.session_events(tenant_id, session_id, after_sequence=after, limit=1000)
+            events.extend(page)
+            if len(page) < 1000:
+                return events
+            after = page[-1].sequence
+
+    def fork_session(
+        self,
+        *,
+        tenant_id: str,
+        source_session_id: str,
+        new_session_id: str,
+        owner_id: str,
+        agent_id: str,
+        agent_version: str,
+        snapshot_id: str,
+        seed_sequence: int | None = None,
+        delegation_depth: int = 0,
+    ) -> SessionHeader:
+        """创建引用父会话前缀的子会话，不复制消息正文或篡改父会话事件。"""
+        source = self.session_header(tenant_id, source_session_id)
+        if source is None:
+            raise ValueError("source session does not exist")
+        if source.snapshot_id != snapshot_id:
+            raise ValueError("forked session must keep the parent snapshot")
+        projection = self.session_projection(tenant_id, source_session_id)
+        maximum = projection.last_sequence if projection else 0
+        sequence = maximum if seed_sequence is None else seed_sequence
+        if sequence < 0 or sequence > maximum:
+            raise ValueError("fork seed sequence is outside the parent session")
+        header = SessionHeader(
+            session_id=new_session_id,
+            tenant_id=tenant_id,
+            owner_id=owner_id,
+            agent_id=agent_id,
+            agent_version=agent_version,
+            snapshot_id=snapshot_id,
+            parent_session_id=source_session_id,
+            seed_sequence=sequence,
+            delegation_depth=delegation_depth,
+            retention_class=source.retention_class,
+            created_at=datetime.now(UTC),
+        )
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing_row = self._connection.execute(
+                    "SELECT header_json FROM runtime_sessions WHERE tenant_id = ? AND session_id = ?",
+                    (tenant_id, new_session_id),
+                ).fetchone()
+                existing = (
+                    SessionHeader.model_validate_json(existing_row["header_json"])
+                    if existing_row is not None
+                    else None
+                )
+                if existing is not None:
+                    if (
+                        existing.parent_session_id != header.parent_session_id
+                        or existing.seed_sequence != header.seed_sequence
+                        or existing.owner_id != header.owner_id
+                        or existing.agent_id != header.agent_id
+                        or existing.agent_version != header.agent_version
+                        or existing.snapshot_id != header.snapshot_id
+                    ):
+                        raise ValueError("fork target session already exists with another header")
+                    self._connection.commit()
+                    return existing
+                self._insert_session_header_locked(header)
+                self._append_header_event_locked(header, RuntimeEventType.SESSION_FORKED, {
+                    "parent_session_id": source_session_id,
+                    "seed_sequence": sequence,
+                })
+                self._refresh_projection_locked(tenant_id, new_session_id)
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return header
+
+    def compact_session(
+        self,
+        tenant_id: str,
+        session_id: str,
+        *,
+        replaced_through_sequence: int,
+        summary: ModelVisibleMessage,
+        policy_version: str,
+    ) -> RuntimeLifecycleEvent:
+        """追加压缩替换事件；旧事实保留，模型 Surface 以后只消费新的摘要投影。"""
+        header = self.session_header(tenant_id, session_id)
+        if header is None:
+            raise ValueError("session does not exist")
+        projection = self.session_projection(tenant_id, session_id)
+        if projection is None or replaced_through_sequence <= 0:
+            raise ValueError("session has no compactable events")
+        if replaced_through_sequence > projection.last_sequence:
+            raise ValueError("compaction sequence is outside the session")
+        context = ExecutionContext(
+            request_id=f"session-compaction-{uuid4().hex}",
+            trace_id="",
+            run_id="",
+            session_id=session_id,
+            parent_session_id=header.parent_session_id,
+            tenant_id=tenant_id,
+            user_id=header.owner_id,
+            agent_id=header.agent_id,
+            agent_version=header.agent_version,
+            snapshot_id=header.snapshot_id,
+            deadline_at=datetime.now(UTC),
+            attempt_budget_remaining=0,
+        )
+        return self.append_session_event(
+            context,
+            RuntimeEventType.SESSION_COMPACTED,
+            metadata={
+                "replaced_through_sequence": replaced_through_sequence,
+                "policy_version": policy_version,
+            },
+            model_message=summary,
+        )
+
+    def unresolved_tool_intents(
+        self, tenant_id: str, session_id: str, run_id: str
+    ) -> list[RuntimeLifecycleEvent]:
+        """找出已落账但尚无结果事实的工具意图，供恢复前向 Gateway 对账。
+
+        此方法只做语义关联，不根据“没有结果”擅自重试。是否已经执行由 Tool Gateway
+        的幂等执行账本判定，避免 Runtime crash 后重复产生外部副作用。
+        """
+        events = self._all_session_events(tenant_id, session_id)
+        completed = {
+            str(event.metadata.get("tool_execution_id", ""))
+            for event in events
+            if event.run_id == run_id
+            and event.event_type == RuntimeEventType.TOOL_RESULT
+            and event.metadata.get("tool_execution_id")
+        }
+        return [
+            event
+            for event in events
+            if event.run_id == run_id
+            and event.event_type == RuntimeEventType.TOOL_INTENT_RECORDED
+            and str(event.metadata.get("tool_execution_id", "")) not in completed
+        ]
+
+    def session_archive_payload(self, tenant_id: str, session_id: str) -> dict[str, Any]:
+        """构造可写入对象存储的完整会话导出，调用方负责加密、WORM 与保留策略。"""
+        header = self.session_header(tenant_id, session_id)
+        if header is None:
+            raise ValueError("session does not exist")
+        events = self._all_session_events(tenant_id, session_id)
+        projection = self.session_projection(tenant_id, session_id)
+        return {
+            "archive_contract_version": "session-archive/v1",
+            "header": header.model_dump(mode="json"),
+            "events": [event.model_dump(mode="json") for event in events],
+            "projection": projection.model_dump(mode="json") if projection else None,
+        }
+
+    def record_session_archive(
+        self,
+        tenant_id: str,
+        session_id: str,
+        *,
+        archive_key: str,
+        archive_sha256: str,
+        archived_through_sequence: int,
+    ) -> None:
+        """记录不可变归档定位信息；归档对象本体不回写到关系库，避免双份大正文。"""
+        if archived_through_sequence < 1:
+            raise ValueError("archived sequence must be positive")
+        with self._lock:
+            self._connection.execute(
+                "INSERT INTO runtime_session_archives(tenant_id, session_id, archive_key, "
+                "archive_sha256, archived_through_sequence, created_at) VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(tenant_id, session_id, archived_through_sequence) DO NOTHING",
+                (
+                    tenant_id,
+                    session_id,
+                    archive_key,
+                    archive_sha256,
+                    archived_through_sequence,
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+            self._connection.commit()
+
+    def latest_session_archive(self, tenant_id: str, session_id: str) -> dict[str, Any] | None:
+        """返回最新归档的引用和校验摘要，不读取对象正文或绕过对象存储权限。"""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT archive_key, archive_sha256, archived_through_sequence, created_at "
+                "FROM runtime_session_archives WHERE tenant_id = ? AND session_id = ? "
+                "ORDER BY archived_through_sequence DESC LIMIT 1",
+                (tenant_id, session_id),
+            ).fetchone()
+        return dict(row) if row else None
+
     def append_session_event(
         self,
         context: ExecutionContext,
@@ -381,6 +690,10 @@ class RuntimeStore:
         status: str = "RUNNING",
         metadata: dict[str, Any] | None = None,
         model_message: ModelVisibleMessage | None = None,
+        turn_id: str = "",
+        step_id: str = "",
+        epoch_id: str = "",
+        attempt_id: str = "",
     ) -> RuntimeLifecycleEvent:
         """独立追加已发生的步骤事实；每条事件仍以单事务获得会话单调序号。
 
@@ -396,7 +709,12 @@ class RuntimeStore:
                     status=status,
                     metadata=metadata,
                     model_message=model_message,
+                    turn_id=turn_id,
+                    step_id=step_id,
+                    epoch_id=epoch_id,
+                    attempt_id=attempt_id,
                 )
+                self._refresh_projection_locked(context.tenant_id, context.session_id)
                 self._connection.commit()
             except Exception:
                 self._connection.rollback()
@@ -478,6 +796,10 @@ class RuntimeStore:
         error_code: str = "",
         metadata: dict[str, Any] | None = None,
         model_message: ModelVisibleMessage | None = None,
+        turn_id: str = "",
+        step_id: str = "",
+        epoch_id: str = "",
+        attempt_id: str = "",
     ) -> RuntimeLifecycleEvent:
         """在调用方事务内分配会话序号并追加事件，禁止单独提交造成状态与回放分叉。"""
         self._lock_session_stream(context.tenant_id, context.session_id)
@@ -496,13 +818,20 @@ class RuntimeStore:
             error_code=error_code,
             metadata=metadata,
             model_message=model_message,
+            turn_id=turn_id,
+            step_id=step_id,
+            epoch_id=epoch_id,
+            attempt_id=attempt_id,
         )
+        if self._schema_registry is not None:
+            self._schema_registry.validate("session-event.v1.json", event.model_dump(mode="json"))
         self._connection.execute(
             """
             INSERT INTO runtime_session_events(
                 event_id, tenant_id, session_id, run_id, parent_run_id, trace_id, agent_id, snapshot_id,
-                sequence, event_type, status, error_code, metadata_json, occurred_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sequence, event_type, status, error_code, turn_id, step_id, epoch_id, attempt_id,
+                payload_version, metadata_json, occurred_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event.event_id,
@@ -517,6 +846,11 @@ class RuntimeStore:
                 event.event_type.value,
                 event.status,
                 event.error_code,
+                event.turn_id,
+                event.step_id,
+                event.epoch_id,
+                event.attempt_id,
+                event.payload_version,
                 json.dumps(
                     {
                         "metadata": event.metadata,
@@ -537,6 +871,105 @@ class RuntimeStore:
         """SQLite 已由进程内写锁串行化；PostgreSQL 适配器会覆盖为跨副本事务锁。"""
         del tenant_id, session_id
 
+    def _ensure_session_header_locked(self, context: ExecutionContext) -> SessionHeader:
+        """在创建首个 Run 的同一事务初始化会话锚点与 ``SessionCreated`` 事实。"""
+        row = self._connection.execute(
+            "SELECT header_json FROM runtime_sessions WHERE tenant_id = ? AND session_id = ?",
+            (context.tenant_id, context.session_id),
+        ).fetchone()
+        if row is not None:
+            header = SessionHeader.model_validate_json(row["header_json"])
+            if (
+                header.agent_id != context.agent_id
+                or header.snapshot_id != context.snapshot_id
+                or header.owner_id != context.user_id
+            ):
+                raise ValueError("session header does not match the executing release identity")
+            return header
+        header = SessionHeader(
+            session_id=context.session_id,
+            tenant_id=context.tenant_id,
+            owner_id=context.user_id,
+            agent_id=context.agent_id,
+            agent_version=context.agent_version,
+            snapshot_id=context.snapshot_id,
+            parent_session_id=context.parent_session_id,
+            delegation_depth=1 if context.parent_session_id else 0,
+            created_at=datetime.now(UTC),
+        )
+        self._insert_session_header_locked(header)
+        self._append_header_event_locked(header, RuntimeEventType.SESSION_CREATED, {})
+        return header
+
+    def _insert_session_header_locked(self, header: SessionHeader) -> None:
+        """持久化不可变 Header；同名会话由数据库主键和事务锁共同保护。"""
+        self._connection.execute(
+            "INSERT INTO runtime_sessions(tenant_id, session_id, header_json, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                header.tenant_id,
+                header.session_id,
+                header.model_dump_json(),
+                header.created_at.isoformat(),
+            ),
+        )
+
+    def _append_header_event_locked(
+        self, header: SessionHeader, event_type: RuntimeEventType, metadata: dict[str, Any]
+    ) -> RuntimeLifecycleEvent:
+        """为无 Run 的 Session 管理事件构造最小执行上下文并复用唯一追加路径。"""
+        context = ExecutionContext(
+            request_id=f"session-{header.session_id}",
+            trace_id="",
+            run_id="",
+            session_id=header.session_id,
+            parent_session_id=header.parent_session_id,
+            tenant_id=header.tenant_id,
+            user_id=header.owner_id,
+            agent_id=header.agent_id,
+            agent_version=header.agent_version,
+            snapshot_id=header.snapshot_id,
+            deadline_at=header.created_at,
+            attempt_budget_remaining=0,
+        )
+        return self._append_session_event_locked(
+            context, event_type, status="ACTIVE", metadata=metadata
+        )
+
+    def _refresh_projection_locked(self, tenant_id: str, session_id: str) -> None:
+        """在事件提交前刷新物化投影，使读取视图与 Ledger 的已提交序号保持一致。"""
+        header_row = self._connection.execute(
+            "SELECT header_json FROM runtime_sessions WHERE tenant_id = ? AND session_id = ?",
+            (tenant_id, session_id),
+        ).fetchone()
+        if header_row is None:
+            return
+        header = SessionHeader.model_validate_json(header_row["header_json"])
+        rows = self._connection.execute(
+            "SELECT * FROM runtime_session_events WHERE tenant_id = ? AND session_id = ? "
+            "ORDER BY sequence ASC",
+            (tenant_id, session_id),
+        ).fetchall()
+        projection = derive_session_projection(
+            header, [self._session_event_from_row(row) for row in rows]
+        )
+        self._save_projection_locked(projection)
+
+    def _save_projection_locked(self, projection: SessionProjection) -> None:
+        """以幂等替换保存派生投影；原始 Event Ledger 从不被该操作修改。"""
+        self._connection.execute(
+            "INSERT INTO runtime_session_projections(tenant_id, session_id, projection_json, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(tenant_id, session_id) DO UPDATE SET "
+            "projection_json = excluded.projection_json, updated_at = excluded.updated_at",
+            (
+                projection.tenant_id,
+                projection.session_id,
+                projection.model_dump_json(),
+                projection.updated_at.isoformat(),
+            ),
+        )
+
     @staticmethod
     def _session_event_from_row(row: sqlite3.Row) -> RuntimeLifecycleEvent:
         """恢复持久化事件的严格序号和类型，拒绝把裸 SQL 行泄漏给回放调用方。"""
@@ -552,6 +985,13 @@ class RuntimeStore:
             agent_id=row["agent_id"],
             snapshot_id=row["snapshot_id"],
             session_id=row["session_id"],
+            turn_id=RuntimeStore._row_value(row, "turn_id", ""),
+            step_id=RuntimeStore._row_value(row, "step_id", ""),
+            epoch_id=RuntimeStore._row_value(row, "epoch_id", ""),
+            attempt_id=RuntimeStore._row_value(row, "attempt_id", ""),
+            payload_version=RuntimeStore._row_value(
+                row, "payload_version", "session-event/v1"
+            ),
             status=row["status"],
             error_code=row["error_code"],
             metadata=RuntimeStore._event_payload(row["metadata_json"])[0],
@@ -569,6 +1009,12 @@ class RuntimeStore:
             dict(decoded.get("metadata") or {}),
             ModelVisibleMessage.model_validate(message) if message else None,
         )
+
+    @staticmethod
+    def _row_value(row: sqlite3.Row, key: str, default: str) -> str:
+        """兼容历史迁移期间缺少的新列；SQLite Row 没有 dict.get 语义。"""
+        columns = set(row.keys())
+        return str(row[key]) if key in columns else default
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> RuntimeRun:

@@ -43,9 +43,63 @@ def test_model_visible_events_are_redacted_bounded_and_derivable(tmp_path) -> No
     )
     events = store.session_events("tenant-1", "session-1")
 
-    assert [event.sequence for event in events] == [1, 2]
+    assert [event.sequence for event in events] == [1, 2, 3]
+    assert events[0].event_type == RuntimeEventType.SESSION_CREATED
     messages = derive_model_messages(events)
     assert messages == [{"role": "user", "content": "api_key=[REDACTED]"}]
     assert events[-1].model_message is not None
     assert events[-1].model_message.content_sha256
+    store.close()
+
+
+def test_session_header_projection_fork_and_compaction_keep_ledger_immutable(tmp_path) -> None:
+    """会话分支与压缩只追加新事实；Projection/Surface 可变但原事件序列不被改写。"""
+    store = RuntimeStore(tmp_path / "runtime.db")
+    context = _context()
+    store.create_with_session_event(context)
+    store.append_session_event(
+        context,
+        RuntimeEventType.USER_MESSAGE,
+        model_message=model_visible_message("user", "first", source="test"),
+    )
+    store.append_session_event(
+        context,
+        RuntimeEventType.ASSISTANT_MESSAGE,
+        model_message=model_visible_message("assistant", "second", source="test"),
+    )
+    header = store.session_header("tenant-1", "session-1")
+    assert header is not None
+    before = store.session_events("tenant-1", "session-1")
+    event = store.compact_session(
+        "tenant-1",
+        "session-1",
+        replaced_through_sequence=before[-1].sequence,
+        summary=model_visible_message("system", "summary", source="test"),
+        policy_version="compact/v1",
+    )
+    after = store.session_events("tenant-1", "session-1")
+    assert [item.event_id for item in after[:-1]] == [item.event_id for item in before]
+    assert event.event_type == RuntimeEventType.SESSION_COMPACTED
+    assert derive_model_messages(after) == [{"role": "system", "content": "summary"}]
+    child = store.fork_session(
+        tenant_id="tenant-1",
+        source_session_id="session-1",
+        new_session_id="session-child",
+        owner_id="user-1",
+        agent_id="agent-1",
+        agent_version="agent-1:1",
+        snapshot_id="snapshot-1",
+    )
+    assert child.parent_session_id == "session-1"
+    assert child.seed_sequence == after[-1].sequence
+    replay = store.fork_session(
+        tenant_id="tenant-1",
+        source_session_id="session-1",
+        new_session_id="session-child",
+        owner_id="user-1",
+        agent_id="agent-1",
+        agent_version="agent-1:1",
+        snapshot_id="snapshot-1",
+    )
+    assert replay.created_at == child.created_at
     store.close()

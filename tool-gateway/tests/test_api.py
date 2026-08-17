@@ -159,6 +159,32 @@ def test_idempotency_replay_conflict_and_audit_redaction(
     assert audit.json()["count"] == 3
 
 
+def test_execution_status_reads_idempotency_ledger_without_reinvoking_tool(
+    gateway_factory, trusted_headers
+) -> None:
+    """Runtime 恢复查询只读取幂等账本, 不能让查询本身造成第二次业务副作用。"""
+    calls = {"count": 0}
+
+    def handler(args, context):
+        calls["count"] += 1
+        return {"ok": args["value"]}
+
+    client = gateway_factory(
+        [(tool_spec("recoverable", permission="tool:write", risk=ToolRisk.WRITE_LOW_RISK), handler)]
+    )
+    headers = {**trusted_headers, "X-Idempotency-Key": "tool-execution-0001"}
+    response = client.post(
+        "/api/v1/tools/recoverable/invoke", headers=headers, json={"arguments": {"value": "ok"}}
+    )
+    status = client.get("/api/v1/tools/recoverable/executions/current", headers=headers)
+
+    assert response.status_code == 200
+    assert status.status_code == 200
+    assert status.json()["status"] == "COMPLETED"
+    assert status.json()["response"]["output"] == {"ok": "ok"}
+    assert calls["count"] == 1
+
+
 def test_write_requires_idempotency_key(gateway_factory, trusted_headers) -> None:
     spec = tool_spec(
         "write_required",

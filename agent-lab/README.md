@@ -2,7 +2,7 @@
 
 Agent Lab 是独立的**离线 Agent 回放编排服务**。它不训练模型、不修改 Agent 草稿、不承载线上请求，也不决定质量门禁规则。
 
-它的职责是：固定一次由 Control Plane 解析得到的已发布快照；为每个回放用例建立稳定 Session 绑定；调用 Agent Runtime；把候选答案和证据提交给 Governance；保存结果、失败用例和基线差异。
+它的职责是：固定一次由 Control Plane 解析得到的已发布快照；为每个回放用例建立稳定 Session 绑定；调用 Agent Runtime；把候选答案、证据和脱敏 Session Ledger 摘要提交给 Governance；保存结果、失败用例和基线差异。
 
 ```text
 Agent Lab
@@ -56,6 +56,10 @@ uvicorn app.main:app --reload --port 8092
 API 的 `prepare` 阶段只解析并冻结快照，`run` 阶段只提交任务。每个用例均使用稳定的实验
 Session ID，Worker 也使用稳定的 Runtime `request_id`，因此既能检测一个实验中不同用例被解析到不同
 Release 或 snapshot hash 的漂移，也能令网络重试落入 Runtime 的幂等边界。
+
+回放完成后，Agent Lab 会读取同一 Session 的脱敏 Event Ledger，并保存事件数量与最终序号。这使同一
+Golden Case 的比较不再只看最终答案，也能定位 Prompt、模型、工具或上下文选择在哪个 Step 发生差异。
+Ledger 读取失败不会把已经完成的 Runtime 执行篡改为失败实验，但结果会缺少该解释材料。
 
 ## 当前实现与生产演进
 

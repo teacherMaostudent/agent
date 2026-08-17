@@ -3,6 +3,7 @@ from __future__ import annotations
 from platform_sdk.contracts.execution import ExecutionContext
 
 from agent_runtime_service.runtime.integration import GovernanceOutboxPublisher, RuntimeStore
+from agent_runtime_service.runtime.session_events import RuntimeEventType
 
 
 def _context() -> ExecutionContext:
@@ -97,12 +98,37 @@ def test_runtime_store_appends_replayable_session_events_in_same_state_transacti
 
     events = store.session_events("tenant-a", "session-1")
 
-    assert [item.sequence for item in events] == [1, 2, 3]
+    assert [item.sequence for item in events] == [1, 2, 3, 4]
     assert [item.event_type.value for item in events] == [
+        "runtime.session.created",
         "runtime.run.started",
         "runtime.run.cancel_requested",
         "runtime.run.completed",
     ]
     assert events[-1].metadata == {"steps": 3}
-    assert store.session_events("tenant-a", "session-1", after_sequence=2) == [events[-1]]
+    assert store.session_events("tenant-a", "session-1", after_sequence=3) == [events[-1]]
+    store.close()
+
+
+def test_runtime_store_detects_unresolved_tool_intent_for_recovery(tmp_path) -> None:
+    """写工具先落 Intent；只有同一执行标识的结果事实才能解除恢复前的对账要求。"""
+    store = RuntimeStore(tmp_path / "runtime.db")
+    context = _context()
+    store.create(context)
+    store.append_session_event(
+        context,
+        RuntimeEventType.TOOL_INTENT_RECORDED,
+        metadata={
+            "tool_name": "write_record",
+            "tool_execution_id": "tex_001",
+            "idempotency_key": "tex_001",
+        },
+    )
+    assert len(store.unresolved_tool_intents("tenant-a", "session-1", context.run_id)) == 1
+    store.append_session_event(
+        context,
+        RuntimeEventType.TOOL_RESULT,
+        metadata={"tool_execution_id": "tex_001", "success": True},
+    )
+    assert store.unresolved_tool_intents("tenant-a", "session-1", context.run_id) == []
     store.close()

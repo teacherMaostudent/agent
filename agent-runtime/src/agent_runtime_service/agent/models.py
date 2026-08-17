@@ -51,6 +51,8 @@ class AgentState(TypedDict, total=False):
     permissions: list[str]
     request_id: str
     session_id: str
+    turn_id: str
+    attempt_id: str
     trace_id: str
     run_id: str
     agent_id: str

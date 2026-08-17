@@ -196,12 +196,17 @@ Context/RAG、Graph/Prompt Assembly、LLM Gateway、Tool Gateway 和业务 Agent
 | --- | --- | --- |
 | `RuntimeInterceptionPipeline` | Prompt、模型、工具调用的固定策略阶段 | 仅启动时装配；Hook 不能篡改执行身份；错误即拒绝。 |
 | `RuntimeEventBus` | 进程内、提交后的生命周期通知 | 订阅失败只记录，不回滚已提交的业务状态。 |
-| Session Event Store | 按会话单调递增的运行事实 | 保存运行/步骤/Prompt/模型/工具/子 Agent 的脱敏投影。 |
+| Session Runtime | Header、追加 Ledger、Surface、Projection、Fork、压缩与归档定位 | 保存运行/Turn/Step/RequestEpoch/Prompt/模型/工具/子 Agent 的脱敏语义事实。 |
 | Transactional Outbox + CDC | 跨服务审计与治理消息 | 状态与 Outbox 同事务；Debezium/Kafka Connect 负责可靠投递。 |
 
 模型可见信息不会以原文无限复制到日志。Session Event 只保留长度受限、常见凭据脱敏后的内容投影和
 原文 SHA-256 摘要；Context、RAG、Tool Gateway 仍分别保留各自数据域的原始内容、ACL、保留期与加密策略。
 这使 Agent Lab 能解释一次决策使用了什么上下文，同时避免把 Runtime 变成新的敏感数据仓库。
+
+Session Runtime 仍属于 Agent Runtime，不是第八个在线业务服务：它必须与 Run 状态、工具意图和 LangGraph
+检查点紧密协调。PostgreSQL 是在线 Ledger 真源；Kafka/CDC 只负责下游治理事件；Redis 只能作缓存；对象存储
+保存带 KMS/Object Lock 的长期归档。Context Service 决定下一次模型看什么，Session Runtime 只记录过去实际
+发生了什么及模型可见输入的受限投影。
 
 ## 多 Agent 与子会话
 
@@ -209,7 +214,7 @@ Context/RAG、Graph/Prompt Assembly、LLM Gateway、Tool Gateway 和业务 Agent
 
 1. 校验目标 Agent 在父快照绑定列表中；
 2. 校验最大深度、最大次数、剩余步骤与成本切分；
-3. 为子运行写入 `parent_run_id`，子 Agent 再自行解析其 Release 与 Snapshot；
+3. 为子运行写入 `parent_run_id` 和独立 `parent_session_id`，子 Agent 再自行解析其 Release 与 Snapshot；
 4. 父运行只接收截断、脱敏后的子结果观察，不继承子 Agent 的工具或模型权限；
 5. 冷继续需要 `agent:subagent:control` 权限，且请求中指定的运行必须是目标子运行的祖先；
 6. 等待人工审批的任务只能使用 `resume`，不能借 follow-up 绕过一次性审批。

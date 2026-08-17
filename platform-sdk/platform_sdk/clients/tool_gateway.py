@@ -82,7 +82,9 @@ class ToolGatewayClient:
         执行上下文携带租户、审批、发布快照及剩余尝试数；Gateway 返回待审批不会被
         误当作成功输出，而是交给 Runtime 状态机中断。
         """
-        idempotency_key = _idempotency_key(context.request_id, name, arguments)
+        idempotency_key = context.idempotency_key or _idempotency_key(
+            context.request_id, name, arguments
+        )
         headers = self._headers(
             context.tenant_id,
             context.user_id,
@@ -119,6 +121,33 @@ class ToolGatewayClient:
                 f"tool-gateway returned unexpected status: {payload.get('status')}"
             )
         return payload.get("output")
+
+    def execution_status(self, name: str, context: ToolContext) -> dict:
+        """查询已持久化工具幂等键的状态，供崩溃恢复先对账再决定是否重试。
+
+        该接口只读取 Tool Gateway 的执行账本，不会触发工具或消耗审批。写工具缺少
+        幂等键时不允许查询，避免 Runtime 用不稳定的参数猜测一次副作用。
+        """
+        if not context.idempotency_key:
+            raise ToolRegistryError("tool execution status requires an idempotency key")
+        headers = self._headers(
+            context.tenant_id,
+            context.user_id,
+            context.permissions,
+            context.request_id,
+        )
+        headers.update(_execution_headers(context))
+        headers["X-Idempotency-Key"] = context.idempotency_key
+        response = self.client.get(
+            f"{self.base_url}/api/v1/tools/{name}/executions/current",
+            headers=headers,
+            timeout=self.timeout,
+        )
+        self._raise_for_gateway_error(response)
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ToolRegistryError("tool-gateway returned an invalid execution status")
+        return payload
 
     def healthcheck(self) -> None:
         """探测 Gateway 就绪性；不携带业务请求或触发任何工具副作用。"""
@@ -190,6 +219,7 @@ def _execution_headers(context: ToolContext) -> dict[str, str]:
         "X-Trace-Id": context.trace_id,
         "X-Run-Id": context.run_id,
         "X-Session-Id": context.session_id,
+        "X-Tool-Execution-Id": context.tool_execution_id,
         "X-Agent-Id": context.agent_id,
         "X-Agent-Version": context.agent_version,
         "X-Snapshot-Id": context.snapshot_id,

@@ -43,6 +43,7 @@ from agent_runtime_service.runtime.planner import HeuristicSemanticAnalyzer, Run
 from agent_runtime_service.runtime.session_events import (
     ModelVisibleMessage,
     RuntimeEventType,
+    deterministic_tool_execution_id,
     model_visible_message,
 )
 from agent_runtime_service.runtime.snapshot_compiler import validate_final_output
@@ -228,11 +229,6 @@ class AgentGraph:
         if self.planner.analyzer.uses_llm:
             budget = self.budget_guard.reserve_llm(budget)
         working = {**state, "budget": budget.model_dump(mode="json")}
-        self._record_session_event(
-            state,
-            RuntimeEventType.STEP_STARTED,
-            {"step": state.get("step_count", 0) + 1},
-        )
         self.interception_pipeline.apply(
             RuntimeHookPhase.PRE_PROMPT,
             self._hook_payload(state, {"step": state.get("step_count", 0)}),
@@ -281,6 +277,18 @@ class AgentGraph:
             for item in package.recent_messages
             if not (item.role == "user" and item.content == state["task"])
         ]
+        self._record_session_event(
+            state,
+            RuntimeEventType.CONTEXT_INJECTED,
+            {
+                "context_source": "context-service",
+                "history_count": len(history),
+                "selection_policy": "context-service",
+                "budget_report": (
+                    package.budget_report.model_dump(mode="json") if package.budget_report else None
+                ),
+            },
+        )
         return {
             "conversation_history": history,
             "user_context": package.user_context,
@@ -340,10 +348,31 @@ class AgentGraph:
         值，避免由于估算偏差长期低报成本。
         """
         self._ensure_active(state)
+        step_id = self._step_id(state, pending=True)
+        epoch_id = f"epoch_{step_id}"
         budget = self.budget_guard.count_step(self._budget(state))
         if getattr(self.decision_engine, "uses_llm", False):
             budget = self.budget_guard.reserve_llm(budget)
         working = {**state, "budget": budget.model_dump(mode="json")}
+        self._record_session_event(
+            state,
+            RuntimeEventType.STEP_STARTED,
+            {"step": state.get("step_count", 0) + 1, "step_id": step_id},
+        )
+        self._record_session_event(
+            state,
+            RuntimeEventType.REQUEST_EPOCH_PINNED,
+            {
+                "step_id": step_id,
+                "epoch_id": epoch_id,
+                "model_route": str(state.get("compiled_plan", {}).get("logical_model", "")),
+                "prompt_version": str(state.get("compiled_plan", {}).get("contract_hash", "")),
+                "tool_catalog_version": str(state.get("compiled_plan", {}).get("tool_catalog_version", "")),
+                "knowledge_binding": state.get("compiled_plan", {}).get("knowledge", []),
+                "budget_policy": state.get("budget", {}),
+                "output_schema": state.get("agent_snapshot", {}).get("spec", {}).get("output_schema", {}),
+            },
+        )
         self._record_session_event(
             state,
             RuntimeEventType.PROMPT_ASSEMBLED,
@@ -352,13 +381,19 @@ class AgentGraph:
                 "history_count": len(state.get("conversation_history", [])),
                 "evidence_count": len(state.get("evidence", [])),
                 "tool_count": len(state.get("compiled_plan", {}).get("tools", [])),
+                "step_id": step_id,
+                "epoch_id": epoch_id,
             },
             model_visible_message("user", state.get("task", ""), source="runtime.prompt.task"),
         )
         self._record_session_event(
             state,
             RuntimeEventType.MODEL_REQUESTED,
-            {"logical_model": str(state.get("compiled_plan", {}).get("logical_model", ""))},
+            {
+                "logical_model": str(state.get("compiled_plan", {}).get("logical_model", "")),
+                "step_id": step_id,
+                "epoch_id": epoch_id,
+            },
         )
         self.interception_pipeline.apply(
             RuntimeHookPhase.PRE_MODEL_REQUEST,
@@ -373,7 +408,12 @@ class AgentGraph:
         self._record_session_event(
             state,
             RuntimeEventType.MODEL_RESPONDED,
-            {"action": decision.action.value, "step": state.get("step_count", 0) + 1},
+            {
+                "action": decision.action.value,
+                "step": state.get("step_count", 0) + 1,
+                "step_id": step_id,
+                "epoch_id": epoch_id,
+            },
             model_visible_message(
                 "assistant", decision.model_dump_json(), source="runtime.model.decision"
             ),
@@ -590,10 +630,20 @@ class AgentGraph:
         if decision.action == AgentAction.SUBAGENT:
             return self._subagent(state, decision)
         published_version = self._published_tool_version(state, decision.tool_name)
+        step_id = self._step_id(state)
+        tool_execution_id = deterministic_tool_execution_id(
+            str(state.get("run_id", "")), step_id, decision.tool_name, decision.tool_arguments
+        )
         self._record_session_event(
             state,
-            RuntimeEventType.TOOL_CALLED,
-            {"tool_name": decision.tool_name, "tool_version": published_version},
+            RuntimeEventType.TOOL_INTENT_RECORDED,
+            {
+                "tool_name": decision.tool_name,
+                "tool_version": published_version,
+                "step_id": step_id,
+                "tool_execution_id": tool_execution_id,
+                "idempotency_key": tool_execution_id,
+            },
             model_visible_message(
                 "tool",
                 str(bound_untrusted(decision.tool_arguments, 4_000)),
@@ -605,7 +655,9 @@ class AgentGraph:
         approval_id = (
             str(approval_ids.get(decision.tool_name, "")) if isinstance(approval_ids, dict) else ""
         )
-        context = self._tool_context(state, approval_id, published_version)
+        context = self._tool_context(
+            state, approval_id, published_version, tool_execution_id=tool_execution_id
+        )
         try:
             self.interception_pipeline.apply(
                 RuntimeHookPhase.PRE_TOOL_EXECUTE,
@@ -613,6 +665,19 @@ class AgentGraph:
             )
             result = self.tool_registry.execute(
                 decision.tool_name, decision.tool_arguments, context
+            )
+            self._record_session_event(
+                state,
+                RuntimeEventType.TOOL_EXECUTION_OBSERVED,
+                {
+                    "tool_name": decision.tool_name,
+                    "tool_version": published_version,
+                    "step_id": step_id,
+                    "tool_execution_id": tool_execution_id,
+                    "status": "PENDING_APPROVAL"
+                    if isinstance(result, dict) and result.get("status") == "PENDING_APPROVAL"
+                    else "COMPLETED",
+                },
             )
             if isinstance(result, dict) and result.get("status") == "PENDING_APPROVAL":
                 resume_value = interrupt(
@@ -636,10 +701,21 @@ class AgentGraph:
                     self._record_session_event(
                         state,
                         RuntimeEventType.TOOL_RESULT,
-                        {"tool_name": decision.tool_name, "success": False, "status": "REJECTED"},
+                        {
+                            "tool_name": decision.tool_name,
+                            "success": False,
+                            "status": "REJECTED",
+                            "step_id": step_id,
+                            "tool_execution_id": tool_execution_id,
+                        },
                         model_visible_message(
                             "tool", str(observation), source="runtime.tool.rejected"
                         ),
+                    )
+                    self._record_session_event(
+                        state,
+                        RuntimeEventType.STEP_COMPLETED,
+                        {"step_id": step_id, "outcome": "tool_rejected"},
                     )
                     return {
                         "observations": [*state.get("observations", []), observation],
@@ -652,7 +728,9 @@ class AgentGraph:
                         ),
                     }
                 approved_id = approval.approval_id or str(result.get("approval_id", ""))
-                context = self._tool_context(state, approved_id, published_version)
+                context = self._tool_context(
+                    state, approved_id, published_version, tool_execution_id=tool_execution_id
+                )
                 result = self.tool_registry.execute(
                     decision.tool_name,
                     decision.tool_arguments,
@@ -680,7 +758,12 @@ class AgentGraph:
         self._record_session_event(
             state,
             RuntimeEventType.TOOL_RESULT,
-            {"tool_name": decision.tool_name, "success": bool(observation["success"])},
+            {
+                "tool_name": decision.tool_name,
+                "success": bool(observation["success"]),
+                "step_id": step_id,
+                "tool_execution_id": tool_execution_id,
+            },
             model_visible_message(
                 "tool",
                 str(observation),
@@ -691,6 +774,11 @@ class AgentGraph:
         self.interception_pipeline.apply(
             RuntimeHookPhase.POST_TOOL_RESULT,
             self._hook_payload(state, {"tool_name": decision.tool_name, "success": bool(observation["success"])}),
+        )
+        self._record_session_event(
+            state,
+            RuntimeEventType.STEP_COMPLETED,
+            {"step_id": step_id, "outcome": "tool"},
         )
         return {
             "observations": [*state.get("observations", []), observation],
@@ -784,6 +872,8 @@ class AgentGraph:
         state: AgentState,
         approval_id: str,
         tool_version: str,
+        *,
+        tool_execution_id: str = "",
     ) -> ToolContext:
         """从运行状态构造最小工具权限上下文。
 
@@ -796,6 +886,8 @@ class AgentGraph:
             permissions=frozenset(state.get("permissions", [])),
             request_id=state["request_id"],
             approval_id=approval_id,
+            tool_execution_id=tool_execution_id,
+            idempotency_key=tool_execution_id,
             trace_id=state.get("trace_id", ""),
             run_id=state.get("run_id", ""),
             session_id=state.get("session_id", ""),
@@ -840,11 +932,21 @@ class AgentGraph:
                 state.get("step_count", 0) >= state["max_steps"]
                 and decision.action != AgentAction.ANSWER
             ):
+                self._record_session_event(
+                    state,
+                    RuntimeEventType.STEP_COMPLETED,
+                    {"step_id": self._step_id(state), "outcome": "max_steps"},
+                )
                 return {
                     "final_answer": "Unable to complete within the configured agent step budget.",
                     "termination_reason": "MAX_STEPS",
                 }
             validate_final_output(state.get("compiled_plan", {}), decision.final_answer)
+            self._record_session_event(
+                state,
+                RuntimeEventType.STEP_COMPLETED,
+                {"step_id": self._step_id(state), "outcome": "answer"},
+            )
             return {
                 "final_answer": decision.final_answer,
                 "termination_reason": "ANSWERED",
@@ -961,6 +1063,12 @@ class AgentGraph:
         """记录已形成的运行事实；审计写入失败必须中断而不是制造不可解释执行。"""
         if self.session_event_recorder is not None:
             self.session_event_recorder(state, event_type, metadata, model_message)
+
+    @staticmethod
+    def _step_id(state: AgentState, *, pending: bool = False) -> str:
+        """生成稳定 Step 标识；同一 LangGraph 检查点重放时必须复用同一副作用键。"""
+        ordinal = int(state.get("step_count", 0)) + (1 if pending else 0)
+        return f"step_{state.get('run_id', '')}_{max(1, ordinal)}"
 
     @staticmethod
     def _hook_payload(state: AgentState, extra: dict[str, Any]) -> dict[str, Any]:

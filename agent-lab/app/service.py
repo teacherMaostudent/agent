@@ -142,6 +142,17 @@ class AgentLabService:
                     binding.session_id,
                     request_id,
                 )
+                try:
+                    ledger = (
+                        self._runtime.session_events(tenant_id, binding.session_id)
+                        if hasattr(self._runtime, "session_events")
+                        else {}
+                    )
+                except httpx.HTTPError:
+                    # 回放结论已由 Runtime 返回; Ledger 读取失败应标记为缺少解释材料,
+                    # 不能把一次已完成的线上执行改写成失败实验。
+                    ledger = {}
+                session_events = ledger.get("events", []) if isinstance(ledger, dict) else []
                 record.case_runs.append(
                     CaseRun(
                         case_id=case.case_id,
@@ -152,6 +163,12 @@ class AgentLabService:
                         evidence_ids=_evidence_ids(result),
                         latency_ms=result.get("latency_ms"),
                         cost_usd=_cost(result),
+                        session_event_count=len(session_events),
+                        session_last_sequence=(
+                            int(ledger.get("next_after_sequence", 0))
+                            if isinstance(ledger, dict)
+                            else None
+                        ),
                     )
                 )
             except httpx.HTTPError as exc:

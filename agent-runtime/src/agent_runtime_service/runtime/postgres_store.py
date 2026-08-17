@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from platform_infra.postgres import connect_postgres, execute_script
+from platform_infra.schema_registry import SchemaRegistry
 
 from agent_runtime_service.runtime.integration import RuntimeStore
 
@@ -26,17 +27,39 @@ CREATE TABLE IF NOT EXISTS runtime_session_events(
     run_id TEXT NOT NULL, parent_run_id TEXT NOT NULL DEFAULT '', trace_id TEXT NOT NULL, agent_id TEXT NOT NULL,
     snapshot_id TEXT NOT NULL, sequence INTEGER NOT NULL, event_type TEXT NOT NULL,
     status TEXT NOT NULL, error_code TEXT NOT NULL DEFAULT '',
+    turn_id TEXT NOT NULL DEFAULT '', step_id TEXT NOT NULL DEFAULT '',
+    epoch_id TEXT NOT NULL DEFAULT '', attempt_id TEXT NOT NULL DEFAULT '',
+    payload_version TEXT NOT NULL DEFAULT 'session-event/v1',
     metadata_json TEXT NOT NULL, occurred_at TIMESTAMPTZ NOT NULL,
     UNIQUE (tenant_id, session_id, sequence)
 );
 CREATE INDEX IF NOT EXISTS runtime_session_events_lookup_idx
     ON runtime_session_events(tenant_id, session_id, sequence);
+CREATE TABLE IF NOT EXISTS runtime_sessions(
+    tenant_id TEXT NOT NULL, session_id TEXT NOT NULL, header_json TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY(tenant_id, session_id)
+);
+CREATE TABLE IF NOT EXISTS runtime_session_projections(
+    tenant_id TEXT NOT NULL, session_id TEXT NOT NULL, projection_json TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY(tenant_id, session_id)
+);
+CREATE TABLE IF NOT EXISTS runtime_session_archives(
+    tenant_id TEXT NOT NULL, session_id TEXT NOT NULL, archive_key TEXT NOT NULL,
+    archive_sha256 TEXT NOT NULL, archived_through_sequence INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY(tenant_id, session_id, archived_through_sequence)
+);
 ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS parent_run_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS turn_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS step_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS epoch_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS attempt_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS payload_version TEXT NOT NULL DEFAULT 'session-event/v1';
 """
 
 
 class PostgresRuntimeStore(RuntimeStore):
-    def __init__(self, dsn: str, schema: str) -> None:
+    def __init__(self, dsn: str, schema: str, schema_registry: SchemaRegistry | None = None) -> None:
         """初始化生产 PostgreSQL Run/Outbox 存储并校验 schema 名，防止 SQL 标识符注入。"""
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", schema):
             raise ValueError("invalid PostgreSQL schema")
@@ -49,6 +72,7 @@ class PostgresRuntimeStore(RuntimeStore):
             connection.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
             connection.commit()
         self._connection = connect_postgres(dsn, schema)
+        self._schema_registry = schema_registry
         execute_script(self._connection, _SCHEMA)
         self._connection.commit()
 

@@ -32,3 +32,18 @@ class AgentFollowupRequest(BaseModel):
     parent_run_id: str = Field(min_length=3, max_length=160)
     max_steps: int | None = Field(default=None, ge=2, le=30)
     max_cost_usd: float | None = Field(default=None, gt=0, le=10_000)
+
+
+class SessionForkRequest(BaseModel):
+    """从指定父会话事件前缀创建实验或子 Agent 会话，不复制原始消息正文。"""
+
+    session_id: str = Field(min_length=3, max_length=160)
+    seed_sequence: int | None = Field(default=None, ge=0)
+
+
+class SessionCompactionRequest(BaseModel):
+    """将旧模型 Surface 用受控摘要替换的请求；原 Event Ledger 不会被删除。"""
+
+    replaced_through_sequence: int = Field(ge=1)
+    summary: str = Field(min_length=1, max_length=12_000)
+    policy_version: str = Field(min_length=1, max_length=160)

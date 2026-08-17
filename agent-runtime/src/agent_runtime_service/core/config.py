@@ -17,6 +17,7 @@ class RuntimeSettings(BaseSettings):
     data_dir: Path = Path("data")
     database_url: str = Field(default="", repr=False)
     database_schema: str = "runtime_platform"
+    contracts_schema_dir: Path = Path(__file__).parents[4] / "platform-contracts" / "schemas"
     temporal_enabled: bool = False
     temporal_target: str = "localhost:7233"
     temporal_namespace: str = "default"
@@ -46,6 +47,14 @@ class RuntimeSettings(BaseSettings):
     agent_tool_call_reservation_usd: float = 0.001
     agent_tool_timeout: float = 20.0
     agent_tool_result_max_chars: int = 12_000
+    session_archive_enabled: bool = False
+    session_archive_bucket: str = ""
+    session_archive_prefix: str = "agent-runtime"
+    session_archive_endpoint_url: str = ""
+    session_archive_region: str = ""
+    session_archive_kms_key_id: str = Field(default="", repr=False)
+    session_archive_retention_days: int = Field(default=365, ge=1, le=36_500)
+    session_archive_compliance_mode: bool = True
     runtime_flow_version: int = 1
     snapshot_required: bool = False
     executor_catalog_version: str = "runtime-executor-catalog/v1"
@@ -106,6 +115,8 @@ class RuntimeSettings(BaseSettings):
             unsafe.append("RUNTIME mTLS certificate paths are required")
         if not self.control_plane_base_url or not self.governance_base_url:
             unsafe.append("RUNTIME Control Plane and Governance endpoints are required")
+        if self.session_archive_enabled and not self.session_archive_bucket:
+            unsafe.append("RUNTIME_SESSION_ARCHIVE_BUCKET is required when session archiving is enabled")
         if unsafe:
             raise ValueError("Unsafe production configuration: " + "; ".join(unsafe))
         return self

@@ -3,17 +3,21 @@
 import sqlite3
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from platform_infra.identity import build_workload_token_provider
 from platform_infra.mtls import mtls_httpx_options
+from platform_infra.object_storage import S3ObjectStorage
+from platform_infra.schema_registry import SchemaRegistry
 from platform_sdk.clients.context import HttpContextClient
 from platform_sdk.clients.llm_gateway import LlmGatewayClient
 from platform_sdk.clients.rag import HttpRagQueryClient
 from platform_sdk.clients.tool_gateway import ToolGatewayClient
 from platform_sdk.contracts.capabilities import RuntimeCapability
 from platform_sdk.contracts.execution import ExecutionContext
+from platform_sdk.tools.registry import ToolContext
 
 from agent_runtime_service.agent.decision_engine import GatewayDecisionEngine, OfflineDecisionEngine
 from agent_runtime_service.agent.graph import AgentGraph
@@ -45,6 +49,7 @@ from agent_runtime_service.runtime.planner import (
     RuntimePlanner,
 )
 from agent_runtime_service.runtime.postgres_store import PostgresRuntimeStore
+from agent_runtime_service.runtime.session_archive import SessionArchiveService
 from agent_runtime_service.runtime.session_events import ModelVisibleMessage, RuntimeEventType
 from agent_runtime_service.runtime.subagents import SubAgentDelegation, SubAgentManager
 from agent_runtime_service.runtime.temporal_queue import TemporalRunQueue
@@ -64,19 +69,37 @@ class AgentRuntimeContainer:
         阻止接收请求，避免半可用 Agent。
         """
         self.settings = get_settings()
+        self.schema_registry = SchemaRegistry(self.settings.contracts_schema_dir)
+        self.session_archive = (
+            SessionArchiveService(
+                S3ObjectStorage(
+                    bucket=self.settings.session_archive_bucket,
+                    prefix=self.settings.session_archive_prefix,
+                    endpoint_url=self.settings.session_archive_endpoint_url,
+                    region=self.settings.session_archive_region,
+                    kms_key_id=self.settings.session_archive_kms_key_id,
+                ),
+                retention_days=self.settings.session_archive_retention_days,
+                compliance_mode=self.settings.session_archive_compliance_mode,
+            )
+            if self.settings.session_archive_enabled
+            else None
+        )
         # Event Bus 是进程内扩展边界，不与治理 Outbox 共用或竞争跨服务投递职责。
         self.events = RuntimeEventBus()
         self.interception_pipeline = RuntimeInterceptionPipeline()
         self.workload_identity = build_workload_token_provider(self.settings)
         if self.settings.persistence == "postgres":
             self.run_store = PostgresRuntimeStore(
-                self.settings.database_url, self.settings.database_schema
+                self.settings.database_url,
+                self.settings.database_schema,
+                self.schema_registry,
             )
             self._checkpoint_connection = None
             self._checkpoint_context = PostgresSaver.from_conn_string(self.settings.database_url)
             self.checkpointer = self._checkpoint_context.__enter__()
         else:
-            self.run_store = RuntimeStore(self.settings.runtime_store_path)
+            self.run_store = RuntimeStore(self.settings.runtime_store_path, self.schema_registry)
             self._checkpoint_context = None
             self._checkpoint_connection = sqlite3.connect(
                 self.settings.runtime_checkpoint_path,
@@ -259,6 +282,64 @@ class AgentRuntimeContainer:
         """分发已事务提交的 Session 事件；事件总线绝不自行创建第二份状态事实。"""
         self.events.publish(event)
 
+    def reconcile_tool_intents(self, context: ExecutionContext) -> None:
+        """在重放未完成 Run 前向 Tool Gateway 对账，阻止不确定副作用被盲目重试。
+
+        `COMPLETED` 表示 Graph 可以使用相同幂等键安全读取回放结果；`IN_PROGRESS`
+        必须交给 Temporal 延后重试，`NOT_FOUND` 才允许首次实际执行。该检查不把
+        Gateway 响应写成 ToolResult，避免绕过 Graph 的观察值与 Prompt 边界。
+        """
+        intents = self.run_store.unresolved_tool_intents(
+            context.tenant_id, context.session_id, context.run_id
+        )
+        tool_client = self.capability(RuntimeCapability.TOOL)
+        for intent in intents:
+            tool_name = str(intent.metadata.get("tool_name", ""))
+            execution_id = str(intent.metadata.get("tool_execution_id", ""))
+            if not tool_name or not execution_id or not hasattr(tool_client, "execution_status"):
+                raise RuntimeError("unrecoverable tool intent lacks a Gateway execution identity")
+            state = tool_client.execution_status(
+                tool_name,
+                ToolContext(
+                    tenant_id=context.tenant_id,
+                    user_id=context.user_id,
+                    request_id=context.request_id,
+                    trace_id=context.trace_id,
+                    run_id=context.run_id,
+                    session_id=context.session_id,
+                    agent_id=context.agent_id,
+                    agent_version=context.agent_version,
+                    snapshot_id=context.snapshot_id,
+                    deadline_at=context.deadline_at.isoformat(),
+                    attempt_budget_remaining=context.attempt_budget_remaining,
+                    tool_execution_id=execution_id,
+                    idempotency_key=execution_id,
+                    tool_version=str(intent.metadata.get("tool_version", "")),
+                ),
+            )
+            if state.get("status") == "IN_PROGRESS":
+                raise RuntimeError(
+                    f"tool execution {execution_id} is still in progress; recovery must wait"
+                )
+
+    def archive_session(self, tenant_id: str, session_id: str) -> dict[str, Any]:
+        """把完整会话账本归档到对象存储，并在本地账本保存只读定位与校验摘要。"""
+        if self.session_archive is None:
+            raise RuntimeError("session archive storage is not configured")
+        payload = self.run_store.session_archive_payload(tenant_id, session_id)
+        events = payload.get("events", [])
+        if not events:
+            raise RuntimeError("cannot archive an empty session ledger")
+        key, checksum = self.session_archive.archive(tenant_id, session_id, payload)
+        self.run_store.record_session_archive(
+            tenant_id,
+            session_id,
+            archive_key=key,
+            archive_sha256=checksum,
+            archived_through_sequence=int(events[-1]["sequence"]),
+        )
+        return self.run_store.latest_session_archive(tenant_id, session_id) or {}
+
     def _record_graph_session_event(
         self,
         state: dict[str, Any],
@@ -288,12 +369,17 @@ class AgentRuntimeContainer:
             deadline_at=datetime.fromisoformat(str(state["deadline_at"])),
             attempt_budget_remaining=int(state.get("attempt_budget_remaining", 0)),
             parent_run_id=str(state.get("metadata", {}).get("_parent_run_id", "")),
+            parent_session_id=str(state.get("metadata", {}).get("_parent_session_id", "")),
         )
         event = self.run_store.append_session_event(
             context,
             event_type,
             metadata=metadata,
             model_message=model_message,
+            turn_id=str(state.get("turn_id", "")),
+            step_id=str(metadata.get("step_id", "")),
+            epoch_id=str(metadata.get("epoch_id", "")),
+            attempt_id=str(state.get("attempt_id", "")),
         )
         self.publish_session_event(event)
 
@@ -362,6 +448,7 @@ class AgentRuntimeContainer:
             {
                 "_subagent_depth": delegation.depth,
                 "_parent_run_id": parent_state.get("run_id", ""),
+                "_parent_session_id": parent_state.get("session_id", ""),
                 "_parent_agent_id": parent_state.get("agent_id", ""),
             }
         )
@@ -374,7 +461,8 @@ class AgentRuntimeContainer:
                 task=task,
                 agent_id=delegation.target_agent_id,
                 environment=str(metadata.get("runtime_environment", "production")),
-                session_id=str(parent_state.get("session_id", "")) or None,
+                # 子 Agent 追加到自己的会话账本；父会话只保留委派/结果事实，不能混写。
+                session_id=f"session_{uuid4().hex}",
                 metadata=metadata,
                 max_steps=delegation.max_steps,
                 max_cost_usd=delegation.max_cost_usd,

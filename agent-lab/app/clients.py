@@ -101,6 +101,14 @@ class RuntimeClient(_ServiceClient):
             response.raise_for_status()
             return response.json()
 
+    def session_events(self, tenant_id: str, session_id: str) -> dict[str, Any]:
+        """读取已脱敏的 Session Ledger，用于实验重放比对而不复制 Runtime 内部状态。"""
+        headers = self._headers(tenant_id)
+        with self._client() as client:
+            response = client.get(f"/agent/sessions/{session_id}/events", headers=headers)
+            response.raise_for_status()
+            return response.json()
+
 
 class GovernanceClient(_ServiceClient):
     """把候选答案交给 Governance 评测，不在 Lab 内复制 Judge 或门禁规则。"""

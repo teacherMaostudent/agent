@@ -7,6 +7,7 @@ cannot duplicate a protected external side effect.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from app.domain.models import (
     ApprovalStatus,
     AuditRecord,
     InvocationResponse,
+    ToolExecutionState,
 )
 
 
@@ -182,6 +184,38 @@ class SqliteRepository:
                 "an invocation with this idempotency key is already in progress"
             )
         return InvocationResponse.model_validate_json(row["response_json"])
+
+    def idempotency_state(
+        self, tenant_id: str, tool_name: str, key: str
+    ) -> ToolExecutionState:
+        """读取工具幂等记录的恢复状态; 查询不会创建、释放或执行任何工具。"""
+        now = _now().isoformat()
+        with self._lock:
+            self.connection.execute(
+                "DELETE FROM idempotency_records WHERE expires_at <= ?", (now,)
+            )
+            row = self.connection.execute(
+                """
+                SELECT status, response_json FROM idempotency_records
+                WHERE tenant_id = ? AND tool_name = ? AND idempotency_key = ?
+                """,
+                (tenant_id, tool_name, key),
+            ).fetchone()
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        if row is None:
+            return ToolExecutionState(
+                tool_name=tool_name, idempotency_key_sha256=digest, status="NOT_FOUND"
+            )
+        return ToolExecutionState(
+            tool_name=tool_name,
+            idempotency_key_sha256=digest,
+            status=row["status"],
+            response=(
+                InvocationResponse.model_validate_json(row["response_json"])
+                if row["status"] == "COMPLETED"
+                else None
+            ),
+        )
 
     def complete_idempotency(
         self,

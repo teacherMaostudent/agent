@@ -10,6 +10,7 @@
 | `schemas/execution-context.v1.json` | 一次 Agent Run 的身份、版本、Deadline 与预算 |
 | `schemas/error-envelope.v1.json` | 稳定的跨服务错误模型 |
 | `schemas/governance-event.v1.json` | 送入事件总线和 Governance 的审计/评测事件 |
+| `schemas/session-event.v1.json` | Session Runtime 的追加式语义执行事实，供 Runtime API 与 Agent Lab 回放使用 |
 
 ## HTTP 映射
 
@@ -20,6 +21,7 @@ X-Request-Id
 X-Trace-Id
 X-Run-Id
 X-Session-Id
+X-Parent-Session-Id
 X-Agent-Id
 X-Agent-Version
 X-Snapshot-Id

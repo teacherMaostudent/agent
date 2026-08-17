@@ -22,6 +22,7 @@
     "traceId": {"type": "string", "minLength": 1, "maxLength": 160},
     "runId": {"type": "string", "minLength": 1, "maxLength": 160},
     "sessionId": {"type": "string", "minLength": 1, "maxLength": 160},
+    "parentSessionId": {"type": "string", "maxLength": 160},
     "tenantId": {"type": "string", "minLength": 1, "maxLength": 160},
     "userId": {"type": "string", "minLength": 1, "maxLength": 160},
     "agentId": {"type": "string", "minLength": 1, "maxLength": 160},

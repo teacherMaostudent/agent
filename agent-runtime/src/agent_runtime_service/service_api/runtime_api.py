@@ -9,6 +9,8 @@ from platform_sdk.contracts.runtime_api import (
     AgentFollowupRequest,
     AgentResumeRequest,
     AgentRunRequest,
+    SessionCompactionRequest,
+    SessionForkRequest,
 )
 
 from agent_runtime_service.runtime.capabilities import CapabilityUnavailable
@@ -158,7 +160,12 @@ def run_agent(
         ),
         run_id=x_run_id,
         parent_run_id=str(payload.metadata.get("_parent_run_id", "")),
+        parent_session_id=str(payload.metadata.get("_parent_session_id", "")),
     )
+    # Run 是一次执行尝试；Turn 是该 Session 内的一次用户交互。稳定派生 ID 使
+    # Temporal Activity 重放不会凭空创建第二个 Turn。
+    turn_id = f"turn_{execution.run_id}"
+    attempt_id = f"attempt_{execution.run_id}"
     # Temporal Activity 重试会携带同一 run_id; 已有终态/待审批 Run 必须只返回既有结果,
     # 不能再次写入用户消息或重新触发 Graph。运行中的 Run 由 Temporal Activity 重放恢复。
     existing_before_create = container.run_store.get(x_tenant_id, execution.run_id)
@@ -190,8 +197,17 @@ def run_agent(
             execution,
             RuntimeEventType.TURN_STARTED,
             metadata={"origin": "runtime-api"},
+            turn_id=turn_id,
+            attempt_id=attempt_id,
         )
         container.publish_session_event(turn_event)
+    if run_already_started:
+        try:
+            container.reconcile_tool_intents(execution)
+        except RuntimeError as exc:
+            # 对不确定副作用 fail-closed；Temporal Activity 会按既有策略稍后恢复，
+            # 同步调用方得到明确的“等待对账”而不是偷偷重复调用业务系统。
+            raise HTTPException(status_code=409, detail={"code": "tool_recovery_pending", "message": str(exc)}) from exc
     try:
         if not run_already_started:
             user_event = container.run_store.append_session_event(
@@ -201,6 +217,8 @@ def run_agent(
                 model_message=model_visible_message(
                     "user", payload.task, source="runtime-api.user-message"
                 ),
+                turn_id=turn_id,
+                attempt_id=attempt_id,
             )
             container.publish_session_event(user_event)
             _capability(container, RuntimeCapability.CONTEXT).append_message(
@@ -253,6 +271,8 @@ def run_agent(
                 "permissions": sorted(permissions),
                 "request_id": request_id,
                 "session_id": session_id,
+                "turn_id": turn_id,
+                "attempt_id": attempt_id,
                 "run_id": execution.run_id,
                 "trace_id": execution.trace_id,
                 "agent_id": execution.agent_id,
@@ -299,8 +319,19 @@ def run_agent(
                 model_message=model_visible_message(
                     "assistant", result.answer, source="runtime-api.assistant-message"
                 ),
+                turn_id=turn_id,
+                attempt_id=attempt_id,
             )
             container.publish_session_event(assistant_event)
+            completed_turn = container.run_store.append_session_event(
+                execution,
+                RuntimeEventType.TURN_COMPLETED,
+                status=result.status,
+                metadata={"termination_reason": result.termination_reason},
+                turn_id=turn_id,
+                attempt_id=attempt_id,
+            )
+            container.publish_session_event(completed_turn)
     except Exception as exc:
         event = container.governance.event_for_run(
             execution,
@@ -318,6 +349,24 @@ def run_agent(
         container.governance.flush()
         if session_event is not None:
             container.publish_session_event(session_event)
+        interrupted = container.run_store.append_session_event(
+            execution,
+            RuntimeEventType.TURN_INTERRUPTED,
+            status="FAILED",
+            metadata={"reason": type(exc).__name__},
+            turn_id=turn_id,
+            attempt_id=attempt_id,
+        )
+        container.publish_session_event(interrupted)
+        session_interrupted = container.run_store.append_session_event(
+            execution,
+            RuntimeEventType.SESSION_INTERRUPTED,
+            status="FAILED",
+            metadata={"reason": type(exc).__name__, "run_id": execution.run_id},
+            turn_id=turn_id,
+            attempt_id=attempt_id,
+        )
+        container.publish_session_event(session_interrupted)
         raise
     body = {
         **result.model_dump(mode="json"),
@@ -456,6 +505,8 @@ def resume_run(
         "snapshot_id": run.snapshot_id,
         "latency_ms": int((datetime.now(UTC) - run.created_at).total_seconds() * 1_000),
     }
+    turn_id = f"turn_{run_id}"
+    attempt_id = f"attempt_{run_id}"
     if result.status != "WAITING_APPROVAL":
         _capability(container, RuntimeCapability.CONTEXT).append_message(
             run.context.session_id,
@@ -478,8 +529,19 @@ def resume_run(
             model_message=model_visible_message(
                 "assistant", result.answer, source="runtime-api.assistant-message"
             ),
+            turn_id=turn_id,
+            attempt_id=attempt_id,
         )
         container.publish_session_event(assistant_event)
+        turn_event = container.run_store.append_session_event(
+            run.context,
+            RuntimeEventType.TURN_COMPLETED,
+            status=result.status,
+            metadata={"termination_reason": result.termination_reason, "resumed": True},
+            turn_id=turn_id,
+            attempt_id=attempt_id,
+        )
+        container.publish_session_event(turn_event)
     event = container.governance.event_for_run(run.context, result.status, body)
     persisted_result = {
         **body,
@@ -593,9 +655,13 @@ def get_session_events(
     after_sequence: int = 0,
     limit: int = 200,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
 ) -> dict:
     """按租户读取受限 Session 事件流，返回脱敏模型投影而不泄露原始数据域正文。"""
-    x_tenant_id, _, _ = _trusted_identity(request, x_tenant_id, "anonymous", "")
+    x_tenant_id, x_user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    header = request.app.state.container.run_store.session_header(x_tenant_id, session_id)
+    if header is None or header.owner_id != x_user_id:
+        raise HTTPException(status_code=404, detail="session not found")
     try:
         events = request.app.state.container.run_store.session_events(
             x_tenant_id,
@@ -610,6 +676,113 @@ def get_session_events(
         "events": [event.model_dump(mode="json") for event in events],
         "next_after_sequence": events[-1].sequence if events else after_sequence,
     }
+
+
+@router.get("/sessions/{session_id}")
+def get_session(
+    session_id: str,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> dict:
+    """读取会话不可变 Header 与可再生 Projection，不返回其他数据域的原始正文。"""
+    x_tenant_id, x_user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    store = request.app.state.container.run_store
+    header = store.session_header(x_tenant_id, session_id)
+    if header is None or header.owner_id != x_user_id:
+        raise HTTPException(status_code=404, detail="session not found")
+    projection = store.session_projection(x_tenant_id, session_id)
+    return {
+        "header": header.model_dump(mode="json"),
+        "projection": projection.model_dump(mode="json") if projection else None,
+    }
+
+
+@router.post("/sessions/{source_session_id}/fork", status_code=status.HTTP_201_CREATED)
+def fork_session(
+    source_session_id: str,
+    payload: SessionForkRequest,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> dict:
+    """创建只继承父事件前缀的会话分支，适用于安全回放和人工方案分叉。"""
+    x_tenant_id, x_user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    store = request.app.state.container.run_store
+    source = store.session_header(x_tenant_id, source_session_id)
+    if source is None or source.owner_id != x_user_id:
+        raise HTTPException(status_code=404, detail="source session not found")
+    try:
+        header = store.fork_session(
+            tenant_id=x_tenant_id,
+            source_session_id=source_session_id,
+            new_session_id=payload.session_id,
+            owner_id=x_user_id,
+            agent_id=source.agent_id,
+            agent_version=source.agent_version,
+            snapshot_id=source.snapshot_id,
+            seed_sequence=payload.seed_sequence,
+            delegation_depth=source.delegation_depth + 1,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return header.model_dump(mode="json")
+
+
+@router.post("/sessions/{session_id}/compact")
+def compact_session(
+    session_id: str,
+    payload: SessionCompactionRequest,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict:
+    """追加会话压缩替换事件；需要显式管理权限，且不会删除原始审计事实。"""
+    x_tenant_id, x_user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if "agent:session:manage" not in permissions:
+        raise HTTPException(status_code=403, detail="agent:session:manage permission is required")
+    store = request.app.state.container.run_store
+    header = store.session_header(x_tenant_id, session_id)
+    if header is None or header.owner_id != x_user_id:
+        raise HTTPException(status_code=404, detail="session not found")
+    try:
+        event = store.compact_session(
+            x_tenant_id,
+            session_id,
+            replaced_through_sequence=payload.replaced_through_sequence,
+            summary=model_visible_message("system", payload.summary, source="session.compaction"),
+            policy_version=payload.policy_version,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    request.app.state.container.publish_session_event(event)
+    return event.model_dump(mode="json")
+
+
+@router.post("/sessions/{session_id}/archive")
+def archive_session(
+    session_id: str,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict:
+    """将会话账本导出至配置的对象存储；在线库仅返回定位键与完整性摘要。"""
+    x_tenant_id, x_user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if "agent:session:archive" not in permissions:
+        raise HTTPException(status_code=403, detail="agent:session:archive permission is required")
+    header = request.app.state.container.run_store.session_header(x_tenant_id, session_id)
+    if header is None or header.owner_id != x_user_id:
+        raise HTTPException(status_code=404, detail="session not found")
+    try:
+        return request.app.state.container.archive_session(x_tenant_id, session_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/runs/{run_id}/cancel")

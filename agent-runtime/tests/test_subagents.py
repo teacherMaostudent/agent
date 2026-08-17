@@ -48,9 +48,13 @@ def test_runtime_store_authorizes_only_ancestor_subagent_lineage(tmp_path) -> No
     child = root.model_copy(update={
         "request_id": "child-request", "run_id": "child-run", "agent_id": "child",
         "parent_run_id": "root-run",
+        "session_id": "child-session",
+        "parent_session_id": "session",
     })
     grandchild = child.model_copy(update={
         "request_id": "grandchild-request", "run_id": "grandchild-run", "parent_run_id": "child-run",
+        "session_id": "grandchild-session",
+        "parent_session_id": "child-session",
     })
     for context in (root, child, grandchild):
         store.create(context)
