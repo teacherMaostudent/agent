@@ -18,7 +18,7 @@ from platform_sdk.contracts.runtime_api import (
 )
 
 from agent_runtime_service.runtime.capabilities import CapabilityUnavailable
-from agent_runtime_service.runtime.mailbox import RunMailboxInputType
+from agent_runtime_service.runtime.mailbox import ClaimedRunMailboxItem, RunMailboxInputType
 from agent_runtime_service.runtime.models import (
     ApprovalResume,
     ExecutionLifecycle,
@@ -187,6 +187,9 @@ def run_agent(
         run_id=x_run_id,
         parent_run_id=str(payload.metadata.get("_parent_run_id", "")),
         parent_session_id=str(payload.metadata.get("_parent_session_id", "")),
+        root_task_id=str(payload.metadata.get("_root_task_id", "")),
+        collaboration_snapshot_id=str(payload.metadata.get("_collaboration_snapshot_id", "")),
+        business_operation_id=str(payload.metadata.get("_business_operation_id", "")),
     )
     # Run 是一次执行尝试；Turn 是该 Session 内的一次用户交互。稳定派生 ID 使
     # Temporal Activity 重放不会凭空创建第二个 Turn。
@@ -289,6 +292,15 @@ def run_agent(
             max_cost_usd=max_cost,
             max_attempts=execution.attempt_budget_remaining,
         )
+        # 只有根运行创建不可变总账；子 Agent 在 Graph 中对同一 root_task_id
+        # 申请操作级预留，不能以自己的缩小预算覆盖根任务上限。
+        if not execution.parent_run_id:
+            container.run_store.initialize_root_budget(
+                x_tenant_id,
+                execution.root_task_id,
+                max_cost_usd=budget.max_cost_usd,
+                max_steps=budget.max_steps,
+            )
         # A caller may narrow, but never expand, the deployment's untrusted
         # tool-output limit before results are included in a decision prompt.
         configured_tool_limit = container.settings.agent_tool_result_max_chars
@@ -299,6 +311,10 @@ def run_agent(
             **payload.metadata,
             "tool_result_max_chars": configured_tool_limit,
             "runtime_environment": payload.environment,
+            # Root 运行在此固定协作组合; 子 Agent 只继承引用和缩小后的额度。
+            "_root_task_id": execution.root_task_id or execution.run_id,
+            "_collaboration_snapshot_id": execution.collaboration_snapshot_id,
+            "_business_operation_id": execution.business_operation_id,
         }
         result = container.agent_harness.run(
             {
@@ -314,6 +330,9 @@ def run_agent(
                 "turn_id": turn_id,
                 "attempt_id": attempt_id,
                 "run_id": execution.run_id,
+                "root_task_id": execution.root_task_id or execution.run_id,
+                "collaboration_snapshot_id": execution.collaboration_snapshot_id,
+                "business_operation_id": execution.business_operation_id,
                 "trace_id": execution.trace_id,
                 "agent_id": execution.agent_id,
                 "agent_version": execution.agent_version,
@@ -332,6 +351,7 @@ def run_agent(
                 "evidence": [],
                 "execution_trace": [],
                 "subagent_invocations": {},
+                "agent_results": [],
                 "temporal_worker_execution": _temporal_worker_execution,
             },
             execution.run_id,
@@ -487,15 +507,20 @@ def resume_run(
     request: Request,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
     _temporal_worker_execution: bool = False,
     _user_input: UserInputResume | None = None,
+    _claimed_control: ClaimedRunMailboxItem | None = None,
 ) -> dict:
     """恢复等待审批的检查点。
 
     只允许原租户且状态为 WAITING_APPROVAL 的运行恢复；批准/拒绝都会生成新的治理
     事件并在终态时写回会话记忆。
     """
-    x_tenant_id, x_user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    x_tenant_id, x_user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
     container = request.app.state.container
     run = container.run_store.get(x_tenant_id, run_id)
     if run is None:
@@ -505,21 +530,53 @@ def resume_run(
         raise HTTPException(status_code=409, detail=f"run is not waiting for {expected_status.lower()}")
     if run.cancel_requested:
         raise HTTPException(status_code=409, detail="run was cancelled")
-    try:
-        _, state_event = container.run_store.transition_state(
-            x_tenant_id,
-            run_id,
-            AgentRunEvent.STEERING_RECEIVED if _user_input is not None else AgentRunEvent.APPROVAL_RECEIVED,
-            metadata=(
-                {"mailbox_message_id": _user_input.message_id}
-                if _user_input is not None
-                else {"approval_id": payload.approval_id, "approved": payload.approved}
-            ),
-        )
-    except InvalidRunTransition as exc:
-        raise HTTPException(status_code=409, detail={"code": "invalid_run_state", "message": str(exc)}) from exc
-    if state_event is not None:
-        container.publish_session_event(state_event)
+    # Judge 策略的候选选择只能由 Governance 工作负载提交；Runtime 不同步调用
+    # Judge 模型，以免把治理平面重新耦合进线上执行环。
+    pending_conflict = next(
+        (
+            item
+            for item in run.result.get("interrupts", [])
+            if isinstance(item, dict) and item.get("type") == "subagent_conflict"
+        ),
+        None,
+    )
+    if (
+        not _temporal_worker_execution
+        and pending_conflict is not None
+        and pending_conflict.get("strategy") == "judge"
+        and "governance:judge:resolve" not in permissions
+    ):
+        raise HTTPException(status_code=403, detail="governance judge permission is required")
+    claimed_control = _claimed_control
+    if _user_input is None and claimed_control is None:
+        # 审批决定也首先作为受版本化的 Inbox 控制输入落账。邮箱仅保存结构化决定，
+        # 不保存用户自由文本；稳定 approval_id 让 API/Temporal 重试共用同一条消息。
+        approval_key = payload.approval_id or x_request_id or f"approval-{uuid4().hex}"
+        try:
+            message_id = container.run_store.enqueue_mailbox_input(
+                x_tenant_id,
+                run_id,
+                RunMailboxInputType.APPROVAL_RESULT,
+                idempotency_key=approval_key,
+                control_input={
+                    "approved": payload.approved,
+                    "approval_id": payload.approval_id,
+                    "reason": payload.reason,
+                    "decided_by": x_user_id,
+                    "selected_provider_agent_id": payload.selected_provider_agent_id,
+                    "payload_version": "approval-result/v1",
+                },
+            )
+            claimed_control = container.run_store.claim_mailbox_input(x_tenant_id, run_id)
+        except (LookupError, InvalidRunTransition, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if claimed_control is None or claimed_control.message_id != message_id:
+            raise HTTPException(status_code=409, detail="approval inbox input is unavailable for resume")
+    effective_payload = (
+        AgentResumeRequest.model_validate(claimed_control.control_input)
+        if claimed_control is not None
+        else payload
+    )
     budget = run.result.get("budget", {})
     max_steps = int(budget.get("max_steps", container.settings.agent_max_steps))
     try:
@@ -539,12 +596,20 @@ def resume_run(
             }
             if _user_input is not None
             else {
-                "approved": payload.approved,
-                "approval_id": payload.approval_id,
-                "reason": payload.reason,
+                "approved": effective_payload.approved,
+                "approval_id": effective_payload.approval_id,
+                "reason": effective_payload.reason,
                 "decided_by": x_user_id,
+                "selected_provider_agent_id": effective_payload.selected_provider_agent_id,
             }
         )
+        if claimed_control is not None:
+            signal["_claimed_control"] = {
+                "message_id": claimed_control.message_id,
+                "input_type": claimed_control.input_type.value,
+                "lease_token": claimed_control.lease_token,
+                "control_input": claimed_control.control_input,
+            }
         queued = queue.resume(
             x_tenant_id,
             run_id,
@@ -553,14 +618,47 @@ def resume_run(
         if queued is None:
             raise HTTPException(status_code=409, detail="durable workflow is no longer available")
         return queued
+    # 只有实际执行恢复的进程才能推进状态机；外层 Durable API 仅投递 Signal，
+    # 否则 Worker 会看到已经 RUNNING 的 Run 并拒绝自身恢复。
+    input_metadata = (
+        {"mailbox_message_id": _user_input.message_id, "input_type": RunMailboxInputType.STEERING.value}
+        if _user_input is not None
+        else {
+            "mailbox_message_id": claimed_control.message_id if claimed_control else "",
+            "input_type": RunMailboxInputType.APPROVAL_RESULT.value,
+            "approval_id": effective_payload.approval_id,
+            "approved": effective_payload.approved,
+        }
+    )
+    received_event = container.run_store.append_session_event(
+        run.context,
+        RuntimeEventType.RUN_INPUT_RECEIVED,
+        status=run.status,
+        metadata=input_metadata,
+        turn_id=f"turn_{run_id}",
+        attempt_id=f"attempt_{run_id}",
+    )
+    container.publish_session_event(received_event)
+    try:
+        _, state_event = container.run_store.transition_state(
+            x_tenant_id,
+            run_id,
+            AgentRunEvent.STEERING_RECEIVED if _user_input is not None else AgentRunEvent.APPROVAL_RECEIVED,
+            metadata=input_metadata,
+        )
+    except InvalidRunTransition as exc:
+        raise HTTPException(status_code=409, detail={"code": "invalid_run_state", "message": str(exc)}) from exc
+    if state_event is not None:
+        container.publish_session_event(state_event)
     result = container.agent_harness.resume(
         run_id,
         _user_input
         or ApprovalResume(
-            approved=payload.approved,
-            approval_id=payload.approval_id,
+            approved=effective_payload.approved,
+            approval_id=effective_payload.approval_id,
             decided_by=x_user_id,
-            reason=payload.reason,
+            reason=effective_payload.reason,
+            selected_provider_agent_id=effective_payload.selected_provider_agent_id,
         ),
         max_steps=max_steps,
         plan=compiled_plan,
@@ -620,6 +718,10 @@ def resume_run(
     container.governance.flush()
     if session_event is not None:
         container.publish_session_event(session_event)
+    if claimed_control is not None and not container.run_store.acknowledge_mailbox_input(
+        claimed_control.message_id, claimed_control.lease_token
+    ):
+        raise HTTPException(status_code=409, detail="approval inbox lease was lost before acknowledgement")
     return body
 
 

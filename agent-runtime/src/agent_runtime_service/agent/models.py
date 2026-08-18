@@ -18,6 +18,7 @@ class AgentDecision(BaseModel):
     tool_name: str = ""
     tool_arguments: dict[str, Any] = Field(default_factory=dict)
     subagent_id: str = ""
+    subagent_capability: str = ""
     subagent_task: str = ""
     final_answer: str = ""
 
@@ -33,9 +34,10 @@ class AgentDecision(BaseModel):
         if self.action == AgentAction.TOOL and not self.tool_name.strip():
             raise ValueError("TOOL requires tool_name")
         if self.action == AgentAction.SUBAGENT and (
-            not self.subagent_id.strip() or not self.subagent_task.strip()
+            (not self.subagent_id.strip() and not self.subagent_capability.strip())
+            or not self.subagent_task.strip()
         ):
-            raise ValueError("SUBAGENT requires subagent_id and subagent_task")
+            raise ValueError("SUBAGENT requires subagent_capability (or legacy subagent_id) and subagent_task")
         if self.action == AgentAction.ANSWER and not self.final_answer.strip():
             raise ValueError("ANSWER requires final_answer")
         return self
@@ -55,6 +57,9 @@ class AgentState(TypedDict, total=False):
     attempt_id: str
     trace_id: str
     run_id: str
+    root_task_id: str
+    collaboration_snapshot_id: str
+    business_operation_id: str
     agent_id: str
     agent_version: str
     snapshot_id: str
@@ -85,6 +90,7 @@ class AgentState(TypedDict, total=False):
     termination_reason: str
     safety_status: str
     subagent_invocations: dict[str, int]
+    agent_results: list[dict[str, Any]]
     mailbox_message_id: str
     mailbox_lease_token: str
     mailbox_replan: bool

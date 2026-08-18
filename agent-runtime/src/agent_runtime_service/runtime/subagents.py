@@ -22,6 +22,10 @@ class SubAgentDelegation:
     max_steps: int
     max_cost_usd: float
     max_invocations: int
+    delegated_permissions: frozenset[str] = frozenset()
+    root_task_id: str = ""
+    collaboration_snapshot_id: str = ""
+    business_operation_id: str = ""
 
 
 class SubAgentManager:
@@ -36,6 +40,10 @@ class SubAgentManager:
         parent_remaining_steps: int,
         parent_remaining_cost_usd: float,
         prior_invocations: int,
+        parent_permissions: frozenset[str] = frozenset(),
+        root_task_id: str = "",
+        collaboration_snapshot_id: str = "",
+        business_operation_id: str = "",
     ) -> SubAgentDelegation:
         """校验委派并切分父运行剩余配额，拒绝任意目标和无限递归。"""
         declared = [SubAgentBinding.model_validate(item) for item in bindings]
@@ -59,6 +67,15 @@ class SubAgentManager:
             max_steps=max_steps,
             max_cost_usd=max_cost,
             max_invocations=binding.max_invocations,
+            # 未声明 delegated_permissions 等价于不给额外限制, 但始终不能超过父权限。
+            delegated_permissions=(
+                parent_permissions.intersection(binding.delegated_permissions)
+                if binding.delegated_permissions
+                else parent_permissions
+            ),
+            root_task_id=root_task_id,
+            collaboration_snapshot_id=collaboration_snapshot_id,
+            business_operation_id=business_operation_id,
         )
 
     def dispatch(
@@ -68,6 +85,7 @@ class SubAgentManager:
         target_agent_id: str,
         task: str,
         executor: Callable[[SubAgentDelegation, str, dict[str, Any]], dict[str, Any]],
+        delegation_transform: Callable[[SubAgentDelegation], SubAgentDelegation] | None = None,
     ) -> tuple[SubAgentDelegation, dict[str, Any]]:
         """从冻结计划准备子任务并委派给内部调用器；调用器不得获得策略修改权。"""
         if target_agent_id == state.get("agent_id"):
@@ -91,5 +109,11 @@ class SubAgentManager:
                 0.0, float(budget.get("max_cost_usd", 0)) - float(budget.get("spent_cost_usd", 0))
             ),
             prior_invocations=int(invocations.get(target_agent_id, 0)),
+            parent_permissions=frozenset(str(item) for item in state.get("permissions", [])),
+            root_task_id=str(state.get("root_task_id") or state.get("run_id", "")),
+            collaboration_snapshot_id=str(state.get("collaboration_snapshot_id", "")),
+            business_operation_id=str(state.get("business_operation_id") or state.get("run_id", "")),
         )
+        if delegation_transform is not None:
+            delegation = delegation_transform(delegation)
         return delegation, executor(delegation, task, state)

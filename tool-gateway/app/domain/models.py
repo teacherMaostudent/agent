@@ -239,6 +239,8 @@ class InvocationContext(StrictModel):
     request_id: str
     idempotency_key: str | None = None
     tool_execution_id: str = ""
+    root_task_id: str = ""
+    business_operation_id: str = ""
     trace_id: str = ""
     run_id: str = ""
     session_id: str = ""

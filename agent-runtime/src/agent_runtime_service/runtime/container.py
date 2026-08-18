@@ -294,19 +294,26 @@ class AgentRuntimeContainer:
         return bool(run and run.cancel_requested)
 
     def _cancel_execution(self, tenant_id: str, run_id: str):
-        """先持久化协作取消，再通知对应队列/Temporal Workflow，避免长期 Workflow 残留。"""
-        run, session_event = self.run_store.cancel_with_session_event(tenant_id, run_id)
+        """按子到根传播取消，再通知每个队列/Temporal Workflow，避免孤儿子任务继续运行。"""
+        run_ids = [*reversed(self.run_store.descendant_run_ids(tenant_id, run_id)), run_id]
+        cancelled: dict[str, object] = {}
+        session_events = []
+        for candidate in run_ids:
+            run, session_event = self.run_store.cancel_with_session_event(tenant_id, candidate)
+            if run is not None:
+                cancelled[candidate] = run
+            if session_event is not None:
+                session_events.append(session_event)
         try:
             queue = self.capability(RuntimeCapability.WORKFLOW)
         except CapabilityUnavailable:
             queue = None
         if queue is not None:
-            queued = queue.cancel(tenant_id, run_id)
-            if run is None:
-                return queued
-        if session_event is not None:
-            self.publish_session_event(session_event)
-        return run
+            for candidate in run_ids:
+                queue.cancel(tenant_id, candidate)
+        for event in session_events:
+            self.publish_session_event(event)
+        return cancelled.get(run_id)
 
     def publish_session_event(self, event: RuntimeLifecycleEvent) -> None:
         """分发已事务提交的 Session 事件；事件总线绝不自行创建第二份状态事实。"""
@@ -456,6 +463,7 @@ class AgentRuntimeContainer:
 
         from platform_sdk.contracts.runtime_api import AgentResumeRequest, AgentRunRequest
 
+        from agent_runtime_service.runtime.mailbox import ClaimedRunMailboxItem, RunMailboxInputType
         from agent_runtime_service.runtime.models import UserInputResume
         from agent_runtime_service.service_api.runtime_api import resume_run, run_agent
 
@@ -468,6 +476,7 @@ class AgentRuntimeContainer:
         if submission.get("operation") == "resume":
             control_input = submission.get("control_input") or {}
             user_input = control_input.get("_user_input")
+            claimed_control = control_input.get("_claimed_control")
             return resume_run(
                 submission["run_id"],
                 AgentResumeRequest.model_validate(control_input),
@@ -477,6 +486,16 @@ class AgentRuntimeContainer:
                 _temporal_worker_execution=True,
                 _user_input=(
                     UserInputResume.model_validate(user_input) if isinstance(user_input, dict) else None
+                ),
+                _claimed_control=(
+                    ClaimedRunMailboxItem(
+                        message_id=str(claimed_control["message_id"]),
+                        input_type=RunMailboxInputType(str(claimed_control["input_type"])),
+                        lease_token=str(claimed_control["lease_token"]),
+                        control_input=dict(claimed_control.get("control_input") or {}),
+                    )
+                    if isinstance(claimed_control, dict)
+                    else None
                 ),
             )
         return run_agent(
@@ -509,6 +528,10 @@ class AgentRuntimeContainer:
                 "_parent_run_id": parent_state.get("run_id", ""),
                 "_parent_session_id": parent_state.get("session_id", ""),
                 "_parent_agent_id": parent_state.get("agent_id", ""),
+                "_root_task_id": delegation.root_task_id,
+                "_collaboration_snapshot_id": delegation.collaboration_snapshot_id,
+                # Fallback/重试共享同一业务操作键，Tool Gateway 可先对账再决定是否执行。
+                "_business_operation_id": delegation.business_operation_id,
             }
         )
         request = SimpleNamespace(
@@ -529,7 +552,8 @@ class AgentRuntimeContainer:
             request,
             x_tenant_id=str(parent_state["tenant_id"]),
             x_user_id=str(parent_state["user_id"]),
-            x_permissions=",".join(parent_state.get("permissions", [])),
+            # 子 Agent 只收到父权限与发布 delegated scope 的交集，委派链绝不扩权。
+            x_permissions=",".join(sorted(delegation.delegated_permissions)),
             x_trace_id=str(parent_state.get("trace_id", "")),
             _temporal_worker_execution=True,
         )

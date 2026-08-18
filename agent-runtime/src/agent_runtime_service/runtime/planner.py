@@ -30,6 +30,7 @@ from agent_runtime_service.runtime.models import (
     SlaAssessment,
     SourcePlan,
 )
+from agent_runtime_service.runtime.prompt_security import PromptSecurityGuard
 from agent_runtime_service.runtime.retrieval_policy import infer_profile, resolve_profile
 
 _EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
@@ -127,16 +128,20 @@ Only select knowledge bases present in the published snapshot. Never invent perm
         """注入受治理网关和逻辑模型名，使语义增强仍经过既定模型路由。"""
         self.gateway = gateway
         self.model = model
+        self.prompt_security = PromptSecurityGuard()
 
     def analyze(self, state: dict[str, Any]) -> tuple[IntentResult, list[EntityResult], SourcePlan]:
         """向网关请求结构化语义分析，同时只暴露快照允许的来源范围。"""
         compiled = state.get("compiled_plan", {})
         catalog = resolve_catalog(compiled) if compiled else DEFAULT_INTENT_CATALOG
+        untrusted_segments, findings = self.prompt_security.prepare_model_input(state)
         payload = {
             "task": state["task"],
             "metadata": state.get("metadata", {}),
             "published_spec": state.get("agent_snapshot", {}).get("spec", {}),
-            "conversation_history": state.get("conversation_history", [])[-12:],
+            "conversation_history": untrusted_segments["untrusted_history"],
+            "untrusted_evidence": untrusted_segments["untrusted_evidence"],
+            "untrusted_tool_observations": untrusted_segments["untrusted_tool_observations"],
             "user_context": state.get("user_context", {}),
             "context_status": state.get("context_status", {}),
             # 语义模型只能在发布目录列出的意图空间中输出；目录正文也会进入 Plan 指纹。
@@ -152,6 +157,7 @@ Only select knowledge bases present in the published snapshot. Never invent perm
                     for item in catalog.definitions
                 ],
             },
+            "prompt_security": {"finding_codes": sorted({item.code for item in findings})},
             "published_execution_contract": {
                 "graph_execution_order": state.get("compiled_plan", {}).get(
                     "graph_execution_order", []

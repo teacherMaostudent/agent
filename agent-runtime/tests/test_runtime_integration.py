@@ -3,6 +3,7 @@ from __future__ import annotations
 from platform_sdk.contracts.execution import ExecutionContext
 
 from agent_runtime_service.runtime.integration import GovernanceOutboxPublisher, RuntimeStore
+from agent_runtime_service.runtime.mailbox import RunMailboxInputType
 from agent_runtime_service.runtime.session_events import RuntimeEventType
 
 
@@ -46,6 +47,13 @@ def test_runtime_store_persists_run_and_governance_outbox(tmp_path) -> None:
     reopened.close()
 
 
+def test_execution_context_defaults_root_task_to_generated_run_id() -> None:
+    """未传 run_id 的根请求也必须有稳定 Root Task，供跨 Agent 预算与取消树关联。"""
+    context = _context()
+
+    assert context.root_task_id == context.run_id
+
+
 def test_runtime_store_cancel_is_tenant_scoped(tmp_path) -> None:
     store = RuntimeStore(tmp_path / "runtime.db")
     context = _context()
@@ -60,6 +68,84 @@ def test_runtime_store_cancel_is_tenant_scoped(tmp_path) -> None:
     assert cancellation_event["event_type"] == "agent.run.state_changed"
     assert cancellation_event["payload"]["previous_runtime_state"] == "CREATED"
     assert cancellation_event["payload"]["runtime_state"] == "CANCELLED"
+    store.close()
+
+
+def test_runtime_store_cancellation_tree_marks_descendant_runs(tmp_path) -> None:
+    """取消根运行必须覆盖已持久化的子谱系，防止子 Agent 成为继续执行的孤儿。"""
+    store = RuntimeStore(tmp_path / "runtime.db")
+    root = _context()
+    child = _context().model_copy(
+        update={
+            "request_id": "request-child",
+            "run_id": "run-child",
+            "session_id": "session-child",
+            "parent_run_id": root.run_id,
+            "parent_session_id": root.session_id,
+        }
+    )
+    store.create(root)
+    store.create(child)
+
+    cancelled = store.cancel_tree("tenant-a", root.run_id)
+
+    assert {run.run_id for run in cancelled} == {root.run_id, child.run_id}
+    assert store.get("tenant-a", child.run_id).cancel_requested is True
+    store.close()
+
+
+def test_root_budget_ledger_is_shared_idempotent_and_never_overcommits(tmp_path) -> None:
+    """并发子 Agent 的额度必须在同一 Root 账本原子预留，而非各自复制父预算。"""
+    store = RuntimeStore(tmp_path / "runtime.db")
+    store.initialize_root_budget("tenant-a", "root-1", max_cost_usd=1.0, max_steps=2)
+
+    store.reserve_root_budget(
+        "tenant-a", "root-1", "run-parent", "reservation-1", cost_usd=0.6, steps=1
+    )
+    # Activity 重放使用同一 ID，不得把已经预留的额度再算一次。
+    store.reserve_root_budget(
+        "tenant-a", "root-1", "run-parent", "reservation-1", cost_usd=0.6, steps=1
+    )
+    store.settle_root_budget("reservation-1", actual_cost_usd=0.4, actual_steps=1)
+    store.reserve_root_budget(
+        "tenant-a", "root-1", "run-child", "reservation-2", cost_usd=0.6, steps=1
+    )
+
+    try:
+        store.reserve_root_budget(
+            "tenant-a", "root-1", "run-child", "reservation-3", cost_usd=0.1, steps=1
+        )
+    except Exception as exc:
+        assert getattr(exc, "code", "") == "ROOT_BUDGET_EXCEEDED"
+    else:  # pragma: no cover - failure branch makes the budget check observable.
+        raise AssertionError("shared root budget must reject overcommit")
+    store.close()
+
+
+def test_approval_control_input_is_persisted_and_leased_without_message_body(tmp_path) -> None:
+    """审批决定使用 Inbox 的受限控制载荷，避免只存在于 API 进程或 Temporal Signal。"""
+    store = RuntimeStore(tmp_path / "runtime.db")
+    context = _context()
+    store.create(context)
+    message_id = store.enqueue_mailbox_input(
+        "tenant-a",
+        context.run_id,
+        RunMailboxInputType.APPROVAL_RESULT,
+        idempotency_key="approval-1",
+        control_input={"approved": True, "approval_id": "approval-1", "payload_version": "v1"},
+    )
+
+    claimed = store.claim_mailbox_input("tenant-a", context.run_id)
+
+    assert claimed is not None
+    assert claimed.message_id == message_id
+    assert claimed.input_type is RunMailboxInputType.APPROVAL_RESULT
+    assert claimed.control_input == {
+        "approved": True,
+        "approval_id": "approval-1",
+        "payload_version": "v1",
+    }
+    assert store.acknowledge_mailbox_input(message_id, claimed.lease_token) is True
     store.close()
 
 

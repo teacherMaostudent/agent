@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from platform_sdk.contracts.subagents import CapabilityRequirement
 
 from agent_runtime_service.runtime.agent_manager import AgentManager
 from agent_runtime_service.runtime.subagents import SubAgentManager, SubAgentPolicyError
@@ -53,3 +54,38 @@ def test_agent_manager_rejects_self_delegation_before_executor_is_called() -> No
 
     with pytest.raises(SubAgentPolicyError, match="cannot delegate to itself"):
         manager.delegate(_state(), target_agent_id="parent", task="loop")
+
+
+def test_agent_manager_dispatches_published_expert_group_and_returns_all_results() -> None:
+    """协调器可并发请求多个冻结专家，但不会把目标选择权交给模型。"""
+    state = _state()
+    state["compiled_plan"]["subagents"] = [
+        {
+            "agent_id": "research-a",
+            "capabilities": ["RESEARCH"],
+            "parallelism": 2,
+            "max_depth": 2,
+            "max_budget_fraction": 0.25,
+            "max_invocations": 1,
+        },
+        {
+            "agent_id": "research-b",
+            "capabilities": ["RESEARCH"],
+            "parallelism": 2,
+            "max_depth": 2,
+            "max_budget_fraction": 0.25,
+            "max_invocations": 1,
+        },
+    ]
+    manager = AgentManager(
+        SubAgentManager(),
+        lambda delegation, *_: {"status": "COMPLETED", "answer": delegation.target_agent_id},
+    )
+
+    dispatched = manager.delegate_capability_group(
+        state,
+        requirement=CapabilityRequirement(capability_id="RESEARCH"),
+        task="compare sources",
+    )
+
+    assert {selection.binding.agent_id for selection, _, _ in dispatched} == {"research-a", "research-b"}

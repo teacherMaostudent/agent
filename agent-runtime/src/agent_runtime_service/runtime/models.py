@@ -153,10 +153,13 @@ class RuntimeBudget(BaseModel):
 
 
 class ApprovalResume(BaseModel):
+    """审批或冲突裁决的受限恢复载荷；候选选择只能引用冻结的 Provider ID。"""
+
     approved: bool
     approval_id: str = ""
     decided_by: str = ""
     reason: str = ""
+    selected_provider_agent_id: str = ""
 
 
 class UserInputResume(BaseModel):
@@ -174,4 +177,6 @@ class RuntimeLimitExceeded(RuntimeError):
 
 
 class RuntimeCancelled(RuntimeError):
+    """取消检查命中时中断执行，调用方应写入既有取消终态而非重试副作用。"""
+
     pass

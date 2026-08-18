@@ -51,7 +51,9 @@ def test_history_enters_semantic_planning_prompt() -> None:
 
     analyzer.analyze(base_state())
 
-    assert gateway.calls[0]["conversation_history"][0]["content"].startswith("We were")
+    segment = gateway.calls[0]["conversation_history"][0]
+    assert segment["trust"] == "history_untrusted"
+    assert segment["content"]["content"].startswith("We were")
     assert gateway.calls[0]["user_context"]["department"] == "quality"
 
 
@@ -62,5 +64,7 @@ def test_history_enters_agent_decision_prompt() -> None:
     decision = engine.decide(base_state(), ToolRegistry())
 
     assert decision.action == AgentAction.ANSWER
-    assert gateway.calls[0]["conversation_history"][0]["content"].startswith("We were")
+    segment = gateway.calls[0]["conversation_history"][0]
+    assert segment["trust"] == "history_untrusted"
+    assert segment["content"]["content"].startswith("We were")
     assert gateway.calls[0]["context_status"]["rag_status"] == "not_requested"

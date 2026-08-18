@@ -270,6 +270,9 @@ class AgentHarness:
         run_id: str | None,
         parent_run_id: str = "",
         parent_session_id: str = "",
+        root_task_id: str = "",
+        collaboration_snapshot_id: str = "",
+        business_operation_id: str = "",
     ) -> ExecutionContext:
         """创建不可变执行关联标识；额度策略由调用方计算，Harness 只封装上下文。"""
         return ExecutionContext.create(
@@ -288,6 +291,9 @@ class AgentHarness:
             run_id=run_id,
             parent_run_id=parent_run_id,
             parent_session_id=parent_session_id,
+            root_task_id=root_task_id,
+            collaboration_snapshot_id=collaboration_snapshot_id,
+            business_operation_id=business_operation_id,
         )
 
     def resolve_executor(self, plan: CompiledAgentPlan) -> ExecutorAdapter:

@@ -60,7 +60,7 @@ def test_evaluation_assets_regression_judge_and_gate_are_governance_owned(
             "question": "What is required?",
             "groundTruth": "Approval is required.",
             "contexts": ["Approval is required before release."],
-            "tags": ["release"],
+            "tags": ["release", "red-team", "prompt-injection"],
             "expertLabels": {"passed": True},
             "labelerId": "expert-1",
             "reviewStatus": "APPROVED",

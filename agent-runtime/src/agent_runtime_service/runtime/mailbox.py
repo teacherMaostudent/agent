@@ -6,9 +6,9 @@ Graph 在安全边界领取消息后重新读取 Context，由 Context 保持原
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class RunMailboxInputType(StrEnum):
@@ -46,6 +46,7 @@ class ClaimedRunMailboxItem:
     input_type: RunMailboxInputType
     lease_token: str
     priority: AgentInputPriority = AgentInputPriority.NORMAL
+    control_input: dict[str, Any] = field(default_factory=dict)
 
 
 class RunMailbox(Protocol):

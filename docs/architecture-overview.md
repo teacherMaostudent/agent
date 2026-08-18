@@ -41,6 +41,15 @@ Temporal、PostgreSQL、Kafka、对象存储、OpenSearch/向量库、OIDC Provi
    结果）。它可解释模型上下文，但不复制 Context/RAG/Tool Gateway 的原始敏感正文。
 7. 各服务把业务事务和 Outbox 事件一起提交；Governance 异步审计、评测和生成发现。
 
+多 Agent 协作同样受快照约束：Planner 只能请求能力 ID，`CapabilityRouter` 依据调用者、输入/输出
+Schema、管辖域和已发布 Binding 选择 Provider。Binding 可声明固定专家并行度和冲突策略；每个专家用
+独立 Run/Snapshot 执行，结果先压缩为含证据、版本和权威等级的 `AgentResult`。Authority 或 Quorum
+可自动收敛；Judge/Human 不在 Runtime 内伪造裁决，而是形成可审计、可恢复的冲突裁决中断。
+
+所有可恢复输入均经过 `RunMailbox`：普通消息仅保留 Context 引用，审批仅保存受限结构化控制载荷。API
+或 Temporal Signal 只负责投递与唤醒，真正消费、状态转换和 `runtime.run.input_received` 事实由执行
+Worker 完成，因此重试不会把控制信号变成不可追溯的进程内状态。
+
 发布 Graph 不会加载租户自定义 Python 节点。它只能声明既有安全节点的迁移，LangGraph 在模型决策、
 检索和工具执行后检查该策略。Harness 按已部署的 `runtime_executor` Profile 选择执行器；生产环境
 未知 Profile 拒绝，不能因未知 Agent 静默回退默认图。

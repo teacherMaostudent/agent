@@ -220,6 +220,8 @@ def _execution_headers(context: ToolContext) -> dict[str, str]:
         "X-Run-Id": context.run_id,
         "X-Session-Id": context.session_id,
         "X-Tool-Execution-Id": context.tool_execution_id,
+        "X-Root-Task-Id": context.root_task_id,
+        "X-Business-Operation-Id": context.business_operation_id,
         "X-Agent-Id": context.agent_id,
         "X-Agent-Version": context.agent_version,
         "X-Snapshot-Id": context.snapshot_id,

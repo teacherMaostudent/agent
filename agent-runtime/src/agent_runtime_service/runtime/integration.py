@@ -25,6 +25,7 @@ from agent_runtime_service.runtime.mailbox import (
     ClaimedRunMailboxItem,
     RunMailboxInputType,
 )
+from agent_runtime_service.runtime.models import RuntimeLimitExceeded
 from agent_runtime_service.runtime.run_state import (
     AgentRunEvent,
     AgentRunState,
@@ -181,6 +182,7 @@ class RuntimeStoreOperations:
                 CREATE TABLE IF NOT EXISTS runtime_run_mailbox (
                     message_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, run_id TEXT NOT NULL,
                     input_type TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+                    control_json TEXT NOT NULL DEFAULT '{}',
                     priority INTEGER NOT NULL DEFAULT 50,
                     delivery_status TEXT NOT NULL DEFAULT 'PENDING', lease_token TEXT NOT NULL DEFAULT '',
                     lease_expires_at TEXT, created_at TEXT NOT NULL, consumed_at TEXT,
@@ -188,6 +190,21 @@ class RuntimeStoreOperations:
                 );
                 CREATE INDEX IF NOT EXISTS runtime_run_mailbox_claim_idx
                     ON runtime_run_mailbox(tenant_id, run_id, delivery_status, priority, created_at);
+                CREATE TABLE IF NOT EXISTS runtime_root_budgets (
+                    tenant_id TEXT NOT NULL, root_task_id TEXT NOT NULL,
+                    max_cost_usd REAL NOT NULL, max_steps INTEGER NOT NULL,
+                    reserved_cost_usd REAL NOT NULL DEFAULT 0, reserved_steps INTEGER NOT NULL DEFAULT 0,
+                    spent_cost_usd REAL NOT NULL DEFAULT 0, consumed_steps INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, root_task_id)
+                );
+                CREATE TABLE IF NOT EXISTS runtime_root_budget_reservations (
+                    reservation_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, root_task_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL, reserved_cost_usd REAL NOT NULL, reserved_steps INTEGER NOT NULL,
+                    settled_cost_usd REAL, settled_steps INTEGER, created_at TEXT NOT NULL, settled_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS runtime_root_budget_reservations_lookup_idx
+                    ON runtime_root_budget_reservations(tenant_id, root_task_id, run_id);
                 """
             )
             columns = {
@@ -247,12 +264,170 @@ class RuntimeStoreOperations:
                 self._connection.execute(
                     "ALTER TABLE runtime_run_mailbox ADD COLUMN priority INTEGER NOT NULL DEFAULT 50"
                 )
+            if "control_json" not in mailbox_columns:
+                self._connection.execute(
+                    "ALTER TABLE runtime_run_mailbox ADD COLUMN control_json TEXT NOT NULL DEFAULT '{}'"
+                )
             self._connection.commit()
 
     def create(self, context: ExecutionContext) -> RuntimeRun:
         """以 ``tenant_id + request_id`` 幂等创建运行，重复请求返回原运行不重执行。"""
         run, _ = self.create_with_session_event(context)
         return run
+
+    def initialize_root_budget(
+        self, tenant_id: str, root_task_id: str, *, max_cost_usd: float, max_steps: int
+    ) -> None:
+        """幂等创建 Root Task 共享预算账本，不允许子运行扩大已冻结的上限。
+
+        根任务是预算的唯一所有者；子 Agent 只对同一账本申请操作级预留。这样并发
+        委派无法因为每个子运行都拥有一份本地副本而把总额放大。
+        """
+        if not root_task_id or max_cost_usd < 0 or max_steps < 0:
+            raise ValueError("invalid root budget")
+        now = datetime.now(UTC).isoformat()
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    "SELECT max_cost_usd, max_steps FROM runtime_root_budgets "
+                    "WHERE tenant_id = ? AND root_task_id = ?",
+                    (tenant_id, root_task_id),
+                ).fetchone()
+                if row is None:
+                    self._connection.execute(
+                        "INSERT INTO runtime_root_budgets(tenant_id, root_task_id, max_cost_usd, max_steps, "
+                        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        (tenant_id, root_task_id, max_cost_usd, max_steps, now, now),
+                    )
+                elif float(row["max_cost_usd"]) != max_cost_usd or int(row["max_steps"]) != max_steps:
+                    raise RuntimeLimitExceeded(
+                        "ROOT_BUDGET_MISMATCH", "The root task budget is immutable once execution starts."
+                    )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def reserve_root_budget(
+        self,
+        tenant_id: str,
+        root_task_id: str,
+        run_id: str,
+        reservation_id: str,
+        *,
+        cost_usd: float,
+        steps: int,
+    ) -> None:
+        """原子预留共享额度；同一稳定 reservation ID 的恢复调用不重复扣额。"""
+        if cost_usd < 0 or steps < 0:
+            raise ValueError("invalid root budget reservation")
+        now = datetime.now(UTC).isoformat()
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self._connection.execute(
+                    "SELECT reservation_id FROM runtime_root_budget_reservations WHERE reservation_id = ?",
+                    (reservation_id,),
+                ).fetchone()
+                if existing is not None:
+                    self._connection.commit()
+                    return
+                budget = self._connection.execute(
+                    "SELECT * FROM runtime_root_budgets WHERE tenant_id = ? AND root_task_id = ?",
+                    (tenant_id, root_task_id),
+                ).fetchone()
+                if budget is None:
+                    raise RuntimeLimitExceeded("ROOT_BUDGET_NOT_FOUND", "The root task budget was not initialized.")
+                if (
+                    float(budget["spent_cost_usd"]) + float(budget["reserved_cost_usd"]) + cost_usd
+                    > float(budget["max_cost_usd"])
+                    or int(budget["consumed_steps"]) + int(budget["reserved_steps"]) + steps
+                    > int(budget["max_steps"])
+                ):
+                    raise RuntimeLimitExceeded(
+                        "ROOT_BUDGET_EXCEEDED", "The shared root task budget is exhausted."
+                    )
+                self._connection.execute(
+                    "INSERT INTO runtime_root_budget_reservations("
+                    "reservation_id, tenant_id, root_task_id, run_id, reserved_cost_usd, reserved_steps, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (reservation_id, tenant_id, root_task_id, run_id, cost_usd, steps, now),
+                )
+                self._connection.execute(
+                    "UPDATE runtime_root_budgets SET reserved_cost_usd = reserved_cost_usd + ?, "
+                    "reserved_steps = reserved_steps + ?, updated_at = ? "
+                    "WHERE tenant_id = ? AND root_task_id = ?",
+                    (cost_usd, steps, now, tenant_id, root_task_id),
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def settle_root_budget(self, reservation_id: str, *, actual_cost_usd: float, actual_steps: int) -> None:
+        """结算已预留额度并释放未使用部分；实际值超预留时拒绝以免账本失真。"""
+        if actual_cost_usd < 0 or actual_steps < 0:
+            raise ValueError("invalid root budget settlement")
+        now = datetime.now(UTC).isoformat()
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                reservation = self._connection.execute(
+                    "SELECT * FROM runtime_root_budget_reservations WHERE reservation_id = ?",
+                    (reservation_id,),
+                ).fetchone()
+                if reservation is None:
+                    raise LookupError("root budget reservation not found")
+                if reservation["settled_at"] is not None:
+                    self._connection.commit()
+                    return
+                budget = self._connection.execute(
+                    "SELECT * FROM runtime_root_budgets WHERE tenant_id = ? AND root_task_id = ?",
+                    (reservation["tenant_id"], reservation["root_task_id"]),
+                ).fetchone()
+                if budget is None:
+                    raise RuntimeLimitExceeded("ROOT_BUDGET_NOT_FOUND", "The root task budget was not initialized.")
+                projected_cost = (
+                    float(budget["spent_cost_usd"])
+                    + float(budget["reserved_cost_usd"])
+                    - float(reservation["reserved_cost_usd"])
+                    + actual_cost_usd
+                )
+                projected_steps = (
+                    int(budget["consumed_steps"])
+                    + int(budget["reserved_steps"])
+                    - int(reservation["reserved_steps"])
+                    + actual_steps
+                )
+                if projected_cost > float(budget["max_cost_usd"]) or projected_steps > int(budget["max_steps"]):
+                    raise RuntimeLimitExceeded(
+                        "ROOT_BUDGET_SETTLEMENT_EXCEEDED", "Actual usage exceeded the shared root task budget."
+                    )
+                self._connection.execute(
+                    "UPDATE runtime_root_budget_reservations SET settled_cost_usd = ?, settled_steps = ?, "
+                    "settled_at = ? WHERE reservation_id = ?",
+                    (actual_cost_usd, actual_steps, now, reservation_id),
+                )
+                self._connection.execute(
+                    "UPDATE runtime_root_budgets SET reserved_cost_usd = reserved_cost_usd - ?, "
+                    "reserved_steps = reserved_steps - ?, spent_cost_usd = spent_cost_usd + ?, "
+                    "consumed_steps = consumed_steps + ?, updated_at = ? "
+                    "WHERE tenant_id = ? AND root_task_id = ?",
+                    (
+                        float(reservation["reserved_cost_usd"]),
+                        int(reservation["reserved_steps"]),
+                        actual_cost_usd,
+                        actual_steps,
+                        now,
+                        reservation["tenant_id"],
+                        reservation["root_task_id"],
+                    ),
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
 
     def create_with_session_event(
         self, context: ExecutionContext
@@ -343,6 +518,35 @@ class RuntimeStoreOperations:
             current = self.get(tenant_id, parent_run_id)
         return False
 
+    def descendant_run_ids(self, tenant_id: str, root_run_id: str) -> list[str]:
+        """按持久化 parent_run_id 构造取消树，避免根取消后子 Agent 继续消耗预算或执行工具。"""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM runtime_runs WHERE tenant_id = ?", (tenant_id,)
+            ).fetchall()
+        children: dict[str, list[str]] = {}
+        for row in rows:
+            run = self._from_row(row)
+            if run.context.parent_run_id:
+                children.setdefault(run.context.parent_run_id, []).append(run.run_id)
+        ordered: list[str] = []
+        pending = list(children.get(root_run_id, []))
+        while pending:
+            child = pending.pop(0)
+            if child not in ordered:
+                ordered.append(child)
+                pending.extend(children.get(child, []))
+        return ordered
+
+    def cancel_tree(self, tenant_id: str, root_run_id: str) -> list[RuntimeRun]:
+        """子运行优先取消再取消根运行；每项使用既有 CAS 迁移，因此重复调用仍安全。"""
+        cancelled: list[RuntimeRun] = []
+        for run_id in [*reversed(self.descendant_run_ids(tenant_id, root_run_id)), root_run_id]:
+            run, _ = self.cancel_with_session_event(tenant_id, run_id)
+            if run is not None:
+                cancelled.append(run)
+        return cancelled
+
     def enqueue_mailbox_input(
         self,
         tenant_id: str,
@@ -351,6 +555,7 @@ class RuntimeStoreOperations:
         *,
         idempotency_key: str,
         priority: AgentInputPriority | int = AgentInputPriority.NORMAL,
+        control_input: dict[str, Any] | None = None,
     ) -> str:
         """登记不含正文的 Inbox 输入；同键重试不重复排队且优先级不能在重试时篡改。"""
         kind = RunMailboxInputType(input_type)
@@ -358,6 +563,9 @@ class RuntimeStoreOperations:
         key = idempotency_key.strip()
         if not key:
             raise ValueError("mailbox input requires an idempotency key")
+        control = dict(control_input or {})
+        if kind.requires_context_reload and control:
+            raise ValueError("message inputs must keep their body in Context, not in the mailbox")
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
@@ -380,14 +588,15 @@ class RuntimeStoreOperations:
                 message_id = f"mbx_{uuid4().hex}"
                 self._connection.execute(
                     "INSERT INTO runtime_run_mailbox("
-                    "message_id, tenant_id, run_id, input_type, idempotency_key, priority, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "message_id, tenant_id, run_id, input_type, idempotency_key, control_json, priority, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         message_id,
                         tenant_id,
                         run_id,
                         kind.value,
                         key,
+                        json.dumps(control, ensure_ascii=False, sort_keys=True),
                         int(requested_priority),
                         datetime.now(UTC).isoformat(),
                     ),
@@ -440,6 +649,7 @@ class RuntimeStoreOperations:
             input_type=RunMailboxInputType(str(row["input_type"])),
             lease_token=lease_token,
             priority=AgentInputPriority(int(row["priority"])),
+            control_input=json.loads(str(row["control_json"] or "{}")),
         )
 
     def has_pending_replan_input(self, tenant_id: str, run_id: str) -> bool:

@@ -17,6 +17,9 @@ class ExecutionContext(BaseModel):
     parent_run_id: str = ""
     session_id: str
     parent_session_id: str = ""
+    root_task_id: str = ""
+    collaboration_snapshot_id: str = ""
+    business_operation_id: str = ""
     tenant_id: str
     user_id: str
     agent_id: str
@@ -46,19 +49,28 @@ class ExecutionContext(BaseModel):
         run_id: str | None = None,
         parent_run_id: str = "",
         parent_session_id: str = "",
+        root_task_id: str = "",
+        collaboration_snapshot_id: str = "",
+        business_operation_id: str = "",
     ) -> ExecutionContext:
         """创建一次运行不可变的传播身份、截止时间和尝试预算。
 
         ``run_id`` 可由异步队列预先分配以保持重试关联；否则本地生成。deadline 使用
         UTC 绝对时间，避免跨服务因时区或相对超时产生不同判断。
         """
+        # 先解析 Run ID，根任务默认值必须引用最终生成的 ID。直接在构造参数中使用
+        # ``run_id or ...`` 会在未传入 run_id 时把 root_task_id 错误地留为空字符串。
+        resolved_run_id = run_id or f"run_{uuid4().hex}"
         return cls(
             request_id=request_id,
             trace_id=trace_id,
-            run_id=run_id or f"run_{uuid4().hex}",
+            run_id=resolved_run_id,
             parent_run_id=parent_run_id,
             session_id=session_id,
             parent_session_id=parent_session_id,
+            root_task_id=root_task_id or resolved_run_id,
+            collaboration_snapshot_id=collaboration_snapshot_id,
+            business_operation_id=business_operation_id,
             tenant_id=tenant_id,
             user_id=user_id,
             agent_id=agent_id,
@@ -79,6 +91,9 @@ class ExecutionContext(BaseModel):
             "X-Parent-Run-Id": self.parent_run_id,
             "X-Session-Id": self.session_id,
             "X-Parent-Session-Id": self.parent_session_id,
+            "X-Root-Task-Id": self.root_task_id,
+            "X-Collaboration-Snapshot-Id": self.collaboration_snapshot_id,
+            "X-Business-Operation-Id": self.business_operation_id,
             "X-Agent-Id": self.agent_id,
             "X-Agent-Version": self.agent_version,
             "X-Snapshot-Id": self.snapshot_id,

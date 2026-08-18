@@ -35,6 +35,8 @@ class ToolContext:
     approval_id: str = ""
     # 由 Session Runtime 在副作用前固定；重放同一 Step 必须复用它，而不是重新生成。
     tool_execution_id: str = ""
+    root_task_id: str = ""
+    business_operation_id: str = ""
     idempotency_key: str = ""
     trace_id: str = ""
     run_id: str = ""

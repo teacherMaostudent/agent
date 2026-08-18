@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS runtime_session_archives(
 CREATE TABLE IF NOT EXISTS runtime_run_mailbox(
     message_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, run_id TEXT NOT NULL,
     input_type TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+    control_json TEXT NOT NULL DEFAULT '{}',
     priority INTEGER NOT NULL DEFAULT 50,
     delivery_status TEXT NOT NULL DEFAULT 'PENDING', lease_token TEXT NOT NULL DEFAULT '',
     lease_expires_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL, consumed_at TIMESTAMPTZ,
@@ -60,7 +61,24 @@ CREATE TABLE IF NOT EXISTS runtime_run_mailbox(
 );
 CREATE INDEX IF NOT EXISTS runtime_run_mailbox_claim_idx
     ON runtime_run_mailbox(tenant_id, run_id, delivery_status, priority, created_at);
+CREATE TABLE IF NOT EXISTS runtime_root_budgets(
+    tenant_id TEXT NOT NULL, root_task_id TEXT NOT NULL,
+    max_cost_usd DOUBLE PRECISION NOT NULL, max_steps INTEGER NOT NULL,
+    reserved_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0, reserved_steps INTEGER NOT NULL DEFAULT 0,
+    spent_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0, consumed_steps INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY(tenant_id, root_task_id)
+);
+CREATE TABLE IF NOT EXISTS runtime_root_budget_reservations(
+    reservation_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, root_task_id TEXT NOT NULL,
+    run_id TEXT NOT NULL, reserved_cost_usd DOUBLE PRECISION NOT NULL, reserved_steps INTEGER NOT NULL,
+    settled_cost_usd DOUBLE PRECISION, settled_steps INTEGER, created_at TIMESTAMPTZ NOT NULL,
+    settled_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS runtime_root_budget_reservations_lookup_idx
+    ON runtime_root_budget_reservations(tenant_id, root_task_id, run_id);
 ALTER TABLE runtime_run_mailbox ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 50;
+ALTER TABLE runtime_run_mailbox ADD COLUMN IF NOT EXISTS control_json TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS parent_run_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS turn_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS step_id TEXT NOT NULL DEFAULT '';

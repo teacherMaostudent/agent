@@ -4,10 +4,17 @@ from platform_sdk.tools.registry import ToolRegistry
 
 from agent_runtime_service.agent.graph import AgentGraph
 from agent_runtime_service.agent.models import AgentAction, AgentDecision
+from agent_runtime_service.runtime.agent_manager import AgentManager
 from agent_runtime_service.runtime.mailbox import ClaimedRunMailboxItem, RunMailboxInputType
-from agent_runtime_service.runtime.models import IntentResult, SourcePlan, UserInputResume
+from agent_runtime_service.runtime.models import (
+    ApprovalResume,
+    IntentResult,
+    SourcePlan,
+    UserInputResume,
+)
 from agent_runtime_service.runtime.planner import RuntimePlanner
 from agent_runtime_service.runtime.runtime_context import RuntimeContext
+from agent_runtime_service.runtime.subagents import SubAgentManager
 
 
 class SequenceDecisionEngine:
@@ -195,6 +202,69 @@ def test_waiting_input_resumes_same_graph_checkpoint_after_mailbox_lease() -> No
 
     resumed = graph.resume(
         "thread-resume-input", UserInputResume(message_id="mbx-1", lease_token="lease-1"), max_steps=5
+    )
+
+    assert resumed.status == "COMPLETED"
+
+
+def test_parallel_expert_conflict_requires_and_accepts_frozen_candidate_resolution() -> None:
+    """Quorum 不足会中断；恢复只能选择中断中列出的已发布专家，而非任意文本答案。"""
+    def execute(delegation, task, state):
+        """为两个专家返回有意冲突的结构化运行结果。"""
+        del task, state
+        return {
+            "status": "COMPLETED",
+            "termination_reason": "HIGH" if delegation.target_agent_id == "expert-a" else "LOW",
+            "snapshot_id": f"{delegation.target_agent_id}-snapshot",
+            "evidence": [{"source_id": delegation.target_agent_id}],
+        }
+
+    graph = AgentGraph(
+        SequenceDecisionEngine(
+            [
+                AgentDecision(
+                    action=AgentAction.SUBAGENT,
+                    subagent_capability="RISK_REVIEW",
+                    subagent_task="review risk",
+                ),
+                AgentDecision(action=AgentAction.ANSWER, final_answer="Resolved by the approved expert."),
+            ]
+        ),
+        runtime_context(),
+        agent_manager=AgentManager(SubAgentManager(), execute),
+    )
+    state = initial_state(max_steps=10)
+    state.update(
+        {
+            "agent_id": "coordinator",
+            "compiled_plan": {
+                "subagents": [
+                    {
+                        "agent_id": "expert-a",
+                        "capabilities": ["RISK_REVIEW"],
+                        "parallelism": 2,
+                        "conflict_strategy": "quorum",
+                        "max_budget_fraction": 0.25,
+                    },
+                    {
+                        "agent_id": "expert-b",
+                        "capabilities": ["RISK_REVIEW"],
+                        "parallelism": 2,
+                        "conflict_strategy": "quorum",
+                        "max_budget_fraction": 0.25,
+                    },
+                ]
+            },
+        }
+    )
+    interrupted = graph.run(state, "thread-expert-conflict")
+
+    assert interrupted.status == "WAITING_APPROVAL"
+    assert interrupted.interrupts[0]["type"] == "subagent_conflict"
+    resumed = graph.resume(
+        "thread-expert-conflict",
+        ApprovalResume(approved=True, selected_provider_agent_id="expert-a"),
+        max_steps=5,
     )
 
     assert resumed.status == "COMPLETED"

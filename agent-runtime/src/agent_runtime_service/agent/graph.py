@@ -21,6 +21,7 @@ from langgraph.types import Command, interrupt
 from opentelemetry import trace
 from platform_sdk.contracts.context import ContextAssembleRequest
 from platform_sdk.contracts.rag import RagSearchRequest
+from platform_sdk.contracts.subagents import CapabilityRequirement, ConflictStrategy
 from platform_sdk.contracts.workflow import evaluate_workflow_condition
 from platform_sdk.security import bound_untrusted
 from platform_sdk.tools.registry import ToolContext
@@ -34,6 +35,7 @@ from agent_runtime_service.agent.models import (
 )
 from agent_runtime_service.runtime.agent_manager import AgentManager
 from agent_runtime_service.runtime.budget import BudgetGuard
+from agent_runtime_service.runtime.collaboration import CollaborationError, ResultResolver
 from agent_runtime_service.runtime.event_bus import RuntimeHookPhase, RuntimeInterceptionPipeline
 from agent_runtime_service.runtime.mailbox import RunMailbox, RunMailboxInputType
 from agent_runtime_service.runtime.models import (
@@ -45,6 +47,7 @@ from agent_runtime_service.runtime.models import (
     UserInputResume,
 )
 from agent_runtime_service.runtime.planner import HeuristicSemanticAnalyzer, RuntimePlanner
+from agent_runtime_service.runtime.prompt_security import PromptSecurityGuard
 from agent_runtime_service.runtime.runtime_context import RuntimeContext
 from agent_runtime_service.runtime.session_events import (
     ModelVisibleMessage,
@@ -128,6 +131,7 @@ class AgentGraph:
         self.session_event_recorder = session_event_recorder
         self.interception_pipeline = interception_pipeline or RuntimeInterceptionPipeline()
         self.tool_execution_engine = tool_execution_engine or ToolExecutionEngine()
+        self.prompt_security = PromptSecurityGuard()
         self.mailbox = mailbox
         self.side_effect_barrier = side_effect_barrier or SideEffectBarrier(
             cancellation_checker=cancellation_checker,
@@ -270,14 +274,22 @@ class AgentGraph:
         """执行意图、实体和来源分析，并为可选 LLM 分析做成本预留/对账。"""
         self._ensure_active(state)
         budget = self._budget(state)
+        root_reservation_id = ""
         if self.planner.analyzer.uses_llm:
             budget = self.budget_guard.reserve_llm(budget)
+            root_reservation_id = self._reserve_root_budget(
+                state, "analyze", cost_usd=self.budget_guard.llm_call_reservation_usd, steps=0
+            )
         working = {**state, "budget": budget.model_dump(mode="json")}
         self.interception_pipeline.apply(
             RuntimeHookPhase.PRE_PROMPT,
             self._hook_payload(state, {"step": state.get("step_count", 0)}),
         )
-        analysis = self.planner.analyze(working)
+        try:
+            analysis = self.planner.analyze(working)
+        except Exception:
+            self._settle_root_budget(root_reservation_id, actual_cost_usd=0.0, actual_steps=0)
+            raise
         if self.planner.analyzer.uses_llm:
             cost_reader = getattr(self.planner.analyzer, "last_cost_usd", None)
             actual_cost = cost_reader() if cost_reader else None
@@ -285,6 +297,13 @@ class AgentGraph:
                 budget,
                 reserved_usd=self.budget_guard.llm_call_reservation_usd,
                 actual_usd=actual_cost,
+            )
+            self._settle_root_budget(
+                root_reservation_id,
+                actual_cost_usd=(
+                    actual_cost if actual_cost is not None else self.budget_guard.llm_call_reservation_usd
+                ),
+                actual_steps=0,
             )
         return {
             **analysis,
@@ -382,6 +401,13 @@ class AgentGraph:
             return {"mailbox_replan": False}
         # 每次重新规划消耗一个 Agent step，防止持续 Steering 把单次 Run 变成无限会话循环。
         budget = self.budget_guard.count_step(self._budget(state))
+        # 所有控制输入先记录统一事实，再追加其业务语义事件。这样审批、Signal 唤醒和
+        # 普通 Steering 能用相同的 Run/Turn/Attempt 维度审计，而不会复制消息正文。
+        self._record_session_event(
+            state,
+            RuntimeEventType.RUN_INPUT_RECEIVED,
+            {"mailbox_message_id": item.message_id, "input_type": item.input_type.value},
+        )
         event_type = (
             RuntimeEventType.STEERING_RECEIVED
             if item.input_type == RunMailboxInputType.STEERING
@@ -453,9 +479,17 @@ class AgentGraph:
         step_id = self._step_id(state, pending=True)
         epoch_id = f"epoch_{step_id}"
         budget = self.budget_guard.count_step(self._budget(state))
+        root_reservation_id = ""
         if getattr(self.decision_engine, "uses_llm", False):
             budget = self.budget_guard.reserve_llm(budget)
+            root_reservation_id = self._reserve_root_budget(
+                state,
+                f"decide:{step_id}",
+                cost_usd=self.budget_guard.llm_call_reservation_usd,
+                steps=1,
+            )
         working = {**state, "budget": budget.model_dump(mode="json")}
+        _, injection_findings = self.prompt_security.prepare_model_input(working)
         self._record_session_event(
             state,
             RuntimeEventType.STEP_STARTED,
@@ -505,6 +539,10 @@ class AgentGraph:
                 "history_count": len(state.get("conversation_history", [])),
                 "evidence_count": len(state.get("evidence", [])),
                 "tool_count": len(state.get("compiled_plan", {}).get("tools", [])),
+                "prompt_injection_findings": [
+                    {"code": item.code, "severity": item.severity, "source_id": item.source_id}
+                    for item in injection_findings
+                ],
                 "step_id": step_id,
                 "epoch_id": epoch_id,
             },
@@ -523,8 +561,12 @@ class AgentGraph:
             RuntimeHookPhase.PRE_MODEL_REQUEST,
             self._hook_payload(state, {"logical_model": str(state.get("compiled_plan", {}).get("logical_model", ""))}),
         )
-        with trace.get_tracer(__name__).start_as_current_span("agent.decide"):
-            decision = self.decision_engine.decide(working, self.tool_registry)
+        try:
+            with trace.get_tracer(__name__).start_as_current_span("agent.decide"):
+                decision = self.decision_engine.decide(working, self.tool_registry)
+        except Exception:
+            self._settle_root_budget(root_reservation_id, actual_cost_usd=0.0, actual_steps=0)
+            raise
         self.interception_pipeline.apply(
             RuntimeHookPhase.POST_MODEL_RESPONSE,
             self._hook_payload(state, {"action": decision.action.value}),
@@ -550,6 +592,13 @@ class AgentGraph:
                 budget,
                 reserved_usd=self.budget_guard.llm_call_reservation_usd,
                 actual_usd=actual_cost,
+            )
+            self._settle_root_budget(
+                root_reservation_id,
+                actual_cost_usd=(
+                    actual_cost if actual_cost is not None else self.budget_guard.llm_call_reservation_usd
+                ),
+                actual_steps=1,
             )
         self.interception_pipeline.apply(
             RuntimeHookPhase.POST_STEP,
@@ -775,6 +824,7 @@ class AgentGraph:
         decision = AgentDecision.model_validate(state["decision"])
         if decision.action == AgentAction.SUBAGENT:
             budget = self.budget_guard.reserve_tool(self._budget(state))
+            self._reserve_and_settle_root_tool_budget(state, decision, budget)
             return {"budget": budget.model_dump(mode="json"), "tool_deferred": False}
         policy = self._tool_execution_policy(state, decision.tool_name)
         execution_id = deterministic_tool_execution_id(
@@ -797,6 +847,7 @@ class AgentGraph:
                 "execution_trace": self._trace(state, "tool_deferred", {"reason": outcome.value}),
             }
         budget = self.budget_guard.reserve_tool(self._budget(state))
+        self._reserve_and_settle_root_tool_budget(state, decision, budget)
         return {"budget": budget.model_dump(mode="json"), "tool_deferred": False}
 
     @staticmethod
@@ -1063,24 +1114,93 @@ class AgentGraph:
             self._record_session_event(
                 state,
                 RuntimeEventType.SUBAGENT_DELEGATED,
-                {"target_agent_id": decision.subagent_id},
+                {"target_agent_id": decision.subagent_id, "capability": decision.subagent_capability},
                 model_visible_message(
                     "tool", decision.subagent_task, source="runtime.subagent.task", max_chars=4_000
                 ),
             )
-            delegation, result = self.agent_manager.delegate(
-                state,
-                target_agent_id=decision.subagent_id,
-                task=decision.subagent_task,
-            )
-        except SubAgentPolicyError as exc:
+            if decision.subagent_capability:
+                delegated = self.agent_manager.delegate_capability_group(
+                    state,
+                    requirement=CapabilityRequirement(capability_id=decision.subagent_capability),
+                    task=decision.subagent_task,
+                )
+            else:
+                delegation, result = self.agent_manager.delegate(
+                    state,
+                    target_agent_id=decision.subagent_id,
+                    task=decision.subagent_task,
+                )
+                delegated = [(None, delegation, result)]
+        except (SubAgentPolicyError, CollaborationError) as exc:
             raise RuntimeLimitExceeded("SUBAGENT_POLICY", str(exc)) from exc
         invocations = dict(state.get("subagent_invocations", {}))
-        invocations[delegation.target_agent_id] = invocations.get(delegation.target_agent_id, 0) + 1
+        structured_results = []
+        for selection, delegation, result in delegated:
+            invocations[delegation.target_agent_id] = invocations.get(delegation.target_agent_id, 0) + 1
+            structured_results.append(
+                self.agent_manager.normalize_result(
+                    result, selection=selection, agent_id=delegation.target_agent_id
+                )
+            )
+        strategy = (
+            delegated[0][0].binding.conflict_strategy
+            if delegated[0][0] is not None
+            else ConflictStrategy.AUTHORITY
+        )
+        resolved = ResultResolver().resolve(structured_results, strategy)
+        if resolved is None:
+            resume_value = interrupt(
+                {
+                    "type": "subagent_conflict",
+                    "strategy": strategy.value,
+                    "run_id": state.get("run_id", ""),
+                    "candidates": [
+                        {
+                            "provider_agent_id": item.provider_agent_id,
+                            "provider_snapshot_id": item.provider_snapshot_id,
+                            "decision": item.decision,
+                            "confidence": item.confidence,
+                            "evidence_ids": item.evidence_ids,
+                        }
+                        for item in structured_results
+                    ],
+                }
+            )
+            resolution = ApprovalResume.model_validate(resume_value)
+            if not resolution.approved or not resolution.selected_provider_agent_id:
+                return {
+                    "termination_reason": "SUBAGENT_CONFLICT_REJECTED",
+                    "final_answer": "Conflicting expert results require an approved resolution.",
+                }
+            resolved = next(
+                (
+                    item
+                    for item in structured_results
+                    if item.provider_agent_id == resolution.selected_provider_agent_id
+                ),
+                None,
+            )
+            if resolved is None:
+                raise RuntimeLimitExceeded(
+                    "SUBAGENT_CONFLICT_SELECTION_INVALID",
+                    "The selected conflict provider is not in the frozen candidate set.",
+                )
+        selected_index = next(
+            index
+            for index, item in enumerate(structured_results)
+            if item.provider_agent_id == resolved.provider_agent_id
+        )
+        selection, delegation, result = delegated[selected_index]
         observation = {
             "type": "subagent",
             "agent_id": delegation.target_agent_id,
+            "capability": decision.subagent_capability,
+            "provider_selection": selection.reason if selection else "legacy_explicit_agent_binding",
             "success": result.get("status") == "COMPLETED",
+            "agent_result": resolved.model_dump(mode="json"),
+            "agent_results": [item.model_dump(mode="json") for item in structured_results],
+            "conflict_strategy": strategy.value,
             "result": bound_untrusted(result, int(state.get("metadata", {}).get("tool_result_max_chars", 12_000))),
         }
         self._record_session_event(
@@ -1092,12 +1212,19 @@ class AgentGraph:
             ),
         )
         budget = self._budget(state)
-        child_cost = float(result.get("budget", {}).get("spent_cost_usd", 0))
+        child_cost = sum(
+            float(item_result.get("budget", {}).get("spent_cost_usd", 0))
+            for _, _, item_result in delegated
+        )
         budget = budget.model_copy(
             update={"spent_cost_usd": min(budget.max_cost_usd, budget.spent_cost_usd + child_cost)}
         )
         return {
             "subagent_invocations": invocations,
+            "agent_results": [
+                *state.get("agent_results", []),
+                *(item.model_dump(mode="json") for item in structured_results),
+            ],
             "observations": [*state.get("observations", []), observation],
             "budget": budget.model_dump(mode="json"),
             "workflow_cursor": self._workflow_after_side_effect(state, "tool"),
@@ -1107,7 +1234,7 @@ class AgentGraph:
     @staticmethod
     def _after_tool(state: AgentState) -> str:
         """按发布图决定工具后的安全去向，人工拒绝仍优先终止。"""
-        if state.get("termination_reason") == "TOOL_REJECTED":
+        if state.get("termination_reason") in {"TOOL_REJECTED", "SUBAGENT_CONFLICT_REJECTED"}:
             return "finish"
         if state.get("tool_deferred"):
             return "continue"
@@ -1152,6 +1279,8 @@ class AgentGraph:
             request_id=state["request_id"],
             approval_id=approval_id,
             tool_execution_id=tool_execution_id,
+            root_task_id=str(state.get("root_task_id", "")),
+            business_operation_id=str(state.get("business_operation_id", "")),
             idempotency_key=tool_execution_id,
             trace_id=state.get("trace_id", ""),
             run_id=state.get("run_id", ""),
@@ -1268,6 +1397,22 @@ class AgentGraph:
                 }
             if not answer:
                 answer = "No safe answer could be produced from the available evidence."
+            output_findings = self.prompt_security.inspect_output(answer)
+            if output_findings:
+                self._record_session_event(
+                    state,
+                    RuntimeEventType.STEP_COMPLETED,
+                    {
+                        "step_id": self._step_id(state),
+                        "outcome": "prompt_security_blocked_output",
+                        "finding_codes": [item.code for item in output_findings],
+                    },
+                )
+                return {
+                    "final_answer": "The response was withheld by the prompt-security policy.",
+                    "safety_status": "BLOCKED_PROMPT_SECURITY",
+                    "termination_reason": "PROMPT_SECURITY_BLOCKED_OUTPUT",
+                }
             return {"final_answer": answer, "safety_status": "PASSED"}
 
     def _result(self, result: dict[str, Any]) -> AgentRunResult:
@@ -1474,6 +1619,68 @@ class AgentGraph:
             "budget.remaining_cost_usd": budget.remaining_cost_usd,
             "budget.remaining_ms": budget.remaining_ms,
         }
+
+    def _reserve_and_settle_root_tool_budget(
+        self, state: AgentState, decision: AgentDecision, budget: RuntimeBudget
+    ) -> None:
+        """把工具保守成本结算到共享账本；真实工具计费目前由固定预留表示。
+
+        Tool Gateway 尚未对每种工具统一返回成本字段，因此这里按已发布的工具调用
+        预留结算，不能把未知价格伪装成零成本。未来 Gateway 返回实际成本后，可在
+        此处替换为对应计费值而不改变账本事务语义。
+        """
+        del budget  # 本地预算已由调用方更新；共享账本只需要本次固定预留。
+        reservation_id = self._reserve_root_budget(
+            state,
+            f"tool:{self._step_id(state)}:{decision.tool_name or decision.subagent_capability}",
+            cost_usd=self.budget_guard.tool_call_reservation_usd,
+            steps=0,
+        )
+        self._settle_root_budget(
+            reservation_id,
+            actual_cost_usd=self.budget_guard.tool_call_reservation_usd,
+            actual_steps=0,
+        )
+
+    def _reserve_root_budget(
+        self, state: AgentState, phase: str, *, cost_usd: float, steps: int
+    ) -> str:
+        """为一次外部动作在 Root Task 账本中预留额度；无账本的单元测试显式跳过。"""
+        ledger = self.runtime_context.session
+        if ledger is None or not hasattr(ledger, "reserve_root_budget"):
+            return ""
+        tenant_id = str(state.get("tenant_id", ""))
+        root_task_id = str(state.get("root_task_id") or state.get("run_id", ""))
+        run_id = str(state.get("run_id", ""))
+        if not tenant_id or not root_task_id or not run_id:
+            # 纯内存 Graph 仍可用于本地测试；生产 API 必定填充这三项关联 ID。
+            return ""
+        reservation_id = "rbr_" + hashlib.sha256(
+            f"{tenant_id}:{root_task_id}:{run_id}:{phase}".encode()
+        ).hexdigest()[:32]
+        ledger.reserve_root_budget(
+            tenant_id,
+            root_task_id,
+            run_id,
+            reservation_id,
+            cost_usd=cost_usd,
+            steps=steps,
+        )
+        return reservation_id
+
+    def _settle_root_budget(
+        self, reservation_id: str, *, actual_cost_usd: float, actual_steps: int
+    ) -> None:
+        """结算已创建的共享预留；空 ID 表示该运行不具备持久账本能力。"""
+        if not reservation_id:
+            return
+        ledger = self.runtime_context.session
+        if ledger is not None and hasattr(ledger, "settle_root_budget"):
+            ledger.settle_root_budget(
+                reservation_id,
+                actual_cost_usd=actual_cost_usd,
+                actual_steps=actual_steps,
+            )
 
     @staticmethod
     def _budget(state: AgentState) -> RuntimeBudget:

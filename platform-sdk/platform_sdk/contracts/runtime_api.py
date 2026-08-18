@@ -23,6 +23,7 @@ class AgentResumeRequest(BaseModel):
     approved: bool
     approval_id: str = Field(default="", max_length=160)
     reason: str = Field(default="", max_length=2_000)
+    selected_provider_agent_id: str = Field(default="", max_length=160)
 
 
 class AgentRunInputRequest(BaseModel):

@@ -29,6 +29,7 @@ class RuntimeEventType(StrEnum):
     RUN_COMPLETED = "runtime.run.completed"
     RUN_FAILED = "runtime.run.failed"
     RUN_CANCEL_REQUESTED = "runtime.run.cancel_requested"
+    RUN_INPUT_RECEIVED = "runtime.run.input_received"
     STEERING_RECEIVED = "runtime.run.steering_received"
     FOLLOW_UP_RECEIVED = "runtime.run.follow_up_received"
     TURN_STARTED = "runtime.turn.started"

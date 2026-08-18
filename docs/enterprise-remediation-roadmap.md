@@ -16,12 +16,14 @@
 | ARCH-001 | Harness 仅是生命周期门面 | 已覆盖 | `AgentHarness` 已限定为发布解析、快照、上下文、执行器、运行、恢复、取消七件事；不把 Loop 放回 Harness。 |
 | EXEC-001 / DUR-001 | 生命周期与推理方式解耦 | 已覆盖 | `execution.lifecycle × execution.reasoning` 编译为唯一已部署 Profile；共享 Snapshot Artifact、Runtime 与 Temporal 路由使用同一契约。 |
 | EXEC-002 | 显式 Run 状态机 | 已覆盖 | `run_state.py`、持久化状态转换和终态保护已存在。 |
-| EXEC-003 | 统一运行时 Inbox | 部分覆盖 | 用户、Steering 与 Follow-up 已经由 RunMailbox 以租约、优先级和幂等键进入安全点；审批与 Temporal Signal 仍使用各自的恢复路径，必须在下一次接口兼容性窗口迁移，不能假称已统一。 |
-| EXEC-004 | 输入与执行尝试语义统一 | 部分覆盖 | 邮箱项、Run 状态事件、Session Ledger 的 Run/Turn/Step/Epoch/Attempt ID 已可关联；审批和 Signal 尚缺少同一输入投影，暂不将其作为“完全闭环”。 |
+| EXEC-003 | 统一运行时 Inbox | 已覆盖 | 用户、Steering、Follow-up 与审批结果均先入 `RunMailbox`，以租约、优先级和幂等键在安全点消费；Temporal Signal 仅负责唤醒 Worker，不再是审批事实的唯一存放处。 |
+| EXEC-004 | 输入与执行尝试语义统一 | 已覆盖 | 邮箱项与审批控制载荷均产生 `runtime.run.input_received` 事件，并以 Run/Turn/Step/Epoch/Attempt ID 关联；消息正文仍只保存在 Context。 |
 | TOOL-001 | 受控工具计划/调度/工具事实 | 已覆盖 | 已有发布工具策略、资源锁、Gateway 幂等与 intent/dispatched/committed/result 会话事实。 |
 | TOOL-002 | 副作用屏障 | 已覆盖 | `SideEffectBarrier` 在预算预留和 Gateway 调用前检查取消、快照、幂等与待处理 Steering；需要重规划时不调工具。 |
 | CAP-001 | 强类型 RuntimeContext | 已覆盖 | Graph 接收冻结的 `RuntimeContext`，不再依赖泛型服务定位器。 |
 | CAP-002 | 能力 Provider 生命周期 | 已覆盖 | 运行时投影使用启动期命名注册句柄，并在容器冻结后拒绝请求期动态扩展；停止时可显式注销。 |
+| COLLAB-001 | 多 Agent 能力路由与共享预算 | 已覆盖 | 子 Agent 按冻结 Capability Binding、调用者授权、Schema 和管辖域选择 Provider；所有模型/工具动作在 `root_task_id` 账本原子预留、幂等结算，取消树沿持久化 Run 谱系传播。 |
+| COLLAB-002 | 结构化结果与冲突升级 | 已覆盖 | 发布 Binding 固定专家并行度与裁决策略；Runtime 并发调用独立子运行、归一为 `AgentResult`。Authority/Quorum 可确定处理，Judge/Human 产生可恢复的冲突裁决中断，需由受控主体明确选择候选，绝不以最后一段自然语言裁决。 |
 | SESSION-001 | 会话事件账本与派生投影 | 已覆盖 | Session Ledger、序号、回放、压缩/归档与工具事实恢复已落地。 |
 | SESSION-002 | Request Epoch | 已覆盖 | Epoch 固定模型路由/修订、Prompt、工具、知识索引嵌入契约、预算及输出 Schema，全部写入会话账本。 |
 | EVENT-001 | 事件总线与 Projector | 已覆盖 | 进程内总线支持启动期命名投影、冻结与显式注销；可靠跨服务审计仍由 Outbox/CDC 负责。 |
@@ -38,6 +40,8 @@
 | OBS-001 | 成本、限流、配额的统一单位 | 已覆盖 | Runtime 下传剩余 USD 预算；Gateway 在 admission/usage/resilience 三层分别记录 RPM、TPM、并发、Token 与 USD，拒绝事件包含稳定 `reasonCode`。 |
 | OBS-002 | 指标、Trace、告警 | 已覆盖 | OTEL 与 Prometheus 指标不包含租户、用户或正文标签；部署基线提供按 `reasonCode`、错误预算和 CDC/DLQ 积压配置告警的契约。实际阈值由各环境容量基线配置。 |
 | QUAL-001 | Golden、校准、分组 Hard Gate | 已覆盖 | 专家标注、校准、RAG 指标、分组门槛和发布门禁已实现。 |
+| SEC-001 | Prompt 注入纵深防御 | 已覆盖 | Runtime 将用户、历史、证据和工具观察分为带来源的 `DATA_ONLY` 不可信段；高置信注入证据不进入模型上下文，答案返回前扫描系统提示/凭据回显。工具副作用仍以快照、权限、审批和 SideEffect Barrier 为最终边界。 |
+| SEC-002 | Prompt 注入红队门禁 | 已覆盖 | Governance Judge Run 单独统计 `red-team` + `prompt-injection` Golden Case；缺少该集合或任一用例失败时 Quality Gate 直接拒绝发布，不能被平均得分掩盖。 |
 
 ## 实施顺序
 
@@ -62,7 +66,8 @@ flowchart TB
     Runtime --> RAG["RAG：Index + Embedding Contract"]
     Runtime --> LLM["LLM Gateway"]
     Runtime --> Tools["Tool Gateway"]
-    Runtime --> Ledger["Session Ledger + Outbox"]
+    Runtime --> Collaboration["Capability Router + Root Budget Ledger"]
+    Collaboration --> Ledger["Session Ledger + Outbox"]
     Ledger --> Governance["Governance：评测 · 合规 · 审计"]
     Governance --> Control["Control Plane Release Gate"]
 ```
