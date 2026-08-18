@@ -1,5 +1,11 @@
 server:
   port: 8080
+  ssl:
+    enabled: ${SERVER_SSL_ENABLED:false}
+    certificate: ${SERVER_SSL_CERTIFICATE:}
+    certificate-private-key: ${SERVER_SSL_CERTIFICATE_PRIVATE_KEY:}
+    trust-certificate: ${SERVER_SSL_TRUST_CERTIFICATE:}
+    client-auth: ${SERVER_SSL_CLIENT_AUTH:none}
 
 spring:
   application:

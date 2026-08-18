@@ -1,5 +1,6 @@
 import hashlib
 import math
+from typing import Protocol
 
 from app.domain.models import Chunk, Evidence
 from app.retrieval.tokenizer import tokenize
@@ -50,3 +51,41 @@ class HashEmbeddingRetriever:
         if norm_a == 0 or norm_b == 0:
             return 0.0
         return dot / (norm_a * norm_b)
+
+
+class _Embedder(Protocol):
+    """向量检索所需的最小嵌入接口，避免反向依赖 RAG 容器。"""
+
+    def embed(self, text: str) -> list[float]:
+        """把查询或片段映射到同一已发布向量空间。"""
+        ...
+
+
+class EmbeddingVectorRetriever:
+    """使用统一 Provider 做本地向量召回，不再在查询路径私自实例化 Hash 模型。"""
+
+    def __init__(self, embedder: _Embedder) -> None:
+        """保存启动期创建的 Provider；摄取与查询容器必须由相同配置构造它。"""
+        self._embedder = embedder
+
+    def search(self, query: str, chunks: list[Chunk], top_k: int) -> list[Evidence]:
+        """用同一嵌入契约计算余弦候选，维度不匹配时直接失败而不返回伪相关结果。"""
+        query_vec = self._embedder.embed(query)
+        scored: list[tuple[float, Chunk]] = []
+        for chunk in chunks:
+            vector = self._embedder.embed(chunk.text)
+            if len(vector) != len(query_vec):
+                raise ValueError("embedding provider returned inconsistent vector dimension")
+            score = HashEmbeddingRetriever._cosine(query_vec, vector)
+            if score > 0:
+                scored.append((score, chunk))
+        return [
+            Evidence(
+                source_id=chunk.source_id,
+                source_type=chunk.source_type,
+                text=chunk.text,
+                score=score,
+                metadata=chunk.metadata,
+            )
+            for score, chunk in sorted(scored, reverse=True, key=lambda item: item[0])[:top_k]
+        ]

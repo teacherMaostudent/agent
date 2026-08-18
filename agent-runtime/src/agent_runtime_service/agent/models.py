@@ -85,6 +85,10 @@ class AgentState(TypedDict, total=False):
     termination_reason: str
     safety_status: str
     subagent_invocations: dict[str, int]
+    mailbox_message_id: str
+    mailbox_lease_token: str
+    mailbox_replan: bool
+    tool_deferred: bool
 
 
 class AgentRunResult(BaseModel):

@@ -53,15 +53,20 @@ async def resume_agent_run(submission: dict[str, Any]) -> dict:
 @workflow.defn(name="AgentRunWorkflow")
 class AgentRunWorkflow:
     def __init__(self) -> None:
-        """保存一次待消费审批信号；Workflow 历史是等待事实，Run Store 仍是业务真源。"""
-        self._approval: dict[str, Any] | None = None
+        """保存一次待消费 Inbox 控制信号；Workflow 历史耐久保存唤醒事实，Run Store 仍是真源。"""
+        self._input: dict[str, Any] | None = None
+
+    @workflow.signal
+    def deliver_input(self, control_input: dict[str, Any]) -> None:
+        """接收经 API 鉴权和类型校验的控制输入；同一等待点只能消费一次，防止重复恢复。"""
+        if self._input is not None:
+            raise ValueError("workflow input signal was already received")
+        self._input = control_input
 
     @workflow.signal
     def approve(self, approval: dict[str, Any]) -> None:
-        """接收 API 已认证、已结构化的审批决定，后续由 Workflow 串行消费一次。"""
-        if self._approval is not None:
-            raise ValueError("approval signal was already received")
-        self._approval = approval
+        """兼容历史审批 Signal；新调用方统一使用 ``deliver_input``，旧 Workflow 仍可安全恢复。"""
+        self.deliver_input(approval)
 
     @workflow.run
     async def run(self, submission: dict[str, Any]) -> dict:
@@ -78,12 +83,12 @@ class AgentRunWorkflow:
                 non_retryable_error_types=["SnapshotCompileError", "ValueError"],
             ),
         )
-        while result.get("status") == "WAITING_APPROVAL":
-            await workflow.wait_condition(lambda: self._approval is not None)
-            approval, self._approval = self._approval, None
+        while result.get("status") in {"WAITING_APPROVAL", "WAITING_INPUT"}:
+            await workflow.wait_condition(lambda: self._input is not None)
+            control_input, self._input = self._input, None
             result = await workflow.execute_activity(
                 "resume_agent_run",
-                {**submission, "approval": approval},
+                {**submission, "control_input": control_input},
                 start_to_close_timeout=timedelta(hours=1),
                 retry_policy=RetryPolicy(
                     initial_interval=timedelta(seconds=2),
@@ -201,12 +206,12 @@ class TemporalRunQueue:
             return None
         return self.get(tenant_id, run_id)
 
-    def resume(self, tenant_id: str, run_id: str, approval: dict[str, Any]) -> dict[str, Any] | None:
-        """向存活的长期 Workflow 发送一次审批 Signal，拒绝找不到的跨租户运行。"""
+    def resume(self, tenant_id: str, run_id: str, control_input: dict[str, Any]) -> dict[str, Any] | None:
+        """向存活 Workflow 发送一次版本化 Inbox 控制信号，拒绝找不到的跨租户运行。"""
         for client in self._clients.values():
             handle = client.get_workflow_handle(self._workflow_id(tenant_id, run_id))
             try:
-                self._call(handle.signal(AgentRunWorkflow.approve, approval))
+                self._call(handle.signal(AgentRunWorkflow.deliver_input, control_input))
                 return self.get(tenant_id, run_id)
             except (TemporalError, TimeoutError):
                 continue

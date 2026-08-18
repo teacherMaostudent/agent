@@ -16,4 +16,6 @@ RUN useradd --create-home --uid 10001 appuser \
 USER appuser
 
 EXPOSE 8090
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8090"]
+ENV PLATFORM_ASGI_APP=app.main:app \
+    PLATFORM_ASGI_PORT=8090
+CMD ["python", "-m", "platform_infra.asgi_runner"]

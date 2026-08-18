@@ -26,6 +26,8 @@
 | 模型无特权 | 模型只能提出动作；Graph、预算、Workflow DSL、Tool Gateway 与审批链路决定是否真的执行。 |
 | 一份事实，多种投影 | Run、Session、Outbox、Trace 使用关联 ID 串联；审计与回放从已提交事实派生，不依赖内存回调。 |
 | 实验与生产分离 | Model Lab 与 Agent Lab 可试验、回放和评估；Control Plane 才能正式发布，Runtime 不承担实验平台职责。 |
+| 双轴执行 | 发布快照用 `lifecycle × reasoning` 描述“是否耐久”和“如何推理”；Profile 只是已部署执行器的受控别名。 |
+| 向量空间不可漂移 | 知识绑定固定索引版本与嵌入契约；摄取、查询、Runtime 和发布门禁拒绝不同模型/维度的混用。 |
 
 ## 阅读路线
 
@@ -132,6 +134,10 @@ agent/
 - `platform-infra/`：身份、网络安全、策略、遥测和存储适配；不得嵌入 Agent 业务规则。
 - `compose.platform.yaml`：开发联调拓扑；`compose.production.yaml`：生产配置模板，不是 HA 验收结论。
 
+Model Lab 在生产使用 PostgreSQL 保存冻结计划、Worker 身份、评测结果和模型卡；仅接受写入已配置对象
+存储桶的工件 URI。Control Plane 通过 mTLS、OIDC 与内部服务凭据读取批准结果。RAG 生产环境必须显式
+选择云端或自部署语义 Embedding Provider，Hash 向量只保留给本地测试与契约验证。
+
 ## 一次 Agent 运行的生命周期
 
 1. 调用方携带 OIDC Token 进入 Runtime。身份中间件验证 JWT，并从权限声明重建内部身份
@@ -149,7 +155,10 @@ agent/
    Snapshot Compiler 从发布 Spec 推导必需能力，Harness 会在选执行器前拒绝“快照需要、目标实例未部署”
    或 Manifest/Profile 不兼容的组合。随后
    Harness 解析 Release、加载 Artifact、创建执行上下文并按已部署的 Profile 选择执行器。短任务使用
-   `simple/v1`，默认 Agent Loop 使用 `declarative-langgraph/v1`，长期可靠任务使用 `temporal-workflow/v1`。
+   `simple/v1`，通用受控 Agent Loop 使用 `agentic/v1`，声明式 Graph 使用 `declarative-langgraph/v1`，
+   长期可靠任务使用 `temporal-workflow/v1`。
+   容器随后将这些部署事实投影为强类型 `RuntimeContext`；Graph 与执行器只能通过 Context、LLM、
+   Retrieval、Tool 等明确能力接口访问外围服务，不能读取通用 Provider 映射或服务内部实现。
    后两者由 LangGraph 在发布计划允许范围内循环规划、决策、检索、调用工具和观察；Harness 不承载这些业务能力。
 6. Runtime 在状态成功提交后发布进程内生命周期事件，并以固定 Hook 阶段拦截 Prompt、模型和工具操作；
    Session Event Store 会保存脱敏、限长的模型可见投影及原文摘要，用于解释 Prompt 与回放受限上下文，
@@ -162,8 +171,12 @@ agent/
    风险审批、一次性消费和幂等键。
 9. `controlled_scan` 只可扫描预注册范围内的日志、源码或文本文件；结果会脱敏、截断，并在进入
    Prompt 前应用内容上限。
+   每次工具调用还会以 `intent → dispatched → committed → result` 写入 Session Ledger；其中调度模式、
+   资源键、审批要求和幂等属性来自发布快照而非模型输出。
 10. Runtime、Control Plane、Tool Gateway 和 LLM Gateway 通过 Outbox/事件向 Governance 写入审计。
-   Governance 的评测与合规处理异步进行，不会把主运行链路变成同步依赖。
+    Runtime 的每次合法 Run 状态迁移都产生不含正文的关联事件（Run/Session/Trace/快照、前后状态和触发
+    原因），最终结果则保留独立的完成事件；Governance 的评测与合规处理异步进行，不会把主运行链路变成
+    同步依赖。
 
 ## Harness、Executor 与 Capability 的边界
 

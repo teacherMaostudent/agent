@@ -23,10 +23,14 @@ class RuntimeEventType(StrEnum):
     SESSION_INTERRUPTED = "runtime.session.interrupted"
     SESSION_COMPACTED = "runtime.session.compacted"
     RUN_STARTED = "runtime.run.started"
+    RUN_STATE_CHANGED = "runtime.run.state_changed"
     RUN_WAITING_APPROVAL = "runtime.run.waiting_approval"
+    RUN_WAITING_INPUT = "runtime.run.waiting_input"
     RUN_COMPLETED = "runtime.run.completed"
     RUN_FAILED = "runtime.run.failed"
     RUN_CANCEL_REQUESTED = "runtime.run.cancel_requested"
+    STEERING_RECEIVED = "runtime.run.steering_received"
+    FOLLOW_UP_RECEIVED = "runtime.run.follow_up_received"
     TURN_STARTED = "runtime.turn.started"
     TURN_COMPLETED = "runtime.turn.completed"
     TURN_INTERRUPTED = "runtime.turn.interrupted"
@@ -41,6 +45,9 @@ class RuntimeEventType(StrEnum):
     TOOL_INTENT_RECORDED = "runtime.tool.intent_recorded"
     # 保留旧名称作为兼容别名；所有新代码应记录不可变副作用意图而非模糊的“调用”。
     TOOL_CALLED = "runtime.tool.intent_recorded"
+    TOOL_DISPATCHED = "runtime.tool.dispatched"
+    TOOL_DISPATCH_DEFERRED = "runtime.tool.dispatch_deferred"
+    TOOL_COMMITTED = "runtime.tool.committed"
     TOOL_EXECUTION_OBSERVED = "runtime.tool.execution_observed"
     TOOL_RESULT = "runtime.tool.result"
     SUBAGENT_DELEGATED = "runtime.subagent.delegated"
@@ -250,6 +257,8 @@ def event_type_for_status(status: str) -> RuntimeEventType:
     """将 Runtime 持久化状态收敛为单一生命周期事件类型，禁止各调用点自行猜测。"""
     if status == "WAITING_APPROVAL":
         return RuntimeEventType.RUN_WAITING_APPROVAL
+    if status == "WAITING_INPUT":
+        return RuntimeEventType.RUN_WAITING_INPUT
     if status == "FAILED":
         return RuntimeEventType.RUN_FAILED
     return RuntimeEventType.RUN_COMPLETED

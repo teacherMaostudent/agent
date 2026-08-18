@@ -56,6 +56,22 @@ def test_runtime_store_cancel_is_tenant_scoped(tmp_path) -> None:
 
     assert cancelled is not None
     assert cancelled.cancel_requested is True
+    cancellation_event = store.pending_events()[0]
+    assert cancellation_event["event_type"] == "agent.run.state_changed"
+    assert cancellation_event["payload"]["previous_runtime_state"] == "CREATED"
+    assert cancellation_event["payload"]["runtime_state"] == "CANCELLED"
+    store.close()
+
+
+def test_governance_marks_waiting_for_user_input_as_interrupted(tmp_path) -> None:
+    """澄清中断不是完成结果，治理侧必须与审批中断使用同类事件表达。"""
+    store = RuntimeStore(tmp_path / "runtime.db")
+    event = GovernanceOutboxPublisher(store, "", "", 1).event_for_run(
+        _context(), "WAITING_INPUT", {"steps": 1}
+    )
+
+    assert event["event_type"] == "agent.run.interrupted"
+    assert event["payload"]["status"] == "WAITING_INPUT"
     store.close()
 
 
@@ -82,31 +98,32 @@ def test_runtime_store_replays_request_id_and_atomically_enqueues_completion(
     persisted = store.get("tenant-a", context.run_id)
     assert persisted is not None
     assert persisted.status == "COMPLETED"
-    assert store.pending_events()[0]["payload"]["intent"] == "knowledge_query"
+    events = store.pending_events()
+    assert {item["event_type"] for item in events} == {
+        "agent.run.state_changed",
+        "agent.run.completed",
+    }
+    completion = next(item for item in events if item["event_type"] == "agent.run.completed")
+    assert completion["payload"]["intent"] == "knowledge_query"
     store.close()
 
 
 def test_runtime_store_appends_replayable_session_events_in_same_state_transactions(tmp_path) -> None:
-    """开始、取消和终态与 Run 状态同一事务提交，并形成单调会话序号。"""
+    """取消状态一旦提交就不能被迟到的成功终态覆盖，账本序号仍保持单调。"""
     store = RuntimeStore(tmp_path / "runtime.db")
     context = _context()
     store.create(context)
     store.cancel("tenant-a", context.run_id)
-    publisher = GovernanceOutboxPublisher(store, "", "", 1)
-    event = publisher.event_for_run(context, "COMPLETED", {"steps": 3})
-    store.finish_and_enqueue(context.run_id, "COMPLETED", {"steps": 3}, event)
-
     events = store.session_events("tenant-a", "session-1")
 
-    assert [item.sequence for item in events] == [1, 2, 3, 4]
+    assert [item.sequence for item in events] == [1, 2, 3]
     assert [item.event_type.value for item in events] == [
         "runtime.session.created",
         "runtime.run.started",
         "runtime.run.cancel_requested",
-        "runtime.run.completed",
     ]
-    assert events[-1].metadata == {"steps": 3}
-    assert store.session_events("tenant-a", "session-1", after_sequence=3) == [events[-1]]
+    assert events[-1].metadata["current_state"] == "CANCELLED"
+    assert store.session_events("tenant-a", "session-1", after_sequence=2) == [events[-1]]
     store.close()
 
 

@@ -11,12 +11,12 @@ from platform_infra.postgres import (
     execute_script_file,
 )
 
-from app.infrastructure.sqlite_repository import SqliteRepository
+from app.infrastructure.sqlite_repository import GovernanceRepositoryOperations
 
 T = TypeVar("T")
 
 
-class PostgresRepository(SqliteRepository):
+class PostgresRepository(GovernanceRepositoryOperations):
     """生产 PostgreSQL 适配器，保持 SQLite 开发实现相同的审计仓储契约。"""
 
     def __init__(self, dsn: str, schema: str, schema_path: Path) -> None:

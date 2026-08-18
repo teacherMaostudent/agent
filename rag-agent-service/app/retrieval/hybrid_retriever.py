@@ -1,6 +1,7 @@
 from app.domain.models import Chunk, Evidence
 from app.retrieval.bm25_retriever import BM25Retriever
-from app.retrieval.vector_retriever import HashEmbeddingRetriever
+from app.retrieval.embedder import Embedder
+from app.retrieval.vector_retriever import EmbeddingVectorRetriever
 
 
 class HybridRetriever:
@@ -10,13 +11,13 @@ class HybridRetriever:
         self,
         bm25_weight: float,
         vector_weight: float,
-        embedding_dim: int,
+        embedder: Embedder,
         reranker=None,
         candidate_k: int | None = None,
     ) -> None:
         """注入各通道权重；权重由发布配置管理而不是由请求方任意指定。"""
         self.bm25 = BM25Retriever()
-        self.vector = HashEmbeddingRetriever(embedding_dim)
+        self.vector = EmbeddingVectorRetriever(embedder)
         self.bm25_weight = bm25_weight
         self.vector_weight = vector_weight
         self.reranker = reranker

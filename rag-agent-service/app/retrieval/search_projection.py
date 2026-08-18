@@ -14,7 +14,7 @@ import httpx
 
 from app.contracts.rag import RagSearchRequest, RagSearchResponse
 from app.domain.models import Chunk, Document, Evidence
-from app.retrieval.vector_retriever import HashEmbeddingRetriever
+from app.retrieval.embedder import Embedder, build_embedder
 
 
 class NullSearchProjection:
@@ -26,19 +26,20 @@ class NullSearchProjection:
 class OpenSearchProjection:
     """Rebuildable OpenSearch projection; PostgreSQL/S3 remain authoritative."""
 
-    def __init__(self, settings) -> None:
-        """绑定不可变索引版本并确保其映射存在；别名只在发布时切换。"""
+    def __init__(self, settings, *, embedder: Embedder) -> None:
+        """绑定索引与嵌入契约；同一别名不得混入无法比较的向量空间。"""
         self.url = settings.opensearch_url.rstrip("/")
         self.alias = settings.opensearch_index_alias
         self.version = settings.opensearch_index_version
         self.index = f"{self.alias}-{self.version}"
-        self.dim = settings.local_embedding_dim
+        self.embedding_contract = embedder.contract
+        self.dim = self.embedding_contract.dimension
         self.auth = (
             (settings.opensearch_username, settings.opensearch_password)
             if settings.opensearch_username
             else None
         )
-        self.embedder = HashEmbeddingRetriever(self.dim)
+        self.embedder = embedder
         self._ensure_index()
 
     def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
@@ -64,6 +65,10 @@ class OpenSearchProjection:
                 json={
                     "settings": {"index.knn": True},
                     "mappings": {
+                        "_meta": {
+                            "embedding_contract_id": self.embedding_contract.contract_id,
+                            "embedding_contract": self.embedding_contract.model_dump(mode="json"),
+                        },
                         "dynamic": "strict",
                         "properties": {
                             "chunk_id": {"type": "keyword"},
@@ -77,11 +82,24 @@ class OpenSearchProjection:
                                 "dimension": self.dim,
                                 "method": {"name": "hnsw", "space_type": "cosinesimil"},
                             },
+                            "embedding_contract_id": {"type": "keyword"},
                             "metadata": {"type": "object", "enabled": False},
                         },
                     },
                 },
             )
+        else:
+            # A reused index version must prove it was created for this exact
+            # vector contract; filtering mismatched documents after the fact is
+            # not a safe replacement for rebuilding the index.
+            mapping = self._request("GET", f"{self.index}/_mapping").json()
+            existing_mapping = mapping.get(self.index, {}).get("mappings", {})
+            properties = existing_mapping.get("properties", {})
+            dimension = properties.get("embedding", {}).get("dimension")
+            if dimension != self.dim:
+                raise ValueError("existing OpenSearch index dimension does not match embedding contract")
+            if existing_mapping.get("_meta", {}).get("embedding_contract_id") != self.embedding_contract.contract_id:
+                raise ValueError("existing OpenSearch index contract does not match active embedding provider")
         alias = httpx.head(f"{self.url}/_alias/{self.alias}", auth=self.auth, timeout=10)
         if alias.status_code == 404:
             self.publish()
@@ -121,6 +139,7 @@ class OpenSearchProjection:
                     "allowed_users": allowed_users,
                     "text": chunk.text,
                     "embedding": self.embedder._embed(chunk.text),
+                    "embedding_contract_id": self.embedding_contract.contract_id,
                     "metadata": chunk.metadata,
                 },
             )
@@ -129,8 +148,16 @@ class OpenSearchProjection:
         # ACL constraints are filters, not post-processing.  Unauthorized
         # chunks must not influence scores or candidate counts at all.
         """在索引查询内施加 ACL 过滤后做词法/向量混合检索，禁止事后过滤。"""
+        if request.index_version and request.index_version != self.version:
+            raise ValueError("requested RAG index version is not active on this query service")
+        if (
+            request.embedding_contract_id
+            and request.embedding_contract_id != self.embedding_contract.contract_id
+        ):
+            raise ValueError("requested embedding contract does not match active RAG index")
         acl_filter = [
             {"term": {"tenant_id": request.tenant_id}},
+            {"term": {"embedding_contract_id": self.embedding_contract.contract_id}},
             {
                 "bool": {
                     "should": [
@@ -154,7 +181,7 @@ class OpenSearchProjection:
                     },
                     "script": {
                         "source": "0.55 * _score + 0.45 * (cosineSimilarity(params.q, 'embedding') + 1.0)",
-                        "params": {"q": self.embedder._embed(request.query)},
+                        "params": {"q": self.embedder.embed(request.query)},
                     },
                 }
             },
@@ -178,11 +205,12 @@ class OpenSearchProjection:
             evidence=evidence,
             candidate_count=candidate_count,
             index_version=self.version,
+            embedding_contract_id=self.embedding_contract.contract_id,
         )
 
 
-def build_search_projection(settings):
+def build_search_projection(settings, *, embedder: Embedder | None = None):
     """按发布配置创建可重建检索投影；本地模式返回无操作实现。"""
     if settings.search_backend == "opensearch":
-        return OpenSearchProjection(settings)
+        return OpenSearchProjection(settings, embedder=embedder or build_embedder(settings))
     return NullSearchProjection()

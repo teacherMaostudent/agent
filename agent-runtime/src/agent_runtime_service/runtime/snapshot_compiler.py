@@ -15,8 +15,19 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 from platform_sdk.contracts.capabilities import required_runtime_capabilities
+from platform_sdk.contracts.execution_profile import (
+    ExecutionProfileError,
+    resolve_execution_profile,
+)
+from platform_sdk.contracts.runtime_snapshot import compile_intent_catalog
 from platform_sdk.contracts.workflow import WorkflowConditionError, compile_workflow_condition
 from pydantic import BaseModel, Field
+
+from agent_runtime_service.runtime.models import (
+    ExecutionLifecycle,
+    ExecutionRequirements,
+    ReasoningMode,
+)
 
 _VARIABLE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
 
@@ -34,6 +45,9 @@ class CompiledAgentPlan(BaseModel):
     graph_execution_order: list[str]
     graph_node_kinds: dict[str, str]
     executor_profile: str
+    execution_requirements: ExecutionRequirements = Field(default_factory=ExecutionRequirements)
+    intent_catalog_version: str = "platform-default/v1"
+    intent_catalog: dict[str, Any] | None = None
     required_capabilities: list[str] = Field(default_factory=list)
     workflow_policy: dict[str, Any] = Field(default_factory=dict)
     prompt_template: str
@@ -56,6 +70,18 @@ class CompiledAgentPlan(BaseModel):
     def knowledge_filters(self) -> dict[str, Any]:
         """按知识库汇总发布过滤条件；过滤条件属于快照契约而非模型建议。"""
         return {str(item["knowledge_base"]): item.get("filters", {}) for item in self.knowledge}
+
+    @property
+    def knowledge_contracts(self) -> dict[str, dict[str, str]]:
+        """返回每个知识绑定的索引与嵌入契约，供 RAG 请求固定读取版本。"""
+        return {
+            str(item["knowledge_base"]): {
+                "index_version": str(item.get("index_version", "")),
+                "embedding_contract_id": str(item.get("embedding_contract_id", "")),
+                "retrieval_evaluation_id": str(item.get("retrieval_evaluation_id", "")),
+            }
+            for item in self.knowledge
+        }
 
 
 def compile_snapshot(
@@ -129,9 +155,11 @@ def compile_snapshot(
     if fallback_route:
         fallback_models.extend(str(item) for item in fallback_route.get("models") or [])
 
-    executor_profile = str(spec.get("runtime_executor", "declarative-langgraph/v1")).strip()
-    if not executor_profile:
-        raise SnapshotCompileError("published runtime executor profile is missing")
+    execution_requirements, executor_profile = _compile_execution_requirements(spec)
+    try:
+        intent_catalog = compile_intent_catalog(spec)
+    except ValueError as exc:
+        raise SnapshotCompileError(str(exc)) from exc
     canonical = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return CompiledAgentPlan(
         contract_hash=hashlib.sha256(canonical.encode()).hexdigest(),
@@ -141,6 +169,9 @@ def compile_snapshot(
         graph_execution_order=order,
         graph_node_kinds=node_kinds,
         executor_profile=executor_profile,
+        execution_requirements=execution_requirements,
+        intent_catalog_version=str(spec.get("intent_catalog_version", "platform-default/v1")),
+        intent_catalog=intent_catalog,
         required_capabilities=required_runtime_capabilities(spec),
         workflow_policy=workflow_policy,
         prompt_template=template,
@@ -327,6 +358,21 @@ def _mapping(value: dict[str, Any], name: str) -> dict[str, Any]:
     return item
 
 
+def _compile_execution_requirements(spec: dict[str, Any]) -> tuple[ExecutionRequirements, str]:
+    """把新双轴声明或旧 Profile 编译为唯一部署别名，避免运行时猜测组合语义。"""
+    try:
+        shared, profile = resolve_execution_profile(spec)
+    except ExecutionProfileError as exc:
+        raise SnapshotCompileError(str(exc)) from exc
+    return (
+        ExecutionRequirements(
+            lifecycle=ExecutionLifecycle(shared.lifecycle),
+            reasoning=ReasoningMode(shared.reasoning),
+        ),
+        profile,
+    )
+
+
 def _required(value: dict[str, Any], name: str) -> Any:
     """读取非空必填字段，并把缺失转成可定位的编译错误。"""
     item = value.get(name)
@@ -355,6 +401,8 @@ def _local_plan(model: str) -> CompiledAgentPlan:
         graph_execution_order=["agent-loop"],
         graph_node_kinds={"agent-loop": "agent"},
         executor_profile="local-default/v1",
+        execution_requirements=ExecutionRequirements(),
+        intent_catalog_version="local-development/v1",
         required_capabilities=[],
         workflow_policy={
             "version": "workflow-policy/v1",

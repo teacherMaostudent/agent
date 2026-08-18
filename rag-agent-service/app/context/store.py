@@ -31,7 +31,7 @@ class ConversationStore:
             return [item for item in messages if item.created_at >= cutoff]
 
     def append(self, session_id: str, message: ConversationMessage) -> None:
-        """以有限 CAS 重试追加消息，防止并发请求丢失上下文；超过上限保留最新消息。"""
+        """以有限 CAS 重试追加消息，防止并发丢失或邮箱重试重复写入上下文。"""
         with self._lock:
             if self._db is not None:
                 for _ in range(8):
@@ -40,6 +40,8 @@ class ConversationStore:
                         ConversationMessage.model_validate(item)
                         for item in (payload or {"messages": []})["messages"]
                     ]
+                    if self._contains_idempotency_key(messages, message):
+                        return
                     messages.append(message)
                     messages = messages[-self._max_messages :]
                     if self._db.put_if_version(
@@ -52,8 +54,21 @@ class ConversationStore:
                 raise RuntimeError("concurrent context update retry limit exceeded")
             else:
                 messages = self.list_messages(session_id)
+                if self._contains_idempotency_key(messages, message):
+                    return
                 messages.append(message)
                 self._memory[session_id] = messages[-self._max_messages :]
+
+    @staticmethod
+    def _contains_idempotency_key(
+        messages: list[ConversationMessage], candidate: ConversationMessage
+    ) -> bool:
+        """仅对调用方明确提供的消息幂等键去重，普通重复对话仍按原语义保留。"""
+        key = str(candidate.metadata.get("idempotency_key", "")).strip()
+        return bool(
+            key
+            and any(str(item.metadata.get("idempotency_key", "")).strip() == key for item in messages)
+        )
 
     def delete(self, session_id: str) -> bool:
         """按完整隔离键删除会话；调用方需先将租户、用户与会话组合为该键。"""

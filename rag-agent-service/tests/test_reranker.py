@@ -1,5 +1,6 @@
 from app.domain.models import Chunk
 from app.rerank.reranker import CrossEncoderReranker
+from app.retrieval.embedder import HashEmbedder
 from app.retrieval.hybrid_retriever import HybridRetriever
 
 
@@ -11,7 +12,7 @@ class FakeCrossEncoder:
 def test_cross_encoder_changes_hybrid_order() -> None:
     reranker = CrossEncoderReranker("fake-model")
     reranker._model = FakeCrossEncoder()
-    retriever = HybridRetriever(0.5, 0.5, 32, reranker=reranker, candidate_k=4)
+    retriever = HybridRetriever(0.5, 0.5, HashEmbedder(32), reranker=reranker, candidate_k=4)
     chunks = [
         Chunk(source_id="bad", source_type="regulation", text="audit audit irrelevant"),
         Chunk(

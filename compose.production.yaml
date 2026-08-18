@@ -16,6 +16,13 @@ x-rag-env: &rag-env
   RAG_S3_REGION: ${S3_REGION}
   RAG_S3_KMS_KEY_ID: ${S3_KMS_KEY_ID}
   RAG_SEARCH_BACKEND: opensearch
+  # Hash 向量只用于本地契约测试；生产必须明确选择经过 Golden Retrieval 比较的 Provider。
+  RAG_EMBEDDING_PROVIDER: ${RAG_EMBEDDING_PROVIDER:-local_openai}
+  RAG_EMBEDDING_MODEL_REVISION: ${RAG_EMBEDDING_MODEL_REVISION}
+  RAG_LOCAL_EMBEDDING_BASE_URL: ${RAG_LOCAL_EMBEDDING_BASE_URL}
+  RAG_LOCAL_EMBEDDING_MODEL: ${RAG_LOCAL_EMBEDDING_MODEL:-BAAI/bge-m3}
+  RAG_LOCAL_EMBEDDING_DIMENSION: ${RAG_LOCAL_EMBEDDING_DIMENSION:-1024}
+  RAG_EMBEDDING_ALLOW_HASH_FALLBACK: "false"
   RAG_OPENSEARCH_URL: http://opensearch:9200
   RAG_OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME}
   RAG_OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD}
@@ -43,9 +50,9 @@ x-rag-env: &rag-env
   RAG_GOVERNANCE_DELIVERY_MODE: cdc
   RAG_CONTEXT_SERVICE_BASE_URL: https://agent-context-service:8002
   RAG_RAG_QUERY_BASE_URL: https://rag-query-api:8003
-  RAG_TOOL_GATEWAY_BASE_URL: http://tool-gateway:8090
+  RAG_TOOL_GATEWAY_BASE_URL: https://tool-gateway:8090
   RAG_TOOL_GATEWAY_API_KEY: ${TOOL_GATEWAY_SERVICE_API_KEY}
-  RAG_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
+  RAG_LLM_GATEWAY_BASE_URL: https://llm-gateway:8080
   RAG_LLM_GATEWAY_API_KEY: ${RAG_LLM_GATEWAY_API_KEY}
   RAG_ALLOW_LEGACY_PUBLIC_DOCUMENTS: "false"
   RAG_CORS_ORIGINS: ${RAG_CORS_ORIGINS}
@@ -105,9 +112,9 @@ x-runtime-env: &runtime-env
   RUNTIME_GOVERNANCE_DELIVERY_MODE: cdc
   RUNTIME_CONTEXT_SERVICE_BASE_URL: https://agent-context-service:8002
   RUNTIME_RAG_QUERY_BASE_URL: https://rag-query-api:8003
-  RUNTIME_TOOL_GATEWAY_BASE_URL: http://tool-gateway:8090
+  RUNTIME_TOOL_GATEWAY_BASE_URL: https://tool-gateway:8090
   RUNTIME_TOOL_GATEWAY_API_KEY: ${TOOL_GATEWAY_SERVICE_API_KEY}
-  RUNTIME_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
+  RUNTIME_LLM_GATEWAY_BASE_URL: https://llm-gateway:8080
   RUNTIME_LLM_GATEWAY_API_KEY: ${RUNTIME_LLM_GATEWAY_API_KEY}
 
 x-runtime-service: &runtime-service
@@ -164,6 +171,10 @@ secrets:
     file: ${LLM_GATEWAY_MTLS_CERT_FILE:-deploy/tls/llm-gateway.crt}
   llm_gateway_key:
     file: ${LLM_GATEWAY_MTLS_KEY_FILE:-deploy/tls/llm-gateway.key}
+  model_lab_cert:
+    file: ${MODEL_LAB_MTLS_CERT_FILE:-deploy/tls/model-lab.crt}
+  model_lab_key:
+    file: ${MODEL_LAB_MTLS_KEY_FILE:-deploy/tls/model-lab.key}
 
 services:
   postgres:
@@ -267,12 +278,30 @@ services:
 
   model-lab:
     build:
-      context: ./model-lab
+      <<: *python-build
+      dockerfile: model-lab/Dockerfile
     restart: unless-stopped
     environment:
+      MODEL_LAB_ENVIRONMENT: production
+      MODEL_LAB_DATABASE_BACKEND: postgres
+      MODEL_LAB_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/agent_platform
+      MODEL_LAB_DATABASE_SCHEMA: model_lab
       MODEL_LAB_ARTIFACT_BUCKET: ${MODEL_ARTIFACT_BUCKET}
-      MODEL_LAB_REQUIRE_APPROVED_MODEL_CARD: "true"
-    ports: ["8091:8091"]
+      MODEL_LAB_SERVICE_API_KEY: ${MODEL_LAB_SERVICE_API_KEY}
+      MODEL_LAB_OIDC_ENABLED: "true"
+      MODEL_LAB_OIDC_ISSUER: ${OIDC_ISSUER}
+      MODEL_LAB_OIDC_AUDIENCE: ${OIDC_AUDIENCE}
+      MODEL_LAB_OIDC_JWKS_URL: ${OIDC_JWKS_URL}
+      MODEL_LAB_MTLS_ENABLED: "true"
+      MODEL_LAB_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      MODEL_LAB_MTLS_CERT_FILE: /run/secrets/model_lab_cert
+      MODEL_LAB_MTLS_KEY_FILE: /run/secrets/model_lab_key
+      PLATFORM_MTLS_SERVER_ENABLED: "true"
+      PLATFORM_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      PLATFORM_MTLS_CERT_FILE: /run/secrets/model_lab_cert
+      PLATFORM_MTLS_KEY_FILE: /run/secrets/model_lab_key
+    secrets: [agent_ca_pem, model_lab_cert, model_lab_key]
+    depends_on: [postgres]
 
   agent-lab:
     build:
@@ -351,13 +380,14 @@ services:
       CONTROL_PLANE_ADMIN_API_KEY: ${CONTROL_PLANE_ADMIN_API_KEY}
       CONTROL_PLANE_RUNTIME_API_KEY: ${CONTROL_PLANE_RUNTIME_API_KEY}
       CONTROL_PLANE_GOVERNANCE_AUDITOR_API_KEY: ${GOVERNANCE_AUDITOR_API_KEY}
-      CONTROL_PLANE_MODEL_LAB_BASE_URL: http://model-lab:8091
+      CONTROL_PLANE_MODEL_LAB_BASE_URL: https://model-lab:8091
       CONTROL_PLANE_MODEL_LAB_REQUIRED: "true"
+      CONTROL_PLANE_MODEL_LAB_SERVICE_API_KEY: ${MODEL_LAB_SERVICE_API_KEY}
       CONTROL_PLANE_AGENT_LAB_BASE_URL: https://agent-lab:8092
       CONTROL_PLANE_AGENT_LAB_SERVICE_API_KEY: ${AGENT_LAB_SERVICE_API_KEY}
       CONTROL_PLANE_AGENT_LAB_REQUIRED: "true"
       CONTROL_PLANE_LLM_GATEWAY_ADMIN_PASSWORD: ${LLM_ADMIN_PASSWORD}
-      CONTROL_PLANE_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
+      CONTROL_PLANE_LLM_GATEWAY_BASE_URL: https://llm-gateway:8080
       CONTROL_PLANE_GOVERNANCE_BASE_URL: https://agent-governance:8081
       CONTROL_PLANE_OTEL_ENABLED: "true"
       CONTROL_PLANE_OTEL_ENDPOINT: http://otel-collector:4318/v1/traces
@@ -412,7 +442,7 @@ services:
       GOVERNANCE_KAFKA_MAX_POLL_RECORDS: ${GOVERNANCE_KAFKA_MAX_POLL_RECORDS:-500}
       GOVERNANCE_KAFKA_RETRY_BACKOFF_MAX_SECONDS: ${GOVERNANCE_KAFKA_RETRY_BACKOFF_MAX_SECONDS:-60}
       GOVERNANCE_LLM_GATEWAY_API_KEY: ${GOVERNANCE_LLM_GATEWAY_API_KEY}
-      GOVERNANCE_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
+      GOVERNANCE_LLM_GATEWAY_BASE_URL: https://llm-gateway:8080
       GOVERNANCE_JUDGE_PRIMARY_MODEL_REVISION: ${GOVERNANCE_JUDGE_PRIMARY_MODEL_REVISION}
       GOVERNANCE_JUDGE_SECONDARY_MODEL_REVISION: ${GOVERNANCE_JUDGE_SECONDARY_MODEL_REVISION}
       GOVERNANCE_JUDGE_ARBITRATOR_MODEL_REVISION: ${GOVERNANCE_JUDGE_ARBITRATOR_MODEL_REVISION}
@@ -563,6 +593,10 @@ services:
       TOOL_GATEWAY_GOVERNANCE_BASE_URL: https://agent-governance:8081
       TOOL_GATEWAY_GOVERNANCE_EVENT_KEY: ${GOVERNANCE_EVENT_INGESTION_KEY}
       TOOL_GATEWAY_GOVERNANCE_DELIVERY_MODE: cdc
+      PLATFORM_MTLS_SERVER_ENABLED: "true"
+      PLATFORM_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      PLATFORM_MTLS_CERT_FILE: /run/secrets/tool_gateway_cert
+      PLATFORM_MTLS_KEY_FILE: /run/secrets/tool_gateway_key
       TOOL_GATEWAY_OTEL_ENABLED: "true"
       TOOL_GATEWAY_OTEL_ENDPOINT: http://otel-collector:4318/v1/traces
     secrets:
@@ -589,6 +623,11 @@ services:
       GATEWAY_OIDC_ENABLED: "true"
       OIDC_ISSUER_URI: ${OIDC_ISSUER}
       GATEWAY_OPA_ENABLED: "true"
+      SERVER_SSL_ENABLED: "true"
+      SERVER_SSL_CERTIFICATE: /run/secrets/llm_gateway_cert
+      SERVER_SSL_CERTIFICATE_PRIVATE_KEY: /run/secrets/llm_gateway_key
+      SERVER_SSL_TRUST_CERTIFICATE: /run/secrets/agent_ca_pem
+      SERVER_SSL_CLIENT_AUTH: need
       GATEWAY_OPA_BASE_URL: http://opa:8181
       ADMIN_SECURITY_ENABLED: "true"
       ADMIN_PASSWORD: ${LLM_ADMIN_PASSWORD}

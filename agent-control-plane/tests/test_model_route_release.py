@@ -47,7 +47,8 @@ class FakeGovernance:
 
 
 class FakeModelLab:
-    async def approved_artifact(self, experiment_id: str) -> dict[str, Any]:
+    async def approved_artifact(self, tenant_id: str, experiment_id: str) -> dict[str, Any]:
+        assert tenant_id == "tenant-a"
         assert experiment_id == "exp-approved"
         return {
             "status": "APPROVED",
@@ -96,7 +97,7 @@ def test_model_lab_rejection_blocks_canary(client: TestClient, headers: dict[str
     container.model_releases._governance = FakeGovernance()
 
     class RejectedModelLab:
-        async def approved_artifact(self, _: str) -> dict[str, Any]:
+        async def approved_artifact(self, _tenant_id: str, _: str) -> dict[str, Any]:
             raise ValueError("model card missing")
 
     container.model_releases._model_lab = RejectedModelLab()

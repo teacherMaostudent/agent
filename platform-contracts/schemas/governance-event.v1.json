@@ -43,6 +43,24 @@
           }
         }
       }
+    },
+    {
+      "if": {"properties": {"event_type": {"const": "agent.run.state_changed"}}},
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "run_id",
+              "agent_id",
+              "status",
+              "runtime_state",
+              "previous_runtime_state",
+              "transition_event",
+              "session_event_id"
+            ]
+          }
+        }
+      }
     }
   ]
 }

@@ -81,7 +81,7 @@ class ModelReleaseService:
             if self._model_lab is None:
                 raise PolicyViolationError("Model Lab validation is not configured")
             try:
-                model_artifact = await self._model_lab.approved_artifact(experiment_id)
+                model_artifact = await self._model_lab.approved_artifact(tenant_id, experiment_id)
             except (httpx.HTTPError, ValueError) as exc:
                 raise PolicyViolationError(f"Model Lab gate rejected release: {exc}") from exc
         now = _now()

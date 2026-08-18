@@ -5,18 +5,19 @@ import re
 from platform_infra.postgres import connect_postgres, execute_script
 from platform_infra.schema_registry import SchemaRegistry
 
-from agent_runtime_service.runtime.integration import RuntimeStore
+from agent_runtime_service.runtime.integration import RuntimeStoreOperations
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runtime_runs(
     run_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
     agent_id TEXT NOT NULL, snapshot_id TEXT NOT NULL, request_id TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL, context_json TEXT NOT NULL, result_json TEXT NOT NULL,
+    status TEXT NOT NULL, runtime_state TEXT NOT NULL DEFAULT 'CREATED', context_json TEXT NOT NULL, result_json TEXT NOT NULL,
     error_code TEXT NOT NULL, cancel_requested SMALLINT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS runtime_runs_request_id_idx
     ON runtime_runs(tenant_id, request_id) WHERE request_id <> '';
+ALTER TABLE runtime_runs ADD COLUMN IF NOT EXISTS runtime_state TEXT NOT NULL DEFAULT 'CREATED';
 CREATE TABLE IF NOT EXISTS runtime_outbox(
     event_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, delivered_at TIMESTAMPTZ,
     attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TIMESTAMPTZ,
@@ -49,6 +50,17 @@ CREATE TABLE IF NOT EXISTS runtime_session_archives(
     created_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY(tenant_id, session_id, archived_through_sequence)
 );
+CREATE TABLE IF NOT EXISTS runtime_run_mailbox(
+    message_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, run_id TEXT NOT NULL,
+    input_type TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 50,
+    delivery_status TEXT NOT NULL DEFAULT 'PENDING', lease_token TEXT NOT NULL DEFAULT '',
+    lease_expires_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL, consumed_at TIMESTAMPTZ,
+    UNIQUE(tenant_id, run_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS runtime_run_mailbox_claim_idx
+    ON runtime_run_mailbox(tenant_id, run_id, delivery_status, priority, created_at);
+ALTER TABLE runtime_run_mailbox ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 50;
 ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS parent_run_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS turn_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS step_id TEXT NOT NULL DEFAULT '';
@@ -58,7 +70,7 @@ ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS payload_version TEXT
 """
 
 
-class PostgresRuntimeStore(RuntimeStore):
+class PostgresRuntimeStore(RuntimeStoreOperations):
     def __init__(self, dsn: str, schema: str, schema_registry: SchemaRegistry | None = None) -> None:
         """初始化生产 PostgreSQL Run/Outbox 存储并校验 schema 名，防止 SQL 标识符注入。"""
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", schema):

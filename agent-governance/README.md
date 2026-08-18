@@ -61,7 +61,7 @@ Run；若模型供应商未遵从结构化输出，Governance 会本地 fail-clo
 }
 ```
 
-支持的首批评测事件是 `tool.execution.completed`、`llm.request.completed` 与 `agent.run.completed`。未知事件仍会完整审计，只是不触发内置规则。
+支持的首批评测事件是 `tool.execution.completed`、`llm.request.completed` 与 `agent.run.completed`。Runtime 还会写入 `agent.run.state_changed`：它带有 Run、Session、Trace、快照和前后状态，但不携带 Prompt 或用户正文，用于将长运行的状态迁移与最终评测结果关联起来。未知事件仍会完整审计，只是不触发内置规则。
 
 ## 快速启动
 

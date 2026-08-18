@@ -94,7 +94,9 @@ class Settings(BaseSettings):
                 unsafe.append("TOOL_GATEWAY_OPA_ENABLED must be true")
             if self.governance_delivery_mode != "cdc":
                 unsafe.append("TOOL_GATEWAY_GOVERNANCE_DELIVERY_MODE must be cdc")
-            if self.mtls_enabled and not all(
+            if not self.mtls_enabled:
+                unsafe.append("TOOL_GATEWAY_MTLS_ENABLED must be true")
+            elif not all(
                 (self.mtls_ca_file, self.mtls_cert_file, self.mtls_key_file)
             ):
                 unsafe.append("TOOL_GATEWAY mTLS certificate paths are required")

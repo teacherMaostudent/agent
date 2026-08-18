@@ -21,9 +21,9 @@ class IngestionContainer:
         self.settings = get_settings()
         self.repository = build_repository(self.settings)
         self.storage = build_file_storage(self.settings)
-        self.search_projection = build_search_projection(self.settings)
         self.parser = DocumentParser()
         self.embedder = build_embedder(self.settings)
+        self.search_projection = build_search_projection(self.settings, embedder=self.embedder)
         backing_job_store = (
             PostgresIngestionJobStore(self.settings.database_url, self.settings.database_schema)
             if self.settings.persistence == "postgres"

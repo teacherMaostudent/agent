@@ -46,6 +46,7 @@ class AppContainer:
             self.repository,
             governance=self.governance_quality,
             require_quality_gate=settings.agent_release_quality_gate_required,
+            require_knowledge_contracts=settings.agent_release_knowledge_contract_required,
             agent_lab=self.agent_lab,
             require_agent_lab=settings.agent_lab_required,
             tool_catalog_validator=ToolCatalogValidator(

@@ -23,8 +23,6 @@ class QwenEmbeddingClient:
         batch_size: int = 10,
     ) -> None:
         """保存供应商连接与批量限制，并在缺少密钥时立即拒绝无效配置。"""
-        if not api_key:
-            raise ValueError("QwenEmbeddingClient 需要 DASHSCOPE_API_KEY")
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -37,7 +35,7 @@ class QwenEmbeddingClient:
         if not texts:
             return []
         vectors: list[list[float]] = []
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         with httpx.Client(timeout=self.timeout, headers=headers) as client:
             for start in range(0, len(texts), self.batch_size):
                 batch = texts[start : start + self.batch_size]

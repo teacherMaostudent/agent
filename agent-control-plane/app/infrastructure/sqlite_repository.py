@@ -27,7 +27,8 @@ from app.domain.models import (
 T = TypeVar("T")
 
 
-class SqliteRepository:
+class ControlPlaneRepositoryOperations:
+    """与数据库方言无关的 Control Plane 聚合操作；I/O 事务由子类提供。"""
     def __init__(self, database_path: Path, schema_path: Path) -> None:
         """初始化该组件的依赖、配置与内部状态。
 
@@ -804,6 +805,10 @@ def _json(value: Any) -> str:
     Internal helper for module; preserve its caller-facing invariant.
     """
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+class SqliteRepository(ControlPlaneRepositoryOperations):
+    """本地 SQLite 事务实现；生产 PostgreSQL 不继承此具体后端类。"""
 
 
 def _agent_from_row(row: sqlite3.Row) -> AgentDefinition:

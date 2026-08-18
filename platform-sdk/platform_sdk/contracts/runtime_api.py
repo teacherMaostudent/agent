@@ -25,6 +25,13 @@ class AgentResumeRequest(BaseModel):
     reason: str = Field(default="", max_length=2_000)
 
 
+class AgentRunInputRequest(BaseModel):
+    """向活动 Run 注入下一安全边界生效的 Steering 或 Follow-up 消息。"""
+
+    input_type: str = Field(pattern="^(steering|follow_up)$")
+    message: str = Field(min_length=1, max_length=24_000)
+
+
 class AgentFollowupRequest(BaseModel):
     """向已完成子 Agent 追加下一轮任务的受限请求，父运行必须通过谱系授权。"""
 

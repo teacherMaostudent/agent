@@ -6,6 +6,8 @@ around published snapshots, approvals, budgets and untrusted observation data.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from inspect import signature
@@ -21,7 +23,7 @@ from platform_sdk.contracts.context import ContextAssembleRequest
 from platform_sdk.contracts.rag import RagSearchRequest
 from platform_sdk.contracts.workflow import evaluate_workflow_condition
 from platform_sdk.security import bound_untrusted
-from platform_sdk.tools.registry import ToolContext, ToolRegistry
+from platform_sdk.tools.registry import ToolContext
 
 from agent_runtime_service.agent.decision_engine import DecisionEngine
 from agent_runtime_service.agent.models import (
@@ -30,16 +32,20 @@ from agent_runtime_service.agent.models import (
     AgentRunResult,
     AgentState,
 )
+from agent_runtime_service.runtime.agent_manager import AgentManager
 from agent_runtime_service.runtime.budget import BudgetGuard
 from agent_runtime_service.runtime.event_bus import RuntimeHookPhase, RuntimeInterceptionPipeline
+from agent_runtime_service.runtime.mailbox import RunMailbox, RunMailboxInputType
 from agent_runtime_service.runtime.models import (
     ApprovalResume,
     RouteType,
     RuntimeBudget,
     RuntimeCancelled,
     RuntimeLimitExceeded,
+    UserInputResume,
 )
 from agent_runtime_service.runtime.planner import HeuristicSemanticAnalyzer, RuntimePlanner
+from agent_runtime_service.runtime.runtime_context import RuntimeContext
 from agent_runtime_service.runtime.session_events import (
     ModelVisibleMessage,
     RuntimeEventType,
@@ -47,7 +53,20 @@ from agent_runtime_service.runtime.session_events import (
     model_visible_message,
 )
 from agent_runtime_service.runtime.snapshot_compiler import validate_final_output
-from agent_runtime_service.runtime.subagents import SubAgentManager, SubAgentPolicyError
+from agent_runtime_service.runtime.stop_policy import (
+    BudgetStopPolicy,
+    CancellationStopPolicy,
+    CompositeStopPolicy,
+    StopPolicy,
+)
+from agent_runtime_service.runtime.subagents import SubAgentPolicyError
+from agent_runtime_service.runtime.tool_execution import (
+    SideEffectBarrier,
+    SideEffectBarrierOutcome,
+    SideEffectBarrierRejected,
+    ToolExecutionEngine,
+    ToolExecutionPolicy,
+)
 
 
 class AgentGraph:
@@ -61,45 +80,59 @@ class AgentGraph:
     def __init__(
         self,
         decision_engine: DecisionEngine,
-        tool_registry: ToolRegistry | None = None,
+        runtime_context: RuntimeContext,
         *,
-        context_client,
-        rag_client=None,
         planner: RuntimePlanner | None = None,
         budget_guard: BudgetGuard | None = None,
         checkpointer=None,
         cancellation_checker: Callable[[str, str], bool] | None = None,
-        subagent_manager: SubAgentManager | None = None,
-        subagent_executor: Callable[[Any, str, dict[str, Any]], dict[str, Any]] | None = None,
+        agent_manager: AgentManager | None = None,
         session_event_recorder: Callable[
             [AgentState, RuntimeEventType, dict[str, Any], ModelVisibleMessage | None], None
         ] | None = None,
         interception_pipeline: RuntimeInterceptionPipeline | None = None,
+        stop_policy: StopPolicy | None = None,
+        tool_execution_engine: ToolExecutionEngine | None = None,
+        mailbox: RunMailbox | None = None,
+        side_effect_barrier: SideEffectBarrier | None = None,
     ) -> None:
         """组装受控执行图。
 
-        ``context_client`` 是会话与 ACL 的唯一所有者，``rag_client`` 仅能经稳定
-        契约读取证据；二者均不得让 Runtime 直接接触其内部存储。可选取消检查器在
+        ``runtime_context`` 是执行器唯一可见的外围能力视图：Context 是会话与 ACL
+        的唯一所有者，RAG 仅能经稳定契约读取证据；二者均不得让 Runtime 直接接触
+        其内部存储。可选取消检查器在
         每个有副作用节点前执行，使 API 取消能够在长任务中尽快生效。
         """
         self.decision_engine = decision_engine
-        self.context_client = context_client
+        self.runtime_context = runtime_context
+        self.context_client = runtime_context.context
         # Evidence is read only through the published RAG contract. Context
         # owns conversation memory and its ACL boundary; Runtime owns neither.
-        self.rag_client = rag_client
+        self.rag_client = runtime_context.retrieval
         self._context_accepts_execution_headers = (
-            "execution_headers" in signature(context_client.assemble).parameters
+            "execution_headers" in signature(self.context_client.assemble).parameters
         )
-        self.tool_registry = tool_registry or ToolRegistry()
+        self.tool_registry = runtime_context.tools
         self.planner = planner or RuntimePlanner(HeuristicSemanticAnalyzer())
         self.budget_guard = budget_guard or BudgetGuard(0.0, 0.0)
-        self.cancellation_checker = cancellation_checker
-        self.subagent_manager = subagent_manager
-        self.subagent_executor = subagent_executor
+        # StopPolicy 是模型循环外的硬边界。默认策略复用既有预算守卫与取消查询，
+        # 外部执行器可在启动期注入更严格策略，但不能在请求期动态替换。
+        self.stop_policy = stop_policy or CompositeStopPolicy(
+            (BudgetStopPolicy(self.budget_guard), CancellationStopPolicy(cancellation_checker))
+        )
+        # Agent Manager 是子 Agent 的唯一委派门面。Graph 只提交已决策的目标和
+        # 任务，不持有预算策略或内部调用器，避免状态机演变为万能编排服务。
+        self.agent_manager = agent_manager
         # Recorder is an append-only audit boundary owned by Runtime Store. It observes completed facts
         # only and cannot replace a Tool Gateway, alter a LangGraph edge or make policy decisions.
         self.session_event_recorder = session_event_recorder
         self.interception_pipeline = interception_pipeline or RuntimeInterceptionPipeline()
+        self.tool_execution_engine = tool_execution_engine or ToolExecutionEngine()
+        self.mailbox = mailbox
+        self.side_effect_barrier = side_effect_barrier or SideEffectBarrier(
+            cancellation_checker=cancellation_checker,
+            inbox=mailbox,
+        )
         self.graph = self._build().compile(checkpointer=checkpointer or InMemorySaver())
 
     def _build(self):
@@ -116,6 +149,7 @@ class AgentGraph:
         graph.add_node("build_plan", self._build_plan)
         graph.add_node("planned_retrieval_guard", self._retrieval_guard)
         graph.add_node("planned_retrieve", self._planned_retrieve)
+        graph.add_node("poll_mailbox", self._poll_mailbox)
         graph.add_node("decide", self._decide)
         graph.add_node("retrieval_guard", self._retrieval_guard)
         graph.add_node("retrieve", self._retrieve)
@@ -133,14 +167,14 @@ class AgentGraph:
             {
                 "clarify": "clarify",
                 "rag": "planned_retrieval_guard",
-                "agent": "decide",
+                "agent": "poll_mailbox",
             },
         )
         graph.add_edge("planned_retrieval_guard", "planned_retrieve")
         graph.add_conditional_edges(
             "planned_retrieve",
             self._after_retrieval,
-            {"decide": "decide", "clarify": "clarify"},
+            {"decide": "poll_mailbox", "clarify": "clarify"},
         )
         graph.add_conditional_edges(
             "decide",
@@ -156,15 +190,25 @@ class AgentGraph:
         graph.add_conditional_edges(
             "retrieve",
             self._after_retrieval,
-            {"decide": "decide", "clarify": "clarify"},
+            {"decide": "poll_mailbox", "clarify": "clarify"},
         )
-        graph.add_edge("tool_guard", "tool")
+        graph.add_conditional_edges(
+            "tool_guard",
+            self._after_tool_guard,
+            {"tool": "tool", "defer": "poll_mailbox"},
+        )
         graph.add_conditional_edges(
             "tool",
             self._after_tool,
-            {"continue": "decide", "finish": "safety"},
+            {"continue": "poll_mailbox", "finish": "safety"},
         )
-        graph.add_edge("clarify", "safety")
+        graph.add_conditional_edges(
+            "poll_mailbox",
+            self._after_mailbox,
+            {"replan": "load_memory", "decide": "decide"},
+        )
+        # 澄清节点以 LangGraph interrupt 挂起；收到邮箱输入后回到 Context/Planner，而非结束旧 Run。
+        graph.add_edge("clarify", "load_memory")
         graph.add_edge("finalize", "safety")
         graph.add_edge("safety", END)
         return graph
@@ -272,10 +316,19 @@ class AgentGraph:
             )
         else:
             package = self.context_client.assemble(request)
+        next_task = state["task"]
+        if state.get("mailbox_replan"):
+            # 新输入正文只存在 Context；Runtime 仅以租约引用它，并将最新用户消息设为下一轮任务。
+            latest = next(
+                (item.content for item in reversed(package.recent_messages) if item.role == "user"),
+                "",
+            )
+            if latest.strip():
+                next_task = latest
         history = [
             item.model_dump(mode="json")
             for item in package.recent_messages
-            if not (item.role == "user" and item.content == state["task"])
+            if not (item.role == "user" and item.content == next_task)
         ]
         self._record_session_event(
             state,
@@ -289,7 +342,7 @@ class AgentGraph:
                 ),
             },
         )
-        return {
+        updates = {
             "conversation_history": history,
             "user_context": package.user_context,
             "context_status": {
@@ -302,6 +355,55 @@ class AgentGraph:
             },
             "execution_trace": self._trace(state, "load_memory", {"message_count": len(history)}),
         }
+        if state.get("mailbox_replan"):
+            if self.mailbox is None or not self.mailbox.acknowledge_mailbox_input(
+                str(state.get("mailbox_message_id", "")), str(state.get("mailbox_lease_token", ""))
+            ):
+                raise RuntimeLimitExceeded("MAILBOX_LEASE_LOST", "Mailbox input lease could not be confirmed.")
+            updates.update(
+                {
+                    "task": next_task,
+                    "mailbox_replan": False,
+                    "mailbox_message_id": "",
+                    "mailbox_lease_token": "",
+                }
+            )
+        return updates
+
+    def _poll_mailbox(self, state: AgentState) -> dict:
+        """在模型/工具之间的安全点领取一条外部输入，并强制回到 Context 重装与规划。"""
+        self._ensure_active(state)
+        if self.mailbox is None:
+            return {"mailbox_replan": False}
+        item = self.mailbox.claim_mailbox_input(
+            str(state.get("tenant_id", "")), str(state.get("run_id", ""))
+        )
+        if item is None:
+            return {"mailbox_replan": False}
+        # 每次重新规划消耗一个 Agent step，防止持续 Steering 把单次 Run 变成无限会话循环。
+        budget = self.budget_guard.count_step(self._budget(state))
+        event_type = (
+            RuntimeEventType.STEERING_RECEIVED
+            if item.input_type == RunMailboxInputType.STEERING
+            else RuntimeEventType.FOLLOW_UP_RECEIVED
+        )
+        self._record_session_event(
+            state,
+            event_type,
+            {"mailbox_message_id": item.message_id, "input_type": item.input_type.value},
+        )
+        return {
+            "mailbox_replan": True,
+            "mailbox_message_id": item.message_id,
+            "mailbox_lease_token": item.lease_token,
+            "budget": budget.model_dump(mode="json"),
+            "execution_trace": self._trace(state, "mailbox", {"input_type": item.input_type.value}),
+        }
+
+    @staticmethod
+    def _after_mailbox(state: AgentState) -> str:
+        """领取输入时必须重新读取 Context 与 Planner；没有输入才继续当前决定循环。"""
+        return "replan" if state.get("mailbox_replan") else "decide"
 
     def _build_plan(self, state: AgentState) -> dict:
         """把分析结果编译为当前运行唯一可用的路由、SLA 与检索策略。"""
@@ -366,11 +468,33 @@ class AgentGraph:
                 "step_id": step_id,
                 "epoch_id": epoch_id,
                 "model_route": str(state.get("compiled_plan", {}).get("logical_model", "")),
+                "model_policy_version": str(state.get("model_policy_version", "")),
+                "model_revision": str(state.get("compiled_plan", {}).get("logical_model", "")),
                 "prompt_version": str(state.get("compiled_plan", {}).get("contract_hash", "")),
+                "rendered_prompt_hash": self._epoch_hash(
+                    {
+                        "template": state.get("compiled_plan", {}).get("prompt_template", ""),
+                        "task": state.get("task", ""),
+                        "history": state.get("conversation_history", []),
+                        "evidence": state.get("evidence", []),
+                    }
+                ),
                 "tool_catalog_version": str(state.get("compiled_plan", {}).get("tool_catalog_version", "")),
-                "knowledge_binding": state.get("compiled_plan", {}).get("knowledge", []),
+                "visible_tool_schema_hash": self._epoch_hash(
+                    state.get("compiled_plan", {}).get("tools", [])
+                ),
+                "knowledge_bindings": state.get("compiled_plan", {}).get("knowledge", []),
+                "index_contracts": {
+                    str(item.get("knowledge_base", "")): {
+                        "index_version": str(item.get("index_version", "")),
+                        "embedding_contract_id": str(item.get("embedding_contract_id", "")),
+                    }
+                    for item in state.get("compiled_plan", {}).get("knowledge", [])
+                },
                 "budget_policy": state.get("budget", {}),
-                "output_schema": state.get("agent_snapshot", {}).get("spec", {}).get("output_schema", {}),
+                "retrieval_policy": state.get("execution_plan", {}).get("retrieval_policy", {}),
+                "context_sources": state.get("source_plan", {}).get("context_sources", []),
+                "output_schema": state.get("compiled_plan", {}).get("prompt_output_schema", {}),
             },
         )
         self._record_session_event(
@@ -490,6 +614,23 @@ class AgentGraph:
         compiled = state.get("compiled_plan", {})
         knowledge = compiled.get("knowledge", [])
         policy = state.get("execution_plan", {}).get("retrieval_policy", {})
+        pinned_indexes = {
+            str(item.get("index_version", ""))
+            for item in knowledge
+            if str(item.get("index_version", ""))
+        }
+        pinned_embeddings = {
+            str(item.get("embedding_contract_id", ""))
+            for item in knowledge
+            if str(item.get("embedding_contract_id", ""))
+        }
+        if len(pinned_indexes) > 1 or len(pinned_embeddings) > 1:
+            raise RuntimeLimitExceeded(
+                "RAG_BINDING_AMBIGUOUS",
+                "A single retrieval step cannot mix incompatible published index contracts.",
+            )
+        expected_index = next(iter(pinned_indexes), "")
+        expected_embedding = next(iter(pinned_embeddings), "")
         retrieval_top_k = int(
             policy.get("evidence_top_k")
             or max((int(item.get("top_k", 8)) for item in knowledge), default=8)
@@ -535,8 +676,23 @@ class AgentGraph:
                             content=state.get("content"),
                             metadata=context_request.metadata,
                             top_k=retrieval_top_k,
+                            index_version=expected_index,
+                            embedding_contract_id=expected_embedding,
                         )
                     )
+                    if expected_index and rag_response.index_version != expected_index:
+                        raise RuntimeLimitExceeded(
+                            "RAG_INDEX_VERSION_DRIFT",
+                            "RAG returned an index different from the published knowledge binding.",
+                        )
+                    if (
+                        expected_embedding
+                        and rag_response.embedding_contract_id != expected_embedding
+                    ):
+                        raise RuntimeLimitExceeded(
+                            "RAG_EMBEDDING_CONTRACT_DRIFT",
+                            "RAG returned evidence from a different embedding contract.",
+                        )
                     evidence_items = rag_response.evidence
                     rag_status = "available"
                     rag_degraded = False
@@ -614,10 +770,39 @@ class AgentGraph:
         )
 
     def _tool_guard(self, state: AgentState) -> dict:
-        """在任何工具执行前预留一次工具费用，防止审批后绕过成本限制。"""
+        """先经过副作用屏障，再为确实可调度的工具预留预算。"""
         self._ensure_active(state)
+        decision = AgentDecision.model_validate(state["decision"])
+        if decision.action == AgentAction.SUBAGENT:
+            budget = self.budget_guard.reserve_tool(self._budget(state))
+            return {"budget": budget.model_dump(mode="json"), "tool_deferred": False}
+        policy = self._tool_execution_policy(state, decision.tool_name)
+        execution_id = deterministic_tool_execution_id(
+            str(state.get("run_id", "")), self._step_id(state), decision.tool_name, decision.tool_arguments
+        )
+        try:
+            outcome = self.side_effect_barrier.before_dispatch(
+                state, policy, tool_execution_id=execution_id
+            )
+        except SideEffectBarrierRejected as exc:
+            raise RuntimeLimitExceeded("SIDE_EFFECT_BARRIER_REJECTED", str(exc)) from exc
+        if outcome == SideEffectBarrierOutcome.REPLAN_REQUIRED:
+            self._record_session_event(
+                state,
+                RuntimeEventType.TOOL_DISPATCH_DEFERRED,
+                {"tool_name": decision.tool_name, "tool_execution_id": execution_id, "reason": outcome.value},
+            )
+            return {
+                "tool_deferred": True,
+                "execution_trace": self._trace(state, "tool_deferred", {"reason": outcome.value}),
+            }
         budget = self.budget_guard.reserve_tool(self._budget(state))
-        return {"budget": budget.model_dump(mode="json")}
+        return {"budget": budget.model_dump(mode="json"), "tool_deferred": False}
+
+    @staticmethod
+    def _after_tool_guard(state: AgentState) -> str:
+        """屏障要求重规划时跳过工具节点，避免已经过期的模型决定产生副作用。"""
+        return "defer" if state.get("tool_deferred") else "tool"
 
     def _tool(self, state: AgentState) -> dict:
         """执行发布版本绑定的工具，并在重新提示模型前限制、脱敏不可信输出。
@@ -634,6 +819,27 @@ class AgentGraph:
         tool_execution_id = deterministic_tool_execution_id(
             str(state.get("run_id", "")), step_id, decision.tool_name, decision.tool_arguments
         )
+        tool_policy = self._tool_execution_policy(state, decision.tool_name)
+        try:
+            outcome = self.side_effect_barrier.before_dispatch(
+                state, tool_policy, tool_execution_id=tool_execution_id
+            )
+        except SideEffectBarrierRejected as exc:
+            raise RuntimeLimitExceeded("SIDE_EFFECT_BARRIER_REJECTED", str(exc)) from exc
+        if outcome == SideEffectBarrierOutcome.REPLAN_REQUIRED:
+            self._record_session_event(
+                state,
+                RuntimeEventType.TOOL_DISPATCH_DEFERRED,
+                {
+                    "tool_name": decision.tool_name,
+                    "tool_execution_id": tool_execution_id,
+                    "reason": outcome.value,
+                },
+            )
+            return {
+                "tool_deferred": True,
+                "execution_trace": self._trace(state, "tool_deferred", {"reason": outcome.value}),
+            }
         self._record_session_event(
             state,
             RuntimeEventType.TOOL_INTENT_RECORDED,
@@ -658,14 +864,43 @@ class AgentGraph:
         context = self._tool_context(
             state, approval_id, published_version, tool_execution_id=tool_execution_id
         )
+        scheduled_call = tool_policy.scheduled_call(
+            call_id=f"{state.get('run_id', '')}:{step_id}:{decision.tool_name}",
+            tool_name=decision.tool_name,
+        )
         try:
             self.interception_pipeline.apply(
                 RuntimeHookPhase.PRE_TOOL_EXECUTE,
                 self._hook_payload(state, {"tool_name": decision.tool_name, "tool_version": published_version}),
             )
-            result = self.tool_registry.execute(
-                decision.tool_name, decision.tool_arguments, context
+            self._record_session_event(
+                state,
+                RuntimeEventType.TOOL_DISPATCHED,
+                {
+                    "tool_name": decision.tool_name,
+                    "tool_version": published_version,
+                    "step_id": step_id,
+                    "tool_execution_id": tool_execution_id,
+                    **self.tool_execution_engine.policy_facts(tool_policy),
+                },
             )
+            result = self.tool_execution_engine.execute(
+                scheduled_call,
+                lambda: self.tool_registry.execute(
+                    decision.tool_name, decision.tool_arguments, context
+                ),
+            )
+            if not (isinstance(result, dict) and result.get("status") == "PENDING_APPROVAL"):
+                self._record_session_event(
+                    state,
+                    RuntimeEventType.TOOL_COMMITTED,
+                    {
+                        "tool_name": decision.tool_name,
+                        "tool_version": published_version,
+                        "step_id": step_id,
+                        "tool_execution_id": tool_execution_id,
+                    },
+                )
             self._record_session_event(
                 state,
                 RuntimeEventType.TOOL_EXECUTION_OBSERVED,
@@ -731,11 +966,38 @@ class AgentGraph:
                 context = self._tool_context(
                     state, approved_id, published_version, tool_execution_id=tool_execution_id
                 )
-                result = self.tool_registry.execute(
-                    decision.tool_name,
-                    decision.tool_arguments,
-                    context,
+                self._record_session_event(
+                    state,
+                    RuntimeEventType.TOOL_DISPATCHED,
+                    {
+                        "tool_name": decision.tool_name,
+                        "tool_version": published_version,
+                        "step_id": step_id,
+                        "tool_execution_id": tool_execution_id,
+                        "approval_id": approved_id,
+                        **self.tool_execution_engine.policy_facts(tool_policy),
+                    },
                 )
+                result = self.tool_execution_engine.execute(
+                    scheduled_call,
+                    lambda: self.tool_registry.execute(
+                        decision.tool_name,
+                        decision.tool_arguments,
+                        context,
+                    ),
+                )
+                if not (isinstance(result, dict) and result.get("status") == "PENDING_APPROVAL"):
+                    self._record_session_event(
+                        state,
+                        RuntimeEventType.TOOL_COMMITTED,
+                        {
+                            "tool_name": decision.tool_name,
+                            "tool_version": published_version,
+                            "step_id": step_id,
+                            "tool_execution_id": tool_execution_id,
+                            "approval_id": approved_id,
+                        },
+                    )
             observation = {
                 "type": "tool",
                 "tool": decision.tool_name,
@@ -745,6 +1007,8 @@ class AgentGraph:
                     int(state.get("metadata", {}).get("tool_result_max_chars", 12_000)),
                 ),
             }
+        except SideEffectBarrierRejected as exc:
+            raise RuntimeLimitExceeded("SIDE_EFFECT_BARRIER_REJECTED", str(exc)) from exc
         except GraphInterrupt:
             raise
         except Exception as exc:
@@ -793,7 +1057,7 @@ class AgentGraph:
     def _subagent(self, state: AgentState, decision: AgentDecision) -> dict:
         """执行已发布子 Agent 委派；目标 Agent 仍经自身 Release/快照运行。"""
         self._ensure_active(state)
-        if self.subagent_manager is None or self.subagent_executor is None:
+        if self.agent_manager is None:
             raise RuntimeLimitExceeded("SUBAGENT_UNAVAILABLE", "Subagent execution is not deployed.")
         try:
             self._record_session_event(
@@ -804,11 +1068,10 @@ class AgentGraph:
                     "tool", decision.subagent_task, source="runtime.subagent.task", max_chars=4_000
                 ),
             )
-            delegation, result = self.subagent_manager.dispatch(
+            delegation, result = self.agent_manager.delegate(
                 state,
                 target_agent_id=decision.subagent_id,
                 task=decision.subagent_task,
-                executor=self.subagent_executor,
             )
         except SubAgentPolicyError as exc:
             raise RuntimeLimitExceeded("SUBAGENT_POLICY", str(exc)) from exc
@@ -846,6 +1109,8 @@ class AgentGraph:
         """按发布图决定工具后的安全去向，人工拒绝仍优先终止。"""
         if state.get("termination_reason") == "TOOL_REJECTED":
             return "finish"
+        if state.get("tool_deferred"):
+            return "continue"
         cursor = state.get("workflow_cursor", "")
         roles = state.get("compiled_plan", {}).get("workflow_policy", {}).get("node_roles", {})
         if not roles:
@@ -913,13 +1178,33 @@ class AgentGraph:
             f"Tool '{tool_name}' is not bound in the published Agent snapshot.",
         )
 
+    @staticmethod
+    def _tool_execution_policy(state: AgentState, tool_name: str) -> ToolExecutionPolicy:
+        """由冻结工具绑定解析副作用策略，模型不能覆盖调度、审批或资源键。"""
+        bindings = state.get("compiled_plan", {}).get("tools", [])
+        binding = next(
+            (item for item in bindings if str(item.get("tool_name")) == tool_name), {}
+        )
+        return ToolExecutionPolicy.from_published_binding(
+            binding,
+            tenant_id=str(state.get("tenant_id", "")),
+            tool_name=tool_name,
+        )
+
     def _clarify(self, state: AgentState) -> dict:
-        """为低置信度意图生成确定性澄清结果，不调用模型以避免猜测性副作用。"""
+        """以可恢复中断请求澄清；恢复载荷只能是邮箱租约，不把正文写入 Graph。"""
+        resume_value = interrupt(
+            {
+                "type": "user_input",
+                "message": "Please clarify the request so that its intent can be determined safely.",
+                "run_id": state.get("run_id", ""),
+            }
+        )
+        input_resume = UserInputResume.model_validate(resume_value)
         return {
-            "final_answer": (
-                "Please clarify the request so that its intent can be determined safely."
-            ),
-            "termination_reason": "NEEDS_CLARIFICATION",
+            "mailbox_replan": True,
+            "mailbox_message_id": input_resume.message_id,
+            "mailbox_lease_token": input_resume.lease_token,
             "execution_trace": self._trace(state, "clarify", {}),
         }
 
@@ -989,6 +1274,20 @@ class AgentGraph:
         """将 LangGraph 内部状态压缩为公开 API 结果，并保留审批中断详情。"""
         interrupt_items = [item.value for item in result.get("__interrupt__", [])]
         if interrupt_items:
+            user_input = next(
+                (item for item in interrupt_items if isinstance(item, dict) and item.get("type") == "user_input"),
+                None,
+            )
+            if user_input is not None:
+                return AgentRunResult(
+                    status="WAITING_INPUT",
+                    answer=str(user_input.get("message", "Please provide additional input.")),
+                    steps=result.get("step_count", 0),
+                    termination_reason="USER_INPUT_REQUIRED",
+                    evidence=result.get("evidence", []), observations=result.get("observations", []),
+                    execution_plan=result.get("execution_plan", {}), budget=result.get("budget", {}),
+                    execution_trace=result.get("execution_trace", []), interrupts=interrupt_items,
+                )
             return AgentRunResult(
                 status="WAITING_APPROVAL",
                 answer="",
@@ -1045,13 +1344,7 @@ class AgentGraph:
 
     def _ensure_active(self, state: AgentState) -> None:
         """检查时间、成本、调用次数及外部取消标记；失败即阻止下一副作用。"""
-        budget = self._budget(state)
-        self.budget_guard.ensure_active(budget)
-        if self.cancellation_checker and self.cancellation_checker(
-            state.get("tenant_id", ""),
-            state.get("run_id", ""),
-        ):
-            raise RuntimeCancelled("Run cancellation was requested.")
+        self.stop_policy.enforce(state)
 
     def _record_session_event(
         self,
@@ -1082,6 +1375,12 @@ class AgentGraph:
             "agent_id": state.get("agent_id", ""),
             **extra,
         }
+
+    @staticmethod
+    def _epoch_hash(value: object) -> str:
+        """对模型可见输入生成稳定摘要，账本可证明上下文版本但不复制敏感正文。"""
+        canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _workflow_next_node(state: AgentState, action: AgentAction) -> str:

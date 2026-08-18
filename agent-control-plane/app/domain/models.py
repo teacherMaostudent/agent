@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from platform_sdk.contracts.subagents import SubAgentBinding
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -69,6 +69,8 @@ class ToolBinding(StrictModel):
     risk: ToolRisk = ToolRisk.READ_ONLY
     approval_required: bool = False
     timeout_seconds: int = Field(default=30, ge=1, le=600)
+    side_effect: bool = False
+    idempotent: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -79,6 +81,10 @@ class KnowledgeBinding(StrictModel):
     top_k: int = Field(default=8, ge=1, le=100)
     required: bool = True
     failure_mode: Literal["fail", "memory_only"] = "fail"
+    # 发布态必须指向一个可比较的索引空间; 空值仅兼容旧快照, 生产校验会拒绝它。
+    index_version: str = Field(default="", max_length=160)
+    embedding_contract_id: str = Field(default="", max_length=80)
+    retrieval_evaluation_id: str = Field(default="", max_length=160)
 
 
 class ModelRoute(StrictModel):
@@ -104,6 +110,30 @@ class RuntimeLimits(StrictModel):
     max_cost_usd: float = Field(default=2.0, gt=0, le=10_000)
 
 
+class ExecutionRequirements(StrictModel):
+    """声明运行耐久性和推理形态，避免用一个执行器名称混合表达两个维度。"""
+
+    lifecycle: Literal["request_scoped", "durable_workflow"] = "request_scoped"
+    reasoning: Literal["minimal", "agentic", "graph"] = "graph"
+
+
+class IntentDefinition(StrictModel):
+    """一条可随 Agent 发布的确定性意图规则，模型只能在该规则之后补充语义判断。"""
+
+    name: str = Field(min_length=1, max_length=100)
+    domain: str = Field(min_length=1, max_length=100)
+    action: str = Field(min_length=1, max_length=100)
+    examples: list[str] = Field(min_length=1, max_length=100)
+    required_entities: list[str] = Field(default_factory=list, max_length=50)
+
+
+class IntentCatalogBinding(StrictModel):
+    """Snapshot 内嵌的意图目录；嵌入内容避免 Runtime 依赖一份会漂移的全局规则表。"""
+
+    version: str = Field(min_length=1, max_length=160)
+    definitions: list[IntentDefinition] = Field(min_length=1, max_length=500)
+
+
 class AgentDraftSpec(StrictModel):
     display_name: str = Field(min_length=1, max_length=150)
     description: str = Field(default="", max_length=2_000)
@@ -114,9 +144,19 @@ class AgentDraftSpec(StrictModel):
     model_policy: ModelPolicy
     runtime_limits: RuntimeLimits = Field(default_factory=RuntimeLimits)
     runtime_executor: str = Field(default="declarative-langgraph/v1", min_length=1, max_length=100)
+    execution: ExecutionRequirements | None = None
+    intent_catalog_version: str = Field(default="platform-default/v1", min_length=1, max_length=160)
+    intent_catalog: IntentCatalogBinding | None = None
     labels: dict[str, str] = Field(default_factory=dict)
     retrieval_policy: dict[str, Any] = Field(default_factory=dict)
     subagents: list[SubAgentBinding] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_intent_catalog_binding(self) -> AgentDraftSpec:
+        """保证声明版本和内嵌目录一致，禁止发布时把 A 版本号绑定到 B 的规则正文。"""
+        if self.intent_catalog and self.intent_catalog.version != self.intent_catalog_version:
+            raise ValueError("intent_catalog.version must equal intent_catalog_version")
+        return self
 
 
 class AgentCreate(StrictModel):

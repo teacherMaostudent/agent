@@ -11,12 +11,12 @@ from platform_infra.postgres import (
     execute_script_file,
 )
 
-from app.infrastructure.sqlite_repository import SqliteRepository
+from app.infrastructure.sqlite_repository import ControlPlaneRepositoryOperations
 
 T = TypeVar("T")
 
 
-class PostgresRepository(SqliteRepository):
+class PostgresRepository(ControlPlaneRepositoryOperations):
     """PostgreSQL production adapter preserving the domain repository contract."""
 
     def __init__(self, dsn: str, schema: str, schema_path: Path) -> None:

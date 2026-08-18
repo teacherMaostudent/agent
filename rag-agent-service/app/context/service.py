@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 
 from opentelemetry import trace
 
+from app.context.pipeline import ContextAssemblyState, ContextPipeline
 from app.contracts.context import (
     ContextAssembleRequest,
     ContextBudgetReport,
@@ -52,6 +53,13 @@ class AgentContextService:
         self.max_messages = max_messages
         self.default_token_budget = default_token_budget
         self.message_budget_ratio = message_budget_ratio
+        self.pipeline = ContextPipeline(
+            (
+                _HistoryTransformer(self),
+                _RagTransformer(self),
+                _BudgetTransformer(self),
+            )
+        )
 
     def append_message(
         self,
@@ -84,62 +92,25 @@ class AgentContextService:
         return self.store.delete(self._session_key(tenant_id, user_id, session_id))
 
     def assemble(self, request: ContextAssembleRequest) -> ContextPackage:
-        """按确定性排序与 Token 上限组装历史消息和检索证据，并返回降级状态。"""
+        """按固定 Context Pipeline 组装历史、证据和 Token 预算，并返回降级状态。"""
         budget = request.token_budget or self.default_token_budget
         with trace.get_tracer(__name__).start_as_current_span("context.assemble") as span:
-            messages = self.messages(request.session_id, request.tenant_id, request.user_id)[
-                -self.max_messages :
-            ]
-            evidence: list[Evidence] = []
-            rag_status = "not_requested"
-            degraded = False
-            degrade_reason = None
-            if request.include_rag:
-                try:
-                    rag_result = self.rag_client.search(
-                        RagSearchRequest(
-                            query=request.query,
-                            tenant_id=request.tenant_id,
-                            user_id=request.user_id,
-                            document_id=request.document_id,
-                            content=request.content,
-                            metadata=request.metadata,
-                            top_k=request.top_k,
-                        )
-                    )
-                    evidence = rag_result.evidence
-                    rag_status = "available"
-                except Exception as exc:  # adapters expose different transport errors
-                    if request.rag_required:
-                        raise
-                    # RAG is an optional dependency for conversational work.
-                    # Returning ranked session memory keeps the Runtime usable
-                    # without silently pretending that evidence was retrieved.
-                    degraded = True
-                    rag_status = "degraded"
-                    degrade_reason = f"rag_unavailable:{type(exc).__name__}"
-                    log.warning(
-                        "context_rag_memory_only_fallback",
-                        extra={
-                            "tenant_id": request.tenant_id,
-                            "session_id": request.session_id,
-                            "error_type": type(exc).__name__,
-                        },
-                    )
-            messages, evidence, report = self._rank_and_fit(
-                messages, evidence, request.query, budget
-            )
+            assembled = self.pipeline.assemble(ContextAssemblyState(request=request, budget=budget))
+            report = assembled.budget_report
+            if report is None:  # Pipeline 构造期固定了预算阶段；此处防御未来错误扩展。
+                raise RuntimeError("context pipeline completed without token budget report")
             truncated = bool(report.dropped_messages or report.dropped_evidence)
             span.set_attribute(
                 "context.estimated_tokens",
                 report.used_message_tokens + report.used_evidence_tokens,
             )
             span.set_attribute("context.truncated", truncated)
-            span.set_attribute("context.rag_status", rag_status)
+            span.set_attribute("context.rag_status", assembled.rag_status)
+            span.set_attribute("context.pipeline", ",".join(self.pipeline.stage_names))
             return ContextPackage(
                 session_id=request.session_id,
-                recent_messages=messages,
-                knowledge_evidence=evidence,
+                recent_messages=assembled.messages,
+                knowledge_evidence=assembled.evidence,
                 user_context={
                     "tenant_id": request.tenant_id,
                     "user_id": request.user_id,
@@ -147,9 +118,9 @@ class AgentContextService:
                 token_budget=budget,
                 estimated_tokens=(report.used_message_tokens + report.used_evidence_tokens),
                 truncated=truncated,
-                rag_status=rag_status,
-                degraded=degraded,
-                degrade_reason=degrade_reason,
+                rag_status=assembled.rag_status,
+                degraded=assembled.degraded,
+                degrade_reason=assembled.degrade_reason,
                 budget_report=report,
             )
 
@@ -345,3 +316,83 @@ class AgentContextService:
     def _estimate(text: str) -> int:
         """采用保守字符估算控制 Prompt 预算；真实模型 token 数以网关计量为准。"""
         return max(1, len(text) // 4)
+
+
+class _HistoryTransformer:
+    """从 Context Store 读取当前主体可访问的最近历史，不触碰 RAG 或 Runtime Ledger。"""
+
+    name = "history"
+
+    def __init__(self, service: AgentContextService) -> None:
+        """保留所属服务以复用租户/用户/会话三元隔离的公开读取方法。"""
+        self._service = service
+
+    def transform(self, state: ContextAssemblyState) -> ContextAssemblyState:
+        """提取受上限约束的会话历史，排序和 Token 取舍仍留给后续预算阶段。"""
+        request = state.request
+        state.messages = self._service.messages(
+            request.session_id, request.tenant_id, request.user_id
+        )[-self._service.max_messages :]
+        return state
+
+
+class _RagTransformer:
+    """按请求策略获取 RAG 证据，并明确标记可选依赖的 memory-only 降级。"""
+
+    name = "rag"
+
+    def __init__(self, service: AgentContextService) -> None:
+        """保留服务引用，使检索仍只能通过已注入的稳定 RAG 客户端调用。"""
+        self._service = service
+
+    def transform(self, state: ContextAssemblyState) -> ContextAssemblyState:
+        """检索证据；必需 RAG 失败上抛，可选 RAG 则返回带原因的降级状态。"""
+        request = state.request
+        if not request.include_rag:
+            return state
+        try:
+            rag_result = self._service.rag_client.search(
+                RagSearchRequest(
+                    query=request.query,
+                    tenant_id=request.tenant_id,
+                    user_id=request.user_id,
+                    document_id=request.document_id,
+                    content=request.content,
+                    metadata=request.metadata,
+                    top_k=request.top_k,
+                )
+            )
+            state.evidence = rag_result.evidence
+            state.rag_status = "available"
+        except Exception as exc:  # adapters expose different transport errors
+            if request.rag_required:
+                raise
+            state.degraded = True
+            state.rag_status = "degraded"
+            state.degrade_reason = f"rag_unavailable:{type(exc).__name__}"
+            log.warning(
+                "context_rag_memory_only_fallback",
+                extra={
+                    "tenant_id": request.tenant_id,
+                    "session_id": request.session_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+        return state
+
+
+class _BudgetTransformer:
+    """以统一排序和 Token 预算裁剪历史与证据，并给出可解释的预算报告。"""
+
+    name = "token_budget"
+
+    def __init__(self, service: AgentContextService) -> None:
+        """复用服务的排序策略，避免 Pipeline 与旧组装逻辑出现两套评分规则。"""
+        self._service = service
+
+    def transform(self, state: ContextAssemblyState) -> ContextAssemblyState:
+        """完成角色、时间、相关性和可信度排序后的确定性 Token 分配。"""
+        state.messages, state.evidence, state.budget_report = self._service._rank_and_fit(
+            state.messages, state.evidence, state.request.query, state.budget
+        )
+        return state

@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     governance_user_id: str = "control-plane"
     governance_auditor_api_key: str | None = Field(default=None, repr=False)
     model_lab_base_url: str = "http://localhost:8091"
+    model_lab_service_api_key: str | None = Field(default=None, repr=False)
     model_lab_required: bool = False
     agent_lab_base_url: str = "http://localhost:8092"
     agent_lab_service_api_key: str | None = Field(default=None, repr=False)
@@ -70,6 +71,7 @@ class Settings(BaseSettings):
     model_release_max_average_latency_ms: int = Field(default=10_000, ge=1)
     model_release_auto_promote: bool = True
     agent_release_quality_gate_required: bool = False
+    agent_release_knowledge_contract_required: bool = False
     model_release_monitor_interval_seconds: float = Field(default=30, gt=0, le=3_600)
 
     @model_validator(mode="after")
@@ -89,8 +91,14 @@ class Settings(BaseSettings):
                 unsafe.append("CONTROL_PLANE_LLM_GATEWAY_ADMIN_PASSWORD must be rotated")
             if not self.agent_release_quality_gate_required:
                 unsafe.append("CONTROL_PLANE_AGENT_RELEASE_QUALITY_GATE_REQUIRED must be true")
+            if not self.agent_release_knowledge_contract_required:
+                unsafe.append(
+                    "CONTROL_PLANE_AGENT_RELEASE_KNOWLEDGE_CONTRACT_REQUIRED must be true"
+                )
             if not self.model_lab_required:
                 unsafe.append("CONTROL_PLANE_MODEL_LAB_REQUIRED must be true")
+            if not self.model_lab_service_api_key:
+                unsafe.append("CONTROL_PLANE_MODEL_LAB_SERVICE_API_KEY is required")
             if not self.agent_lab_required:
                 unsafe.append("CONTROL_PLANE_AGENT_LAB_REQUIRED must be true")
             if not self.agent_lab_service_api_key:

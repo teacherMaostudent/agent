@@ -72,7 +72,12 @@ def required_runtime_capabilities(spec: Mapping[str, Any]) -> list[str]:
     分别要求检索和工具能力，Temporal Profile 还必须有耐久 Workflow 调度能力。
     ``simple/v1`` 是唯一明确的无外围依赖短任务执行器。
     """
-    profile = str(spec.get("runtime_executor") or "declarative-langgraph/v1").strip()
+    # Keep deployment capability validation bound to the exact executor that the
+    # snapshot compiler will select; legacy names are only accepted by the shared
+    # resolver during a controlled migration window.
+    from platform_sdk.contracts.execution_profile import resolve_execution_profile
+
+    _, profile = resolve_execution_profile(spec)
     if profile == "simple/v1":
         return []
 
@@ -83,7 +88,7 @@ def required_runtime_capabilities(spec: Mapping[str, Any]) -> list[str]:
         required.add(RuntimeCapability.TOOL.value)
     if spec.get("subagents"):
         required.add(RuntimeCapability.SUBAGENT.value)
-    if profile == "temporal-workflow/v1":
+    if profile in {"temporal-simple/v1", "temporal-agentic/v1", "temporal-workflow/v1"}:
         required.add(RuntimeCapability.WORKFLOW.value)
     if profile == "code-runner/v1":
         required.update({RuntimeCapability.CODE_RUNNER.value, RuntimeCapability.SANDBOX.value})

@@ -8,6 +8,9 @@
       "executor_profiles": [
         "simple/v1",
         "declarative-langgraph/v1",
+        "agentic/v1",
+        "temporal-simple/v1",
+        "temporal-agentic/v1",
         "temporal-workflow/v1"
       ],
       "capabilities": ["context", "llm", "retrieval", "tool", "workflow"]

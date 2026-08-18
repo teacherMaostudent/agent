@@ -93,12 +93,15 @@ class ExecutionContext(BaseModel):
 
 
 class RuntimeRun(BaseModel):
+    """一次执行的持久化运行记录，状态机字段与对外结果状态分离。"""
+
     run_id: str
     tenant_id: str
     user_id: str
     agent_id: str
     snapshot_id: str
     status: str
+    runtime_state: str = "CREATED"
     context: ExecutionContext
     result: dict = Field(default_factory=dict)
     error_code: str = ""

@@ -90,6 +90,23 @@ def test_snapshot_compiles_every_runtime_binding() -> None:
     validate_final_output(plan.model_dump(), '{"answer":"ok"}')
 
 
+def test_snapshot_compiles_execution_lifecycle_and_reasoning_independently() -> None:
+    """长期可靠调度与 Agentic 推理是两个维度，不再依赖一个含混 Profile 名称。"""
+    data = snapshot()
+    data["spec"]["execution"] = {
+        "lifecycle": "durable_workflow",
+        "reasoning": "agentic",
+    }
+
+    plan = compile_snapshot(
+        data, tenant_id="tenant-a", agent_id="review-agent", fallback_model="fallback"
+    )
+
+    assert plan.executor_profile == "temporal-agentic/v1"
+    assert plan.execution_requirements.lifecycle.value == "durable_workflow"
+    assert plan.execution_requirements.reasoning.value == "agentic"
+
+
 def test_controlled_scan_binding_is_preserved_in_compiled_snapshot() -> None:
     data = snapshot()
     data["spec"]["tools"].append(

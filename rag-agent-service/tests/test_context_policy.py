@@ -64,6 +64,7 @@ def test_optional_rag_failure_returns_ranked_memory_only_context() -> None:
     assert package.knowledge_evidence == []
     assert package.recent_messages[0].metadata["context_ranking"]["role"] == 1.0
     assert package.budget_report.used_message_tokens > 0
+    assert service.pipeline.stage_names == ("history", "rag", "token_budget")
 
 
 def test_required_rag_failure_is_not_silently_degraded() -> None:
@@ -112,3 +113,17 @@ def test_context_combines_role_time_relevance_and_source_trust() -> None:
     assert package.estimated_tokens == (
         package.budget_report.used_message_tokens + package.budget_report.used_evidence_tokens
     )
+
+
+def test_context_message_idempotency_key_prevents_mailbox_retry_duplication() -> None:
+    """Runtime 邮箱重试同一输入时，Context 只保留一份原始消息正文。"""
+    store = ConversationStore()
+    message = ConversationMessage(
+        role="user",
+        content="Please steer the current run toward policy evidence.",
+        metadata={"idempotency_key": "mailbox-request-1"},
+    )
+    store.append("tenant-a:user-a:session-a", message)
+    store.append("tenant-a:user-a:session-a", message)
+
+    assert len(store.list_messages("tenant-a:user-a:session-a")) == 1

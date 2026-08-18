@@ -9,5 +9,5 @@ def test_durable_workflow_declares_approval_signal_and_resume_activity() -> None
 
     workflow.approve({"approved": True, "approval_id": "approval-1"})
 
-    assert workflow._approval == {"approved": True, "approval_id": "approval-1"}
+    assert workflow._input == {"approved": True, "approval_id": "approval-1"}
     assert asyncio.iscoroutinefunction(AgentRunWorkflow.run)

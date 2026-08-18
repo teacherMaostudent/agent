@@ -1,20 +1,31 @@
+import asyncio
+import json
 from datetime import UTC, datetime
 from time import monotonic
 from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from platform_sdk.contracts.capabilities import RuntimeCapability
 from platform_sdk.contracts.context import ConversationMessage
 from platform_sdk.contracts.runtime_api import (
     AgentFollowupRequest,
     AgentResumeRequest,
+    AgentRunInputRequest,
     AgentRunRequest,
     SessionCompactionRequest,
     SessionForkRequest,
 )
 
 from agent_runtime_service.runtime.capabilities import CapabilityUnavailable
-from agent_runtime_service.runtime.models import ApprovalResume, RuntimeBudget
+from agent_runtime_service.runtime.mailbox import RunMailboxInputType
+from agent_runtime_service.runtime.models import (
+    ApprovalResume,
+    ExecutionLifecycle,
+    RuntimeBudget,
+    UserInputResume,
+)
+from agent_runtime_service.runtime.run_state import AgentRunEvent, InvalidRunTransition
 from agent_runtime_service.runtime.session_events import RuntimeEventType, model_visible_message
 from agent_runtime_service.runtime.snapshot_compiler import CompiledAgentPlan, SnapshotCompileError
 
@@ -37,6 +48,16 @@ def runtime_capabilities(request: Request) -> dict:
         "capability_contract_version": "runtime-capability-contract/v1",
         "capability_manifest_digest": container.capabilities.manifest_digest,
         "executor_profiles": list(container.agent_harness.executor_profiles),
+        "execution_providers": [
+            {
+                "profile": provider.profile,
+                "mode": provider.mode.value,
+                "lifecycle": provider.lifecycle.value,
+                "reasoning": provider.reasoning.value,
+                "supports_resume": provider.supports_resume,
+            }
+            for provider in container.executor_catalog.providers
+        ],
         "capabilities": list(container.capabilities.names),
         "capability_manifests": [
             item.model_dump(mode="json") for item in container.capabilities.manifests
@@ -50,6 +71,11 @@ def _capability(container, capability: RuntimeCapability):
         return container.capability(capability)
     except CapabilityUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _is_durable_plan(plan: CompiledAgentPlan) -> bool:
+    """以编译后的生命周期而非历史 Profile 名称判断是否必须走 Temporal。"""
+    return plan.execution_requirements.lifecycle == ExecutionLifecycle.DURABLE_WORKFLOW
 
 
 def _trusted_identity(
@@ -131,10 +157,10 @@ def run_agent(
         ) from exc
     snapshot = loaded_snapshot.snapshot
     compiled_plan = loaded_snapshot.plan
-    if compiled_plan.executor_profile == "temporal-workflow/v1" and not _temporal_worker_execution:
+    if _is_durable_plan(compiled_plan) and not _temporal_worker_execution:
         raise HTTPException(
             status_code=409,
-            detail="temporal-workflow/v1 releases must be submitted through POST /runs",
+            detail="durable-workflow releases must be submitted through POST /runs",
         )
     runtime_limits = snapshot.get("spec", {}).get("runtime_limits", {})
     configured_steps = payload.max_steps or container.settings.agent_max_steps
@@ -201,6 +227,20 @@ def run_agent(
             attempt_id=attempt_id,
         )
         container.publish_session_event(turn_event)
+    # 进程可能在 ``create`` 提交后、START 事件提交前崩溃。重放同一 run_id 时仅允许
+    # 从 CREATED 补齐这一步；其他状态绝不被请求重试重新初始化。
+    if started_event is not None or (existing is not None and existing.runtime_state == "CREATED"):
+        try:
+            _, state_event = container.run_store.transition_state(
+                x_tenant_id,
+                execution.run_id,
+                AgentRunEvent.START,
+                metadata={"source": "runtime-api"},
+            )
+        except InvalidRunTransition as exc:
+            raise HTTPException(status_code=409, detail={"code": "invalid_run_state", "message": str(exc)}) from exc
+        if state_event is not None:
+            container.publish_session_event(state_event)
     if run_already_started:
         try:
             container.reconcile_tool_intents(execution)
@@ -420,10 +460,10 @@ def submit_agent_run(
     loaded = container.agent_harness.load_snapshot(
         resolution, tenant_id=x_tenant_id, agent_id=payload.agent_id
     )
-    if loaded.plan.executor_profile != "temporal-workflow/v1":
+    if not _is_durable_plan(loaded.plan):
         raise HTTPException(
             status_code=409,
-            detail="asynchronous /runs is reserved for temporal-workflow/v1 releases",
+            detail="asynchronous /runs is reserved for durable-workflow releases",
         )
     return _capability(container, RuntimeCapability.WORKFLOW).submit(
         {
@@ -448,6 +488,7 @@ def resume_run(
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
     _temporal_worker_execution: bool = False,
+    _user_input: UserInputResume | None = None,
 ) -> dict:
     """恢复等待审批的检查点。
 
@@ -459,10 +500,26 @@ def resume_run(
     run = container.run_store.get(x_tenant_id, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
-    if run.status != "WAITING_APPROVAL":
-        raise HTTPException(status_code=409, detail="run is not waiting for approval")
+    expected_status = "WAITING_INPUT" if _user_input is not None else "WAITING_APPROVAL"
+    if run.status != expected_status:
+        raise HTTPException(status_code=409, detail=f"run is not waiting for {expected_status.lower()}")
     if run.cancel_requested:
         raise HTTPException(status_code=409, detail="run was cancelled")
+    try:
+        _, state_event = container.run_store.transition_state(
+            x_tenant_id,
+            run_id,
+            AgentRunEvent.STEERING_RECEIVED if _user_input is not None else AgentRunEvent.APPROVAL_RECEIVED,
+            metadata=(
+                {"mailbox_message_id": _user_input.message_id}
+                if _user_input is not None
+                else {"approval_id": payload.approval_id, "approved": payload.approved}
+            ),
+        )
+    except InvalidRunTransition as exc:
+        raise HTTPException(status_code=409, detail={"code": "invalid_run_state", "message": str(exc)}) from exc
+    if state_event is not None:
+        container.publish_session_event(state_event)
     budget = run.result.get("budget", {})
     max_steps = int(budget.get("max_steps", container.settings.agent_max_steps))
     try:
@@ -471,26 +528,35 @@ def resume_run(
         )
     except Exception as exc:
         raise HTTPException(status_code=409, detail="persisted execution plan is unavailable") from exc
-    if compiled_plan.executor_profile == "temporal-workflow/v1" and not _temporal_worker_execution:
+    if _is_durable_plan(compiled_plan) and not _temporal_worker_execution:
         queue = _capability(container, RuntimeCapability.WORKFLOW)
         if not hasattr(queue, "resume"):
             raise HTTPException(status_code=503, detail="Temporal durable executor is unavailable")
-        queued = queue.resume(
-            x_tenant_id,
-            run_id,
+        signal = (
             {
+                "_user_input": _user_input.model_dump(mode="json"),
+                "decided_by": x_user_id,
+            }
+            if _user_input is not None
+            else {
                 "approved": payload.approved,
                 "approval_id": payload.approval_id,
                 "reason": payload.reason,
                 "decided_by": x_user_id,
-            },
+            }
+        )
+        queued = queue.resume(
+            x_tenant_id,
+            run_id,
+            signal,
         )
         if queued is None:
             raise HTTPException(status_code=409, detail="durable workflow is no longer available")
         return queued
     result = container.agent_harness.resume(
         run_id,
-        ApprovalResume(
+        _user_input
+        or ApprovalResume(
             approved=payload.approved,
             approval_id=payload.approval_id,
             decided_by=x_user_id,
@@ -606,7 +672,7 @@ def followup_subagent_run(
         target_plan = CompiledAgentPlan.model_validate(target.result.get("_compiled_plan"))
     except Exception:
         target_plan = None
-    if target_plan is not None and target_plan.executor_profile == "temporal-workflow/v1":
+    if target_plan is not None and _is_durable_plan(target_plan):
         return submit_agent_run(
             continuation,
             request,
@@ -646,6 +712,106 @@ def get_run(
     body = run.model_dump(mode="json")
     body["result"] = _public_result(body.get("result") or {})
     return body
+
+
+@router.get("/runs/{run_id}/events")
+async def stream_run_events(
+    run_id: str,
+    request: Request,
+    after_sequence: int = 0,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+) -> StreamingResponse:
+    """以 SSE 从已提交 Session Ledger 流式输出单个 Run 事件，不依赖单进程 Event Bus。"""
+    if after_sequence < 0:
+        raise HTTPException(status_code=422, detail="after_sequence must be non-negative")
+    x_tenant_id, _, _ = _trusted_identity(request, x_tenant_id, "anonymous", "")
+    store = request.app.state.container.run_store
+    run = store.get(x_tenant_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    async def event_stream():
+        """轮询共享账本而非本地回调，使多副本 Runtime 的 SSE 恢复保持正确。"""
+        cursor = after_sequence
+        # 长连接断开/重连由客户端以 Last-Event-ID 或 after_sequence 恢复；这里不保存订阅状态。
+        while True:
+            events = store.session_events(
+                x_tenant_id, run.context.session_id, after_sequence=cursor, limit=1_000
+            )
+            for event in events:
+                cursor = event.sequence
+                if event.run_id != run_id:
+                    continue
+                payload = json.dumps(event.model_dump(mode="json"), ensure_ascii=False)
+                yield f"id: {event.sequence}\nevent: {event.event_type.value}\ndata: {payload}\n\n"
+            current = store.get(x_tenant_id, run_id)
+            if current is None or current.runtime_state in {"COMPLETED", "FAILED", "CANCELLED"}:
+                return
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/runs/{run_id}/inputs", status_code=status.HTTP_202_ACCEPTED)
+def enqueue_run_input(
+    run_id: str,
+    payload: AgentRunInputRequest,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+) -> dict:
+    """把 Steering/Follow-up 先写入 Context，再以引用投入 RunMailbox，禁止 Runtime 保存正文副本。"""
+    x_tenant_id, x_user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    container = request.app.state.container
+    run = container.run_store.get(x_tenant_id, run_id)
+    if run is None or run.user_id != x_user_id:
+        raise HTTPException(status_code=404, detail="run not found")
+    if run.runtime_state in {"COMPLETED", "FAILED", "CANCELLED"}:
+        raise HTTPException(status_code=409, detail="terminal run rejects mailbox input")
+    request_id = x_request_id or f"mailbox-{uuid4().hex}"
+    # Context 是原始会话正文的唯一所有者；邮箱只保存无敏感正文的领取引用。
+    _capability(container, RuntimeCapability.CONTEXT).append_message(
+        run.context.session_id,
+        ConversationMessage(
+            role="user",
+            content=payload.message,
+            metadata={
+                "source": "runtime-mailbox",
+                "input_type": payload.input_type,
+                "request_id": request_id,
+                "idempotency_key": request_id,
+            },
+        ),
+        x_tenant_id,
+        x_user_id,
+    )
+    try:
+        message_id = container.run_store.enqueue_mailbox_input(
+            x_tenant_id,
+            run_id,
+            RunMailboxInputType(payload.input_type),
+            idempotency_key=request_id,
+        )
+    except (LookupError, InvalidRunTransition) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if run.status == "WAITING_INPUT":
+        claimed = container.run_store.claim_mailbox_input(x_tenant_id, run_id)
+        if claimed is None or claimed.message_id != message_id:
+            raise HTTPException(status_code=409, detail="mailbox input is unavailable for resume")
+        return resume_run(
+            run_id,
+            AgentResumeRequest(approved=True),
+            request,
+            x_tenant_id=x_tenant_id,
+            x_user_id=x_user_id,
+            _user_input=UserInputResume(message_id=claimed.message_id, lease_token=claimed.lease_token),
+        )
+    return {"run_id": run_id, "message_id": message_id, "status": "QUEUED"}
 
 
 @router.get("/sessions/{session_id}/events")

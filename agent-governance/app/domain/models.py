@@ -60,6 +60,15 @@ class GovernanceEvent(StrictModel):
         required = {
             "agent.run.completed": {"run_id", "agent_id", "status"},
             "agent.run.interrupted": {"run_id", "agent_id", "status"},
+            "agent.run.state_changed": {
+                "run_id",
+                "agent_id",
+                "status",
+                "runtime_state",
+                "previous_runtime_state",
+                "transition_event",
+                "session_event_id",
+            },
             "tool.execution.completed": {
                 "tool_name",
                 "tool_version",

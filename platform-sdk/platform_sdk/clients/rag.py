@@ -38,6 +38,7 @@ class LocalRagQueryClient:
         return RagIndexVersionResponse(
             index_version=self.service.index_version,
             backend=self.service.backend,
+            embedding_contract=getattr(self.service, "embedding_contract", None),
         )
 
 

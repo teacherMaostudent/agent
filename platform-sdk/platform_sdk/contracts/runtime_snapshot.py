@@ -12,6 +12,11 @@ from jsonschema import Draft202012Validator
 from pydantic import BaseModel, Field
 
 from platform_sdk.contracts.capabilities import required_runtime_capabilities
+from platform_sdk.contracts.execution_profile import (
+    ExecutionProfileError,
+    ExecutionRequirements,
+    resolve_execution_profile,
+)
 from platform_sdk.contracts.workflow import (
     WorkflowConditionError,
     compile_workflow_condition,
@@ -22,6 +27,9 @@ _VARIABLE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
 
 class RuntimeSnapshotCompileError(ValueError):
     """发布快照无法转换为受控 Runtime 计划时抛出的确定性错误。"""
+
+
+RuntimeExecutionRequirements = ExecutionRequirements
 
 
 class CompiledRuntimePlan(BaseModel):
@@ -35,6 +43,12 @@ class CompiledRuntimePlan(BaseModel):
     graph_execution_order: list[str]
     graph_node_kinds: dict[str, str]
     executor_profile: str
+    execution_requirements: RuntimeExecutionRequirements = Field(
+        default_factory=RuntimeExecutionRequirements
+    )
+    intent_catalog_version: str = "platform-default/v1"
+    # 目录是声明式数据而非业务代码：随 Snapshot 冻结，Runtime 不会在请求时下载“最新规则”。
+    intent_catalog: dict[str, Any] | None = None
     required_capabilities: list[str] = Field(default_factory=list)
     workflow_policy: dict[str, Any] = Field(default_factory=dict)
     prompt_template: str
@@ -143,11 +157,8 @@ def compile_runtime_snapshot(
     fallback_models = models[1:] + (
         [str(item) for item in fallback.get("models") or []] if fallback else []
     )
-    executor_profile = str(spec.get("runtime_executor", "")).strip()
-    if not executor_profile:
-        raise RuntimeSnapshotCompileError(
-            "published runtime executor profile is missing"
-        )
+    execution_requirements, executor_profile = _compile_execution_requirements(spec)
+    intent_catalog = compile_intent_catalog(spec)
     if executor_profile == "code-runner/v1":
         code_runner_bindings = [
             item for item in spec.get("tools") or []
@@ -168,7 +179,12 @@ def compile_runtime_snapshot(
             graph_execution_order=order,
             graph_node_kinds=node_kinds,
             executor_profile=executor_profile,
-            required_capabilities=required_runtime_capabilities(spec),
+            execution_requirements=execution_requirements,
+            intent_catalog_version=str(spec.get("intent_catalog_version", "platform-default/v1")),
+            intent_catalog=intent_catalog,
+            required_capabilities=required_runtime_capabilities(
+                {**spec, "runtime_executor": executor_profile}
+            ),
             workflow_policy=workflow_policy,
             prompt_template=template,
             prompt_variables=variables,
@@ -211,12 +227,70 @@ def load_runtime_snapshot_artifact(
     return artifact.plan
 
 
+def compile_intent_catalog(spec: dict[str, Any]) -> dict[str, Any] | None:
+    """校验可选内嵌意图目录，并只保留 Runtime 执行所需的不可变声明字段。"""
+    version = str(spec.get("intent_catalog_version", "platform-default/v1"))
+    raw_catalog = spec.get("intent_catalog")
+    if raw_catalog is None:
+        return None
+    if not isinstance(raw_catalog, dict) or raw_catalog.get("version") != version:
+        raise RuntimeSnapshotCompileError(
+            "published intent catalog must be an object whose version matches intent_catalog_version"
+        )
+    raw_definitions = raw_catalog.get("definitions")
+    if not isinstance(raw_definitions, list) or not raw_definitions:
+        raise RuntimeSnapshotCompileError("published intent catalog must contain definitions")
+    definitions: list[dict[str, Any]] = []
+    names: set[str] = set()
+    for item in raw_definitions:
+        if not isinstance(item, dict):
+            raise RuntimeSnapshotCompileError("published intent definition must be an object")
+        name = str(item.get("name", "")).strip()
+        domain = str(item.get("domain", "")).strip()
+        action = str(item.get("action", "")).strip()
+        examples = item.get("examples")
+        entities = item.get("required_entities", [])
+        if (
+            not name
+            or name in names
+            or not domain
+            or not action
+            or not isinstance(examples, list)
+            or not examples
+            or not all(isinstance(example, str) and example.strip() for example in examples)
+            or not isinstance(entities, list)
+            or not all(isinstance(entity, str) and entity.strip() for entity in entities)
+        ):
+            raise RuntimeSnapshotCompileError("published intent catalog contains an invalid definition")
+        names.add(name)
+        definitions.append(
+            {
+                "name": name,
+                "domain": domain,
+                "action": action,
+                "examples": [example.strip() for example in examples],
+                "required_entities": [entity.strip() for entity in entities],
+            }
+        )
+    return {"version": version, "definitions": definitions}
+
+
 def _mapping(value: dict[str, Any], name: str) -> dict[str, Any]:
     """读取必须为对象的快照分段，拒绝隐式类型转换。"""
     item = value.get(name)
     if not isinstance(item, dict):
         raise RuntimeSnapshotCompileError(f"published snapshot {name} is missing")
     return item
+
+
+def _compile_execution_requirements(
+    spec: dict[str, Any],
+) -> tuple[RuntimeExecutionRequirements, str]:
+    """将共享执行解析错误转换为快照编译错误，禁止发布/运行语义分叉。"""
+    try:
+        return resolve_execution_profile(spec)
+    except ExecutionProfileError as exc:
+        raise RuntimeSnapshotCompileError(str(exc)) from exc
 
 
 def _required(value: dict[str, Any], name: str) -> Any:

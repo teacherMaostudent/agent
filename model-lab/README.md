@@ -19,6 +19,7 @@ Agent 是否可用”。模型卡不能替代 Agent 的端到端回放；反之�
 
 ## 生产边界
 
-本服务不把 GPU 框架打进平台 API 镜像。生产 Worker 应使用固定 digest 的实验镜像，通过 Kubernetes
-Job 或 Temporal Activity 执行，把不可变工件写入对象存储，再将结果 manifest 回传。当前代码侧
-保留实验元数据与模型卡主线；GPU 调度、工件仓库、权限隔离和大规模训练队列仍需按部署环境实现。
+本服务不把 GPU 框架打进平台 API 镜像。生产 API 使用 PostgreSQL 保存冻结计划、Worker 身份、评测
+结果与模型卡；仅接受写入已配置对象存储桶的工件 URI。独立 GPU Worker 应使用固定 digest 的训练/评测
+镜像（Kubernetes Job 或 Temporal Activity），调用内部 `begin` 与 `results` 接口回传 manifest。API、
+Control Plane 与 Worker 使用 OIDC、mTLS 和服务密钥；内存字典与匿名 `evaluate` 接口已移除。

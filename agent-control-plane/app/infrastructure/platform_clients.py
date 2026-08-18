@@ -124,19 +124,37 @@ class ModelLabClient:
     """Verify that an offline model artifact passed evaluation before online rollout."""
 
     def __init__(self, settings: Settings) -> None:
-        """保存 Model Lab 服务端点；工件校验发生在路由发布前。"""
+        """保存受认证 Model Lab 端点；工件校验发生在路由发布前。"""
         self._settings = settings
+        self._workload_identity = build_workload_token_provider(settings)
 
-    async def approved_artifact(self, experiment_id: str) -> dict[str, Any]:
+    async def approved_artifact(self, tenant_id: str, experiment_id: str) -> dict[str, Any]:
         """仅返回已批准且含模型卡的实验工件，缺失任一条件即拒绝上线。"""
         async with httpx.AsyncClient(
-            base_url=self._settings.model_lab_base_url, timeout=30
+            base_url=self._settings.model_lab_base_url,
+            timeout=30,
+            **mtls_httpx_options(
+                enabled=self._settings.mtls_enabled,
+                ca_file=self._settings.mtls_ca_file,
+                cert_file=self._settings.mtls_cert_file,
+                key_file=self._settings.mtls_key_file,
+            ),
         ) as client:
-            response = await client.get(f"/v1/experiments/{experiment_id}")
+            response = await client.get(
+                f"/internal/v1/experiments/{experiment_id}",
+                params={"tenant_id": tenant_id},
+                headers={
+                    "X-Model-Lab-Key": self._settings.model_lab_service_api_key or "",
+                    "X-Tenant-Id": tenant_id,
+                    **self._workload_identity.authorization_header(),
+                },
+            )
             response.raise_for_status()
             record = response.json()
         if record.get("status") != "APPROVED" or not record.get("model_card"):
             raise ValueError("Model Lab experiment is not approved with a model card")
+        if record.get("plan", {}).get("tenant_id") != tenant_id:
+            raise ValueError("Model Lab experiment tenant does not match release")
         return record
 
 

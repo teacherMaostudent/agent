@@ -22,6 +22,7 @@ from platform_sdk.tools.registry import ToolContext
 from agent_runtime_service.agent.decision_engine import GatewayDecisionEngine, OfflineDecisionEngine
 from agent_runtime_service.agent.graph import AgentGraph
 from agent_runtime_service.core.config import get_settings
+from agent_runtime_service.runtime.agent_manager import AgentManager
 from agent_runtime_service.runtime.async_jobs import AsyncRunQueue
 from agent_runtime_service.runtime.budget import BudgetGuard
 from agent_runtime_service.runtime.capabilities import CapabilityRegistry, CapabilityUnavailable
@@ -49,8 +50,15 @@ from agent_runtime_service.runtime.planner import (
     RuntimePlanner,
 )
 from agent_runtime_service.runtime.postgres_store import PostgresRuntimeStore
+from agent_runtime_service.runtime.run_state import AgentRunEvent, InvalidRunTransition
+from agent_runtime_service.runtime.runtime_context import RuntimeContext
 from agent_runtime_service.runtime.session_archive import SessionArchiveService
 from agent_runtime_service.runtime.session_events import ModelVisibleMessage, RuntimeEventType
+from agent_runtime_service.runtime.stop_policy import (
+    BudgetStopPolicy,
+    CancellationStopPolicy,
+    CompositeStopPolicy,
+)
 from agent_runtime_service.runtime.subagents import SubAgentDelegation, SubAgentManager
 from agent_runtime_service.runtime.temporal_queue import TemporalRunQueue
 
@@ -87,6 +95,8 @@ class AgentRuntimeContainer:
         )
         # Event Bus 是进程内扩展边界，不与治理 Outbox 共用或竞争跨服务投递职责。
         self.events = RuntimeEventBus()
+        # 当前没有请求期插件；冻结注册窗口保证会话事实不会被临时回调悄然改变语义。
+        self.events.freeze()
         self.interception_pipeline = RuntimeInterceptionPipeline()
         self.workload_identity = build_workload_token_provider(self.settings)
         if self.settings.persistence == "postgres":
@@ -127,6 +137,7 @@ class AgentRuntimeContainer:
             user_id="agent-runtime",
             timeout=self.settings.llm_timeout,
             workload_identity=self.workload_identity,
+            mtls=self._mtls_options(),
         )
         if self.settings.llm_startup_check:
             llm_gateway.healthcheck()
@@ -152,14 +163,14 @@ class AgentRuntimeContainer:
                 if self.settings.temporal_enabled
                 else AsyncRunQueue(self.settings.runtime_jobs_path, self._execute_submission)
             )
-        subagent_manager = SubAgentManager()
+        agent_manager = AgentManager(SubAgentManager(), self._invoke_subagent)
         providers = {
             RuntimeCapability.CONTEXT: context_client,
             RuntimeCapability.RETRIEVAL: rag_client,
             RuntimeCapability.LLM: llm_gateway,
             RuntimeCapability.TOOL: tool_registry,
             RuntimeCapability.SESSION: self.run_store,
-            RuntimeCapability.SUBAGENT: subagent_manager,
+            RuntimeCapability.SUBAGENT: agent_manager,
         }
         if self.async_runs is not None:
             providers[RuntimeCapability.WORKFLOW] = self.async_runs
@@ -173,42 +184,61 @@ class AgentRuntimeContainer:
             providers,
             version=self.settings.capability_catalog_version,
         )
+        # Graph/Executor 只获得这一强类型能力视图；CapabilityRegistry 仍保留给
+        # 发布证明和 Profile 校验，不能被业务节点当作任意对象目录读取。
+        self.runtime_context = RuntimeContext(
+            context=context_client,
+            retrieval=rag_client,
+            llm=llm_gateway,
+            tools=tool_registry,
+            session=self.run_store,
+            workflow=self.async_runs,
+            agents=agent_manager,
+        )
         decision_engine = (
             GatewayDecisionEngine(
-                self.capability(RuntimeCapability.LLM), self.settings.agent_model
+                self.runtime_context.require_llm(), self.settings.agent_model
             )
             if self.settings.llm_enabled
             else OfflineDecisionEngine()
         )
         semantic_analyzer = (
             GatewaySemanticAnalyzer(
-                self.capability(RuntimeCapability.LLM), self.settings.agent_model
+                self.runtime_context.require_llm(), self.settings.agent_model
             )
             if self.settings.llm_enabled
             else HeuristicSemanticAnalyzer()
         )
+        budget_guard = BudgetGuard(
+            self.settings.agent_llm_call_reservation_usd,
+            self.settings.agent_tool_call_reservation_usd,
+        )
         graph = AgentGraph(
             decision_engine,
-            tool_registry=self.capability(RuntimeCapability.TOOL),
-            context_client=self.capability(RuntimeCapability.CONTEXT),
-            rag_client=self.capability(RuntimeCapability.RETRIEVAL),
+            self.runtime_context,
             planner=RuntimePlanner(semantic_analyzer),
-            budget_guard=BudgetGuard(
-                self.settings.agent_llm_call_reservation_usd,
-                self.settings.agent_tool_call_reservation_usd,
-            ),
+            budget_guard=budget_guard,
             checkpointer=self.checkpointer,
             cancellation_checker=self._is_cancelled,
-            subagent_manager=subagent_manager,
-            subagent_executor=self._invoke_subagent,
+            agent_manager=agent_manager,
             session_event_recorder=self._record_graph_session_event,
             interception_pipeline=self.interception_pipeline,
+            stop_policy=CompositeStopPolicy(
+                (
+                    BudgetStopPolicy(budget_guard),
+                    CancellationStopPolicy(self._is_cancelled),
+                )
+            ),
+            mailbox=self.run_store,
         )
         # 执行器目录只在启动期装配; 请求路径不能注册或替换业务执行器。
         graph_executor = GraphExecutor(graph)
         executor_profiles = {
                 "simple/v1": SimpleExecutor(),
+                "agentic/v1": graph_executor,
                 "declarative-langgraph/v1": graph_executor,
+                "temporal-simple/v1": DurableExecutor(SimpleExecutor()),
+                "temporal-agentic/v1": DurableExecutor(graph_executor),
                 "temporal-workflow/v1": DurableExecutor(graph_executor),
             }
         if self.settings.code_runner_enabled:
@@ -382,6 +412,30 @@ class AgentRuntimeContainer:
             attempt_id=str(state.get("attempt_id", "")),
         )
         self.publish_session_event(event)
+        # 图事件只提供运行事实；显式 Run 状态机在这里将其归约为有限执行阶段。
+        # 未映射的事件（如 Prompt/证据）不会伪造状态变化，仍完整保留在 Session Ledger。
+        trigger = {
+            RuntimeEventType.CONTEXT_INJECTED: AgentRunEvent.CONTEXT_READY,
+            RuntimeEventType.MODEL_REQUESTED: AgentRunEvent.MODEL_REQUESTED,
+            RuntimeEventType.TOOL_INTENT_RECORDED: AgentRunEvent.TOOL_INTENT_RECORDED,
+            RuntimeEventType.TOOL_RESULT: AgentRunEvent.TOOLS_COMPLETED,
+            RuntimeEventType.STEERING_RECEIVED: AgentRunEvent.STEERING_RECEIVED,
+            RuntimeEventType.FOLLOW_UP_RECEIVED: AgentRunEvent.FOLLOW_UP_RECEIVED,
+        }.get(event_type)
+        if trigger is None:
+            return
+        try:
+            _, state_event = self.run_store.transition_state(
+                context.tenant_id,
+                context.run_id,
+                trigger,
+                metadata={"source_event_id": event.event_id, "source_event_type": event.event_type.value},
+            )
+        except InvalidRunTransition as exc:
+            # 不能吞掉状态漂移；否则副作用完成但 Run 生命周期会变得不可解释。
+            raise RuntimeError(f"run state transition rejected after {event.event_type.value}") from exc
+        if state_event is not None:
+            self.publish_session_event(state_event)
 
     def capability(self, capability: RuntimeCapability):
         """从冻结目录取得外围 Provider，禁止业务代码直接依赖某个服务客户端属性。"""
@@ -402,6 +456,7 @@ class AgentRuntimeContainer:
 
         from platform_sdk.contracts.runtime_api import AgentResumeRequest, AgentRunRequest
 
+        from agent_runtime_service.runtime.models import UserInputResume
         from agent_runtime_service.service_api.runtime_api import resume_run, run_agent
 
         # Temporal 载荷仅来自已鉴权的 Runtime API 提交; 构造内部已验证身份, 避免 Worker
@@ -411,14 +466,18 @@ class AgentRuntimeContainer:
             scope={"auth.claims": {"worker": "agent-runtime"}},
         )
         if submission.get("operation") == "resume":
-            approval = submission.get("approval") or {}
+            control_input = submission.get("control_input") or {}
+            user_input = control_input.get("_user_input")
             return resume_run(
                 submission["run_id"],
-                AgentResumeRequest.model_validate(approval),
+                AgentResumeRequest.model_validate(control_input),
                 request,
                 x_tenant_id=submission["tenant_id"],
-                x_user_id=str(approval.get("decided_by") or submission["user_id"]),
+                x_user_id=str(control_input.get("decided_by") or submission["user_id"]),
                 _temporal_worker_execution=True,
+                _user_input=(
+                    UserInputResume.model_validate(user_input) if isinstance(user_input, dict) else None
+                ),
             )
         return run_agent(
             AgentRunRequest.model_validate(submission["payload"]),

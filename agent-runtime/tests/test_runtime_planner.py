@@ -10,7 +10,10 @@ from agent_runtime_service.agent.models import AgentAction, AgentDecision
 from agent_runtime_service.runtime.budget import BudgetGuard
 from agent_runtime_service.runtime.models import ApprovalResume, RuntimeBudget
 from agent_runtime_service.runtime.planner import HeuristicSemanticAnalyzer, RuntimePlanner
+from agent_runtime_service.runtime.runtime_context import RuntimeContext
+from agent_runtime_service.runtime.session_events import RuntimeEventType
 from agent_runtime_service.runtime.snapshot_compiler import compile_snapshot
+from agent_runtime_service.runtime.tool_execution import SideEffectBarrier
 
 
 class EmptyContext:
@@ -53,6 +56,11 @@ class ApprovalTool:
                 "tool_name": name,
             }
         return {"refund_id": "refund-001", "status": "accepted"}
+
+
+def runtime_context(*, tools=None) -> RuntimeContext:
+    """构造测试 RuntimeContext，使 AgentGraph 不再接收分散服务客户端。"""
+    return RuntimeContext(context=EmptyContext(), tools=tools or ApprovalTool())
 
 
 def state(task: str, *, budget: RuntimeBudget | None = None) -> dict:
@@ -110,6 +118,31 @@ def test_planner_recognizes_intent_entities_sources_and_route() -> None:
     assert plan.graph_version == "agent-a-graph:1"
 
 
+def test_planner_uses_intent_catalog_frozen_in_compiled_snapshot() -> None:
+    """不同业务 Agent 的意图规则应随发布计划执行，不能依赖 Runtime 的静态默认词表。"""
+    planner = RuntimePlanner(HeuristicSemanticAnalyzer())
+    current = state("请为客户安排现场勘察")
+    current["compiled_plan"] = {
+        "intent_catalog_version": "field-service/v1",
+        "intent_catalog": {
+            "version": "field-service/v1",
+            "definitions": [
+                {
+                    "name": "site_visit",
+                    "domain": "field-service",
+                    "action": "schedule",
+                    "examples": ["现场勘察", "现场预约"],
+                    "required_entities": ["business_id"],
+                }
+            ],
+        },
+    }
+
+    analysis = planner.analyze(current)
+
+    assert analysis["intent"]["name"] == "site_visit"
+
+
 def test_llm_call_limit_is_enforced_outside_the_decision_engine() -> None:
     budget = RuntimeBudget(
         deadline_at=datetime.now(UTC) + timedelta(minutes=1),
@@ -122,7 +155,7 @@ def test_llm_call_limit_is_enforced_outside_the_decision_engine() -> None:
     engine = LlmEngine([AgentDecision(action=AgentAction.ANSWER, final_answer="unsafe")])
     graph = AgentGraph(
         engine,
-        context_client=EmptyContext(),
+        runtime_context(),
         budget_guard=BudgetGuard(0.01, 0.001),
     )
 
@@ -163,7 +196,7 @@ def test_published_workflow_blocks_model_action_not_declared_by_graph() -> None:
         published, tenant_id="tenant-a", agent_id="agent-a", fallback_model="model-a"
     ).model_dump(mode="json")
     engine = SequenceEngine([AgentDecision(action=AgentAction.RETRIEVE, query="forbidden")])
-    graph = AgentGraph(engine, context_client=EmptyContext())
+    graph = AgentGraph(engine, runtime_context())
 
     result = graph.run(current, "thread-workflow-policy")
 
@@ -186,7 +219,7 @@ def test_downstream_attempt_budget_blocks_calls_before_execution() -> None:
     )
     graph = AgentGraph(
         engine,
-        context_client=EmptyContext(),
+        runtime_context(),
         budget_guard=BudgetGuard(0.01, 0.001),
     )
 
@@ -207,8 +240,7 @@ def test_tool_approval_interrupt_survives_process_restart(tmp_path) -> None:
     )
     first_graph = AgentGraph(
         first_engine,
-        tool_registry=ApprovalTool(),
-        context_client=EmptyContext(),
+        runtime_context(tools=ApprovalTool()),
         checkpointer=first_saver,
     )
 
@@ -225,8 +257,7 @@ def test_tool_approval_interrupt_survives_process_restart(tmp_path) -> None:
     )
     second_graph = AgentGraph(
         second_engine,
-        tool_registry=ApprovalTool(),
-        context_client=EmptyContext(),
+        runtime_context(tools=ApprovalTool()),
         checkpointer=second_saver,
     )
     resumed = second_graph.resume(
@@ -241,3 +272,112 @@ def test_tool_approval_interrupt_survives_process_restart(tmp_path) -> None:
     assert tool_observation["result"]["refund_id"] == "refund-001"
     assert resumed.budget["tool_calls"] == 1
     second_connection.close()
+
+
+def test_tool_session_facts_distinguish_intent_dispatch_commit_and_result() -> None:
+    """副作用恢复必须知道调用处于哪个阶段，不能只记录一个模糊的“工具已调用”。"""
+
+    class ImmediateTool:
+        """模拟立即返回已提交结果的 Tool Gateway 客户端。"""
+
+        def manifests(self, permissions, **kwargs):
+            """返回已发布的最小工具目录投影。"""
+            del permissions, kwargs
+            return [{"name": "payments.refund", "risk": "read_only"}]
+
+        def execute(self, name, arguments, context):
+            """模拟 Gateway 已提交的幂等工具结果。"""
+            del name, arguments, context
+            return {"status": "accepted", "refund_id": "refund-001"}
+
+    facts: list[RuntimeEventType] = []
+    graph = AgentGraph(
+        SequenceEngine(
+            [
+                AgentDecision(action=AgentAction.TOOL, tool_name="payments.refund"),
+                AgentDecision(action=AgentAction.ANSWER, final_answer="Refund accepted."),
+            ]
+        ),
+        runtime_context(tools=ImmediateTool()),
+        session_event_recorder=lambda _state, event_type, _metadata, _message: facts.append(event_type),
+    )
+
+    result = graph.run(state("Refund order ORD-123"), "tool-facts")
+
+    assert result.status == "COMPLETED"
+    assert [
+        event
+        for event in facts
+        if event
+        in {
+            RuntimeEventType.TOOL_INTENT_RECORDED,
+            RuntimeEventType.TOOL_DISPATCHED,
+            RuntimeEventType.TOOL_COMMITTED,
+            RuntimeEventType.TOOL_RESULT,
+        }
+    ] == [
+        RuntimeEventType.TOOL_INTENT_RECORDED,
+        RuntimeEventType.TOOL_DISPATCHED,
+        RuntimeEventType.TOOL_COMMITTED,
+        RuntimeEventType.TOOL_RESULT,
+    ]
+
+
+def test_pending_steering_defers_side_effect_before_tool_gateway_dispatch() -> None:
+    """新 Steering 到达后，旧模型决策不能先提交写操作，Graph 必须回到 Context/Planner。"""
+
+    class WriteTool:
+        """记录真实调用次数，用于证明屏障在 Gateway 前生效。"""
+
+        def __init__(self) -> None:
+            """初始化零调用计数。"""
+            self.calls = 0
+
+        def manifests(self, permissions, **kwargs):
+            """返回已发布的高风险写工具目录。"""
+            del permissions, kwargs
+            return [{"name": "payments.refund", "risk": "write_high_risk"}]
+
+        def execute(self, name, arguments, context):
+            """仅在副作用屏障放行时递增计数。"""
+            del name, arguments, context
+            self.calls += 1
+            return {"status": "accepted"}
+
+    current = state("Execute refund for ORD-123")
+    current["compiled_plan"] = {
+        "tools": [
+            {
+                "tool_name": "payments.refund",
+                "version": "1.0.0",
+                "risk": "write_high_risk",
+                "side_effect": True,
+                "idempotent": True,
+            }
+        ]
+    }
+    class PendingSteering:
+        """模拟在模型决定工具后、Gateway 调用前到达的 Steering 事实。"""
+
+        def has_pending_replan_input(self, tenant_id, run_id):
+            """返回待处理输入；不领取消息，保持屏障的只读边界。"""
+            del tenant_id, run_id
+            return True
+
+    tool = WriteTool()
+    events: list[RuntimeEventType] = []
+    graph = AgentGraph(
+        SequenceEngine([
+            AgentDecision(action=AgentAction.TOOL, tool_name="payments.refund"),
+            AgentDecision(action=AgentAction.ANSWER, final_answer="updated safely"),
+        ]),
+        runtime_context(tools=tool),
+        side_effect_barrier=SideEffectBarrier(inbox=PendingSteering()),
+        session_event_recorder=lambda _state, event, _metadata, _message: events.append(event),
+    )
+
+    result = graph.run(current, "side-effect-barrier")
+
+    assert result.status == "COMPLETED"
+    assert tool.calls == 0
+    assert RuntimeEventType.TOOL_DISPATCH_DEFERRED in events

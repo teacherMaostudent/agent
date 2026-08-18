@@ -14,6 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 from platform_sdk.contracts.capabilities import required_runtime_capabilities
+from platform_sdk.contracts.execution_profile import resolve_execution_profile
 from platform_sdk.contracts.runtime_snapshot import (
     RuntimeSnapshotCompileError,
     compile_runtime_snapshot,
@@ -64,6 +65,7 @@ class ControlPlaneService:
         *,
         governance=None,
         require_quality_gate: bool = False,
+        require_knowledge_contracts: bool = False,
         agent_lab=None,
         require_agent_lab: bool = False,
         tool_catalog_validator=None,
@@ -73,6 +75,7 @@ class ControlPlaneService:
         self._repository = repository
         self._governance = governance
         self._require_quality_gate = require_quality_gate
+        self._require_knowledge_contracts = require_knowledge_contracts
         self._agent_lab = agent_lab
         self._require_agent_lab = require_agent_lab
         self._tool_catalog_validator = tool_catalog_validator
@@ -333,9 +336,12 @@ class ControlPlaneService:
         runtime_executor: dict[str, Any] = {}
         if self._runtime_executor_catalog is not None:
             try:
+                _, resolved_executor_profile = resolve_execution_profile(
+                    version.snapshot.spec.model_dump(mode="json")
+                )
                 runtime_executor = self._runtime_executor_catalog.validate(
                     request.environment,
-                    version.snapshot.spec.runtime_executor,
+                    resolved_executor_profile,
                     required_capabilities=required_runtime_capabilities(
                         version.snapshot.spec.model_dump(mode="json")
                     ),
@@ -385,6 +391,8 @@ class ControlPlaneService:
                     quality_gate_id=gate.get("id"),
                     reasons=gate.get("reasons") or [],
                 )
+        if self._require_knowledge_contracts:
+            self._validate_knowledge_release_contract(version.snapshot, gate)
         releases = await self._repository.list_releases(
             identity.tenant_id,
             agent_id,
@@ -464,6 +472,33 @@ class ControlPlaneService:
             else None,
         )
         return release
+
+    @staticmethod
+    def _validate_knowledge_release_contract(
+        snapshot: PublishedSnapshot, gate: dict[str, Any]
+    ) -> None:
+        """要求发布知识绑定固定索引空间，并由已通过的检索质量门禁提供证据。"""
+        knowledge = snapshot.spec.knowledge
+        if not knowledge:
+            return
+        missing = [
+            binding.knowledge_base
+            for binding in knowledge
+            if not binding.index_version
+            or not binding.embedding_contract_id
+            or not binding.retrieval_evaluation_id
+        ]
+        if missing:
+            raise PolicyViolationError(
+                "Knowledge bindings require index_version, embedding_contract_id and "
+                "retrieval_evaluation_id.",
+                knowledge_bases=missing,
+            )
+        retrieval = gate.get("metrics", {}).get("retrieval", {}) if gate else {}
+        if not retrieval or float(retrieval.get("recallAtK", 0)) < 1:
+            raise PolicyViolationError(
+                "Knowledge release requires a passing retrieval Recall@K quality gate."
+            )
 
     async def list_releases(
         self,

@@ -15,6 +15,41 @@ class RouteType(StrEnum):
     DEEP_REASONING = "deep_reasoning"
 
 
+class ExecutionMode(StrEnum):
+    """旧版单轴执行模式投影，仅用于兼容已发布的 Profile。"""
+
+    FAST = "fast"
+    AGENTIC = "agentic"
+    GRAPH = "graph"
+    DURABLE = "durable"
+
+
+class ExecutionLifecycle(StrEnum):
+    """一次 Run 的耐久性边界；它不决定模型是否进行多步推理。"""
+
+    REQUEST_SCOPED = "request_scoped"
+    DURABLE_WORKFLOW = "durable_workflow"
+
+
+class ReasoningMode(StrEnum):
+    """执行器内部允许的推理强度；它不决定是否交由 Temporal 调度。"""
+
+    MINIMAL = "minimal"
+    AGENTIC = "agentic"
+    GRAPH = "graph"
+
+
+class ExecutionRequirements(BaseModel):
+    """发布快照声明的双轴执行需求。
+
+    生命周期和推理模式故意拆开：同一个受控 Graph 可以同步短执行，也可以由
+    Durable Workflow 可靠驱动。Profile 只是 Runtime 集群为这一组合提供的部署别名。
+    """
+
+    lifecycle: ExecutionLifecycle = ExecutionLifecycle.REQUEST_SCOPED
+    reasoning: ReasoningMode = ReasoningMode.GRAPH
+
+
 class IntentResult(BaseModel):
     name: str
     confidence: float = Field(ge=0, le=1)
@@ -74,6 +109,9 @@ class ExecutionPlan(BaseModel):
     graph_version: str
     model_policy_version: str
     executor_profile: str
+    execution_mode: ExecutionMode = ExecutionMode.GRAPH
+    execution_requirements: ExecutionRequirements = Field(default_factory=ExecutionRequirements)
+    intent_catalog_version: str = "platform-default/v1"
     retrieval_policy: dict[str, Any] = Field(default_factory=dict)
     planner_version: str
     analyzer_version: str
@@ -119,6 +157,13 @@ class ApprovalResume(BaseModel):
     approval_id: str = ""
     decided_by: str = ""
     reason: str = ""
+
+
+class UserInputResume(BaseModel):
+    """恢复澄清中断的邮箱租约引用；用户正文仍只由 Context 服务保存。"""
+
+    message_id: str
+    lease_token: str
 
 
 class RuntimeLimitExceeded(RuntimeError):

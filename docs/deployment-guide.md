@@ -68,6 +68,11 @@ Runtime 启动期固定装配只读 Executor Catalog，当前 Profile 为：
 4. `code-runner/v1`：仅用于已显式启用隔离 Sandbox Provider 的研发型 Agent；必须绑定版本固定的
    `controlled_code_runner` 工具，默认不会出现在 Runtime Catalog。
 
+业务域意图不再要求所有 Runtime 预装同一份词表。Agent Spec 可以携带 `intent_catalog`（`version` 与
+`definitions`），Control Plane 会把它与 Snapshot 一起编译、哈希并冻结；Runtime 仅执行 Artifact 中的
+规则正文。省略目录时只能使用内置 `platform-default/v1`，发布了未知版本却没有内嵌规则正文会在模型调用前
+失败。这样销售、客服、研发等 Agent 可以独立演进意图规则，又不会出现“声明 v2、运行时偷偷读取 v3”的漂移。
+
 第三类 Profile 进入 `WAITING_APPROVAL` 时不会结束 Workflow。`POST /runs/{run_id}/resume` 只发送带审批人
 和决定的 Temporal Signal；Worker 从已持久化的 LangGraph checkpoint 续跑。部署时应为 API 与 Worker 配置相同的
 Artifact 校验密钥、区域化 Task Queue 路由和 Runtime Executor Catalog Version，否则发布前能力校验应拒绝流量。

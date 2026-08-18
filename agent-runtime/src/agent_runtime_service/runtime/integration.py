@@ -20,6 +20,17 @@ from platform_infra.identity import WorkloadTokenProvider
 from platform_infra.schema_registry import SchemaRegistry
 from platform_sdk.contracts.execution import ExecutionContext, RuntimeRun
 
+from agent_runtime_service.runtime.mailbox import (
+    AgentInputPriority,
+    ClaimedRunMailboxItem,
+    RunMailboxInputType,
+)
+from agent_runtime_service.runtime.run_state import (
+    AgentRunEvent,
+    AgentRunState,
+    InvalidRunTransition,
+    transition_run_state,
+)
 from agent_runtime_service.runtime.session_events import (
     ModelVisibleMessage,
     RuntimeEventType,
@@ -30,6 +41,39 @@ from agent_runtime_service.runtime.session_events import (
     derive_session_projection,
     event_type_for_status,
 )
+
+
+def _governance_event_for_state_change(
+    context: ExecutionContext, lifecycle_event: RuntimeLifecycleEvent
+) -> dict[str, Any]:
+    """将无正文的 Run 状态事实投影为可由 Governance 关联的审计事件。
+
+    事件 ID 从 Session Ledger 的事实 ID 推导，因此同一事务重试不会产生第二条
+    治理记录。此处不包含用户消息、Prompt、工具返回或模型文本，避免治理 Outbox
+    成为跨数据域的敏感内容副本。
+    """
+    metadata = lifecycle_event.metadata
+    return {
+        "event_id": f"gov_{lifecycle_event.event_id}",
+        "source_service": "agent-runtime",
+        "event_type": "agent.run.state_changed",
+        "trace_id": context.trace_id,
+        "tenant_id": context.tenant_id,
+        "occurred_at": lifecycle_event.occurred_at.isoformat(),
+        "payload": {
+            "run_id": context.run_id,
+            "session_id": context.session_id,
+            "agent_id": context.agent_id,
+            "snapshot_id": context.snapshot_id,
+            "agent_version": context.agent_version,
+            "status": lifecycle_event.status,
+            "runtime_state": metadata.get("current_state"),
+            "previous_runtime_state": metadata.get("previous_state"),
+            "transition_event": metadata.get("trigger"),
+            "session_event_id": lifecycle_event.event_id,
+            "sequence": lifecycle_event.sequence,
+        },
+    }
 
 
 class ControlPlaneClient:
@@ -79,7 +123,8 @@ class ControlPlaneClient:
         return response.json()
 
 
-class RuntimeStore:
+class RuntimeStoreOperations:
+    """与持久化方言无关的 Run、Outbox 与 Session Ledger 操作。"""
     """Small durable Run + transactional-outbox store; PostgreSQL is the production adapter."""
 
     def __init__(self, path: Path, schema_registry: SchemaRegistry | None = None) -> None:
@@ -95,7 +140,7 @@ class RuntimeStore:
                 CREATE TABLE IF NOT EXISTS runtime_runs (
                     run_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
                     agent_id TEXT NOT NULL, snapshot_id TEXT NOT NULL, request_id TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL,
+                    status TEXT NOT NULL, runtime_state TEXT NOT NULL DEFAULT 'CREATED',
                     context_json TEXT NOT NULL, result_json TEXT NOT NULL, error_code TEXT NOT NULL,
                     cancel_requested INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
@@ -133,6 +178,16 @@ class RuntimeStore:
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (tenant_id, session_id, archived_through_sequence)
                 );
+                CREATE TABLE IF NOT EXISTS runtime_run_mailbox (
+                    message_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, run_id TEXT NOT NULL,
+                    input_type TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+                    priority INTEGER NOT NULL DEFAULT 50,
+                    delivery_status TEXT NOT NULL DEFAULT 'PENDING', lease_token TEXT NOT NULL DEFAULT '',
+                    lease_expires_at TEXT, created_at TEXT NOT NULL, consumed_at TEXT,
+                    UNIQUE(tenant_id, run_id, idempotency_key)
+                );
+                CREATE INDEX IF NOT EXISTS runtime_run_mailbox_claim_idx
+                    ON runtime_run_mailbox(tenant_id, run_id, delivery_status, priority, created_at);
                 """
             )
             columns = {
@@ -142,6 +197,10 @@ class RuntimeStore:
             if "request_id" not in columns:
                 self._connection.execute(
                     "ALTER TABLE runtime_runs ADD COLUMN request_id TEXT NOT NULL DEFAULT ''"
+                )
+            if "runtime_state" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE runtime_runs ADD COLUMN runtime_state TEXT NOT NULL DEFAULT 'CREATED'"
                 )
             self._connection.execute(
                 """
@@ -180,6 +239,14 @@ class RuntimeStore:
             ]:
                 if column not in outbox_columns:
                     self._connection.execute(statement)
+            mailbox_columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(runtime_run_mailbox)").fetchall()
+            }
+            if "priority" not in mailbox_columns:
+                self._connection.execute(
+                    "ALTER TABLE runtime_run_mailbox ADD COLUMN priority INTEGER NOT NULL DEFAULT 50"
+                )
             self._connection.commit()
 
     def create(self, context: ExecutionContext) -> RuntimeRun:
@@ -199,6 +266,7 @@ class RuntimeStore:
             agent_id=context.agent_id,
             snapshot_id=context.snapshot_id,
             status="RUNNING",
+            runtime_state=AgentRunState.CREATED,
             context=context,
             created_at=now,
             updated_at=now,
@@ -216,9 +284,9 @@ class RuntimeStore:
                 self._connection.execute(
                 """
                 INSERT INTO runtime_runs (
-                    run_id, tenant_id, user_id, agent_id, snapshot_id, request_id, status,
+                    run_id, tenant_id, user_id, agent_id, snapshot_id, request_id, status, runtime_state,
                     context_json, result_json, error_code, cancel_requested, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
@@ -228,6 +296,7 @@ class RuntimeStore:
                     run.snapshot_id,
                     context.request_id,
                     run.status,
+                    run.runtime_state,
                     run.context.model_dump_json(),
                     "{}",
                     "",
@@ -274,6 +343,193 @@ class RuntimeStore:
             current = self.get(tenant_id, parent_run_id)
         return False
 
+    def enqueue_mailbox_input(
+        self,
+        tenant_id: str,
+        run_id: str,
+        input_type: RunMailboxInputType | str,
+        *,
+        idempotency_key: str,
+        priority: AgentInputPriority | int = AgentInputPriority.NORMAL,
+    ) -> str:
+        """登记不含正文的 Inbox 输入；同键重试不重复排队且优先级不能在重试时篡改。"""
+        kind = RunMailboxInputType(input_type)
+        requested_priority = AgentInputPriority(priority)
+        key = idempotency_key.strip()
+        if not key:
+            raise ValueError("mailbox input requires an idempotency key")
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    "SELECT runtime_state FROM runtime_runs WHERE tenant_id = ? AND run_id = ?",
+                    (tenant_id, run_id),
+                ).fetchone()
+                if row is None:
+                    raise LookupError("run not found")
+                if AgentRunState(self._row_value(row, "runtime_state", "CREATED")).terminal:
+                    raise InvalidRunTransition("terminal run rejects mailbox input")
+                existing = self._connection.execute(
+                    "SELECT message_id FROM runtime_run_mailbox "
+                    "WHERE tenant_id = ? AND run_id = ? AND idempotency_key = ?",
+                    (tenant_id, run_id, key),
+                ).fetchone()
+                if existing is not None:
+                    self._connection.commit()
+                    return str(existing["message_id"])
+                message_id = f"mbx_{uuid4().hex}"
+                self._connection.execute(
+                    "INSERT INTO runtime_run_mailbox("
+                    "message_id, tenant_id, run_id, input_type, idempotency_key, priority, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        message_id,
+                        tenant_id,
+                        run_id,
+                        kind.value,
+                        key,
+                        int(requested_priority),
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return message_id
+
+    def claim_mailbox_input(
+        self, tenant_id: str, run_id: str
+    ) -> ClaimedRunMailboxItem | None:
+        """用短租约串行领取一条输入；崩溃未确认的项会在租约到期后重新可领。"""
+        now = datetime.now(UTC)
+        lease_token = f"lease_{uuid4().hex}"
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    "SELECT * FROM runtime_run_mailbox WHERE tenant_id = ? AND run_id = ? "
+                    "AND (delivery_status = 'PENDING' OR "
+                    "(delivery_status = 'PROCESSING' AND lease_expires_at < ?)) "
+                    "ORDER BY priority ASC, created_at ASC LIMIT 1",
+                    (tenant_id, run_id, now.isoformat()),
+                ).fetchone()
+                if row is None:
+                    self._connection.commit()
+                    return None
+                changed = self._connection.execute(
+                    "UPDATE runtime_run_mailbox SET delivery_status = 'PROCESSING', lease_token = ?, "
+                    "lease_expires_at = ? WHERE message_id = ? AND "
+                    "(delivery_status = 'PENDING' OR (delivery_status = 'PROCESSING' AND lease_expires_at < ?))",
+                    (
+                        lease_token,
+                        (now + timedelta(seconds=30)).isoformat(),
+                        row["message_id"],
+                        now.isoformat(),
+                    ),
+                )
+                if not changed.rowcount:
+                    self._connection.commit()
+                    return None
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return ClaimedRunMailboxItem(
+            message_id=str(row["message_id"]),
+            input_type=RunMailboxInputType(str(row["input_type"])),
+            lease_token=lease_token,
+            priority=AgentInputPriority(int(row["priority"])),
+        )
+
+    def has_pending_replan_input(self, tenant_id: str, run_id: str) -> bool:
+        """只读检查未处理的计划变更输入，避免工具副作用抢在 Steering 之前提交。"""
+        replan_types = tuple(
+            item.value
+            for item in (
+                RunMailboxInputType.USER,
+                RunMailboxInputType.STEERING,
+                RunMailboxInputType.FOLLOW_UP,
+                RunMailboxInputType.SYSTEM_CONTEXT,
+            )
+        )
+        placeholders = ", ".join("?" for _ in replan_types)
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT 1 FROM runtime_run_mailbox WHERE tenant_id = ? AND run_id = ? "
+                "AND delivery_status = 'PENDING' AND input_type IN ("
+                f"{placeholders}) LIMIT 1",
+                (tenant_id, run_id, *replan_types),
+            ).fetchone()
+        return row is not None
+
+    def acknowledge_mailbox_input(self, message_id: str, lease_token: str) -> bool:
+        """确认已由 Graph 重装 Context 的消息；无匹配租约不得误确认其他 Worker 的领取。"""
+        with self._lock:
+            changed = self._connection.execute(
+                "UPDATE runtime_run_mailbox SET delivery_status = 'CONSUMED', consumed_at = ?, "
+                "lease_token = '', lease_expires_at = NULL WHERE message_id = ? "
+                "AND delivery_status = 'PROCESSING' AND lease_token = ?",
+                (datetime.now(UTC).isoformat(), message_id, lease_token),
+            )
+            self._connection.commit()
+        return bool(changed.rowcount)
+
+    def transition_state(
+        self,
+        tenant_id: str,
+        run_id: str,
+        event: AgentRunEvent | str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        error_code: str = "",
+    ) -> tuple[RuntimeRun | None, RuntimeLifecycleEvent | None]:
+        """原子应用 Run 状态机事件并追加状态事实；非法迁移必须在副作用前失败关闭。"""
+        trigger = AgentRunEvent(event)
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute(
+                    "SELECT * FROM runtime_runs WHERE tenant_id = ? AND run_id = ?",
+                    (tenant_id, run_id),
+                ).fetchone()
+                if row is None:
+                    self._connection.commit()
+                    return None, None
+                run = self._from_row(row)
+                transition = transition_run_state(run.runtime_state, trigger)
+                lifecycle_event = None
+                if transition.changed:
+                    now = datetime.now(UTC).isoformat()
+                    self._connection.execute(
+                        "UPDATE runtime_runs SET runtime_state = ?, updated_at = ? WHERE run_id = ?",
+                        (transition.current.value, now, run_id),
+                    )
+                    lifecycle_event = self._append_session_event_locked(
+                        run.context,
+                        RuntimeEventType.RUN_STATE_CHANGED,
+                        status=run.status,
+                        error_code=error_code,
+                        metadata={
+                            "previous_state": transition.previous.value,
+                            "current_state": transition.current.value,
+                            "trigger": transition.event.value,
+                            **(metadata or {}),
+                        },
+                    )
+                    # 状态事实和治理 Outbox 同事务提交。Relay/CDC 之后才负责投递，
+                    # 所以 Governance 故障不会反向中断主运行，也不会丢审计链。
+                    self._enqueue_governance_locked(
+                        _governance_event_for_state_change(run.context, lifecycle_event), now
+                    )
+                    self._refresh_projection_locked(tenant_id, run.context.session_id)
+                    run = run.model_copy(update={"runtime_state": transition.current.value, "updated_at": datetime.fromisoformat(now)})
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+        return run, lifecycle_event
+
     def cancel(self, tenant_id: str, run_id: str) -> RuntimeRun | None:
         """仅对活动/待审批运行写协作取消标记，终态不可被取消改写。"""
         run, _ = self.cancel_with_session_event(tenant_id, run_id)
@@ -282,32 +538,69 @@ class RuntimeStore:
     def cancel_with_session_event(
         self, tenant_id: str, run_id: str
     ) -> tuple[RuntimeRun | None, RuntimeLifecycleEvent | None]:
-        """原子写入取消标记和取消事件；终态或重复取消不得制造额外事件。"""
+        """原子写入取消标记和取消事件；终态或重复取消不得制造额外事件。
+
+        读取旧状态后以比较并交换方式更新，保证审计中的 ``previous_state`` 是真实
+        先态而非更新后的取消态。等待用户输入同样属于活动 Run，必须允许取消。
+        """
         now = datetime.now(UTC).isoformat()
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
-                changed = self._connection.execute(
-                """
-                UPDATE runtime_runs SET cancel_requested = 1, updated_at = ?
-                WHERE tenant_id = ? AND run_id = ? AND cancel_requested = 0
-                    AND status IN ('RUNNING', 'WAITING_APPROVAL')
-                """,
-                (now, tenant_id, run_id),
-                )
                 row = self._connection.execute(
                     "SELECT * FROM runtime_runs WHERE tenant_id = ? AND run_id = ?",
                     (tenant_id, run_id),
                 ).fetchone()
-                run = self._from_row(row) if row else None
+                previous_run = self._from_row(row) if row else None
+                if previous_run is None:
+                    self._connection.commit()
+                    return None, None
+                if previous_run.cancel_requested or AgentRunState(previous_run.runtime_state).terminal:
+                    # 取消 API 必须幂等：重复调用只返回既有事实，不能因终态校验抛错。
+                    self._connection.commit()
+                    return previous_run, None
+                transition_run_state(previous_run.runtime_state, AgentRunEvent.CANCEL_REQUESTED)
+                changed = self._connection.execute(
+                    """
+                    UPDATE runtime_runs SET cancel_requested = 1, runtime_state = ?, updated_at = ?
+                    WHERE tenant_id = ? AND run_id = ? AND cancel_requested = 0
+                        AND runtime_state = ?
+                        AND status IN ('RUNNING', 'WAITING_APPROVAL', 'WAITING_INPUT')
+                    """,
+                    (
+                        AgentRunState.CANCELLED.value,
+                        now,
+                        tenant_id,
+                        run_id,
+                        previous_run.runtime_state,
+                    ),
+                )
                 event = None
-                if run is not None and changed.rowcount:
+                if changed.rowcount:
                     event = self._append_session_event_locked(
-                        run.context,
+                        previous_run.context,
                         RuntimeEventType.RUN_CANCEL_REQUESTED,
-                        status=run.status,
+                        status=previous_run.status,
+                        metadata={
+                            "previous_state": previous_run.runtime_state,
+                            "current_state": AgentRunState.CANCELLED.value,
+                            "trigger": AgentRunEvent.CANCEL_REQUESTED.value,
+                        },
                     )
-                    self._refresh_projection_locked(tenant_id, run.context.session_id)
+                    self._enqueue_governance_locked(
+                        _governance_event_for_state_change(previous_run.context, event), now
+                    )
+                    self._refresh_projection_locked(tenant_id, previous_run.context.session_id)
+                    run = previous_run.model_copy(
+                        update={"runtime_state": AgentRunState.CANCELLED.value, "cancel_requested": True}
+                    )
+                else:
+                    run = self._from_row(
+                        self._connection.execute(
+                            "SELECT * FROM runtime_runs WHERE tenant_id = ? AND run_id = ?",
+                            (tenant_id, run_id),
+                        ).fetchone()
+                    )
                 self._connection.commit()
             except Exception:
                 self._connection.rollback()
@@ -319,10 +612,12 @@ class RuntimeStore:
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
+                runtime_state = self._next_state_for_status_locked(run_id, status)
                 self._connection.execute(
-                "UPDATE runtime_runs SET status = ?, result_json = ?, error_code = ?, updated_at = ? WHERE run_id = ?",
+                "UPDATE runtime_runs SET status = ?, runtime_state = ?, result_json = ?, error_code = ?, updated_at = ? WHERE run_id = ?",
                 (
                     status,
+                    runtime_state,
                     json.dumps(result, ensure_ascii=False),
                     error_code,
                     datetime.now(UTC).isoformat(),
@@ -353,28 +648,50 @@ class RuntimeStore:
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
+                previous_row = self._connection.execute(
+                    "SELECT runtime_state FROM runtime_runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                previous_state = (
+                    self._row_value(previous_row, "runtime_state", AgentRunState.CREATED.value)
+                    if previous_row is not None
+                    else None
+                )
+                runtime_state = self._next_state_for_status_locked(run_id, status)
                 self._connection.execute(
                     """
                     UPDATE runtime_runs
-                    SET status = ?, result_json = ?, error_code = ?, updated_at = ?
+                    SET status = ?, runtime_state = ?, result_json = ?, error_code = ?, updated_at = ?
                     WHERE run_id = ?
                     """,
                     (
                         status,
+                        runtime_state,
                         json.dumps(result, ensure_ascii=False),
                         error_code,
                         now,
                         run_id,
                     ),
                 )
-                self._connection.execute(
-                    """
-                    INSERT INTO runtime_outbox(event_id, payload_json, created_at)
-                    VALUES (?, ?, ?) ON CONFLICT(event_id) DO NOTHING
-                    """,
-                    (event["event_id"], json.dumps(event, ensure_ascii=False), now),
-                )
+                self._enqueue_governance_locked(event, now)
                 context = self._context_for_run_locked(run_id)
+                state_event = None
+                if context is not None and previous_state is not None and previous_state != runtime_state:
+                    # 终态/中断态同样是状态迁移：保留专门的事实供跨 Run 审计关联，
+                    # 而完成事件继续供 Governance 触发结果评测，二者职责不重叠。
+                    state_event = self._append_session_event_locked(
+                        context,
+                        RuntimeEventType.RUN_STATE_CHANGED,
+                        status=status,
+                        error_code=error_code,
+                        metadata={
+                            "previous_state": previous_state,
+                            "current_state": runtime_state,
+                            "trigger": self._event_for_status(status).value,
+                        },
+                    )
+                    self._enqueue_governance_locked(
+                        _governance_event_for_state_change(context, state_event), now
+                    )
                 session_event = (
                     self._append_session_event_locked(
                         context,
@@ -724,16 +1041,16 @@ class RuntimeStore:
     def enqueue_governance(self, event: dict[str, Any]) -> None:
         """写入幂等治理 Outbox；业务事务内不直接同步调用 Kafka/HTTP。"""
         with self._lock:
-            self._connection.execute(
-                "INSERT INTO runtime_outbox(event_id, payload_json, created_at) "
-                "VALUES (?, ?, ?) ON CONFLICT(event_id) DO NOTHING",
-                (
-                    event["event_id"],
-                    json.dumps(event, ensure_ascii=False),
-                    datetime.now(UTC).isoformat(),
-                ),
-            )
+            self._enqueue_governance_locked(event, datetime.now(UTC).isoformat())
             self._connection.commit()
+
+    def _enqueue_governance_locked(self, event: dict[str, Any], created_at: str) -> None:
+        """在既有事务中幂等插入治理事件，供状态和终态复用同一 Outbox 语义。"""
+        self._connection.execute(
+            "INSERT INTO runtime_outbox(event_id, payload_json, created_at) "
+            "VALUES (?, ?, ?) ON CONFLICT(event_id) DO NOTHING",
+            (event["event_id"], json.dumps(event, ensure_ascii=False), created_at),
+        )
 
     def pending_events(self, limit: int = 100) -> list[dict[str, Any]]:
         """读取到期未投递事件，供 Relay 或直连发布器批量处理。"""
@@ -786,6 +1103,19 @@ class RuntimeStore:
             "SELECT context_json FROM runtime_runs WHERE run_id = ?", (run_id,)
         ).fetchone()
         return ExecutionContext.model_validate_json(row["context_json"]) if row else None
+
+    def _next_state_for_status_locked(self, run_id: str, status: str) -> str:
+        """在写入 API 结果前校验终态迁移，防止迟到成功覆盖已取消或失败的 Run。"""
+        row = self._connection.execute(
+            "SELECT runtime_state FROM runtime_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            return self._terminal_state_for_status(status)
+        transition = transition_run_state(
+            self._row_value(row, "runtime_state", AgentRunState.CREATED.value),
+            self._event_for_status(status),
+        )
+        return transition.current.value
 
     def _append_session_event_locked(
         self,
@@ -1026,6 +1356,7 @@ class RuntimeStore:
             agent_id=row["agent_id"],
             snapshot_id=row["snapshot_id"],
             status=row["status"],
+            runtime_state=RuntimeStore._row_value(row, "runtime_state", AgentRunState.CREATED.value),
             context=ExecutionContext.model_validate_json(row["context_json"]),
             result=json.loads(row["result_json"]),
             error_code=row["error_code"],
@@ -1033,6 +1364,36 @@ class RuntimeStore:
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
+
+    @staticmethod
+    def _terminal_state_for_status(status: str) -> str:
+        """把粗粒度 API 状态映射为规范 Run 状态，保持旧对外状态字段兼容。"""
+        if status == "WAITING_APPROVAL":
+            return AgentRunState.WAITING_APPROVAL.value
+        if status == "WAITING_INPUT":
+            return AgentRunState.WAITING_INPUT.value
+        if status == "CANCELLED":
+            return AgentRunState.CANCELLED.value
+        if status == "COMPLETED":
+            return AgentRunState.COMPLETED.value
+        return AgentRunState.FAILED.value
+
+    @staticmethod
+    def _event_for_status(status: str) -> AgentRunEvent:
+        """将旧 API 状态映射为状态机事件，保证终态也经过同一合法迁移校验。"""
+        if status == "WAITING_APPROVAL":
+            return AgentRunEvent.APPROVAL_REQUIRED
+        if status == "WAITING_INPUT":
+            return AgentRunEvent.INPUT_REQUIRED
+        if status == "CANCELLED":
+            return AgentRunEvent.CANCEL_REQUESTED
+        if status == "COMPLETED":
+            return AgentRunEvent.RUN_COMPLETED
+        return AgentRunEvent.RUN_FAILED
+
+
+class RuntimeStore(RuntimeStoreOperations):
+    """本地 SQLite 开发存储；生产 PostgreSQL 适配器不继承该具体后端。"""
 
 
 class GovernanceOutboxPublisher:
@@ -1080,7 +1441,9 @@ class GovernanceOutboxPublisher:
         route = plan.get("route", {}) if isinstance(plan, dict) else {}
         budget = result.get("budget", {})
         event_type = (
-            "agent.run.interrupted" if status == "WAITING_APPROVAL" else "agent.run.completed"
+            "agent.run.interrupted"
+            if status in {"WAITING_APPROVAL", "WAITING_INPUT"}
+            else "agent.run.completed"
         )
         return {
             "event_id": f"evt_{uuid4().hex}",

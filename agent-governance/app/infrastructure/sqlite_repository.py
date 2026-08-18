@@ -19,7 +19,8 @@ from app.domain.models import AuditEvent, Finding, FindingStatus, GovernanceEven
 T = TypeVar("T")
 
 
-class SqliteRepository:
+class GovernanceRepositoryOperations:
+    """与数据库方言无关的治理聚合操作；具体连接、锁与迁移由适配器负责。"""
     """Serialize audit ledger writes so every tenant chain has one predecessor."""
 
     def __init__(self, database_path: Path, schema_path: Path) -> None:
@@ -455,6 +456,10 @@ class SqliteRepository:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
+
+
+class SqliteRepository(GovernanceRepositoryOperations):
+    """开发/测试 SQLite 适配器；生产 PostgreSQL 不继承该具体后端。"""
 
 
 def _json(value: object) -> str:

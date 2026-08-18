@@ -25,6 +25,7 @@ def index_version(request: Request) -> RagIndexVersionResponse:
     return RagIndexVersionResponse(
         index_version=query_service.index_version,
         backend=query_service.backend,
+        embedding_contract=query_service.embedding_contract,
     )
 
 

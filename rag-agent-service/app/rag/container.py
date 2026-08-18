@@ -3,6 +3,7 @@ from app.core.config import get_settings
 from app.rag.query_service import RagQueryService
 from app.rerank import build_reranker
 from app.retrieval.controlled_scan import ControlledFileScanner
+from app.retrieval.embedder import build_embedder
 from app.retrieval.hybrid_retriever import HybridRetriever
 from app.retrieval.search_projection import build_search_projection
 
@@ -14,15 +15,16 @@ class RagQueryContainer:
         """加载冻结配置并构建检索、精排、扫描和版本化索引依赖。"""
         self.settings = get_settings()
         self.repository = build_repository(self.settings)
+        self.embedder = build_embedder(self.settings)
         self.reranker = build_reranker(self.settings)
         self.retriever = HybridRetriever(
             bm25_weight=self.settings.bm25_weight,
             vector_weight=self.settings.vector_weight,
-            embedding_dim=self.settings.local_embedding_dim,
+            embedder=self.embedder,
             reranker=self.reranker,
             candidate_k=self.settings.retrieval_candidate_k,
         )
-        self.search_projection = build_search_projection(self.settings)
+        self.search_projection = build_search_projection(self.settings, embedder=self.embedder)
         self.scanner = ControlledFileScanner(
             self.settings.scan_roots,
             max_file_bytes=self.settings.scan_max_file_bytes,
@@ -37,6 +39,7 @@ class RagQueryContainer:
             scanner=self.scanner,
             index_version=self.settings.opensearch_index_version,
             backend=self.settings.search_backend,
+            embedding_contract=self.embedder.contract,
         )
 
     def close(self) -> None:

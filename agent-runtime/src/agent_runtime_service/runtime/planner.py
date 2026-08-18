@@ -9,12 +9,20 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from platform_sdk.clients.llm_gateway import LlmGatewayClient
+from platform_sdk.contracts.execution_profile import legacy_execution_mode
 
+from agent_runtime_service.runtime.intent_catalog import (
+    DEFAULT_INTENT_CATALOG,
+    IntentCatalog,
+    resolve_catalog,
+)
 from agent_runtime_service.runtime.models import (
     ComplexityAssessment,
     CostAssessment,
     EntityResult,
+    ExecutionMode,
     ExecutionPlan,
+    ExecutionRequirements,
     IntentResult,
     RouteDecision,
     RouteType,
@@ -50,11 +58,17 @@ class HeuristicSemanticAnalyzer:
 
     uses_llm = False
 
+    def __init__(self, catalog: IntentCatalog = DEFAULT_INTENT_CATALOG) -> None:
+        """注入冻结意图目录，使规则命中可独立于模型发布、测试和审计演进。"""
+        self.catalog = catalog
+
     def analyze(self, state: dict[str, Any]) -> tuple[IntentResult, list[EntityResult], SourcePlan]:
         """用可解释词表和发布绑定生成本地分析，作为网关不可用时的确定性路径。"""
         task = state["task"]
-        lowered = task.lower()
-        intent_name, confidence, reason = self._intent(lowered)
+        compiled = state.get("compiled_plan", {})
+        catalog = resolve_catalog(compiled) if compiled else self.catalog
+        intent = catalog.resolve(task)
+        intent_name = intent.name
         entities = self._entities(task)
         metadata = state.get("metadata", {})
         snapshot = state.get("agent_snapshot", {})
@@ -81,31 +95,10 @@ class HeuristicSemanticAnalyzer:
             reason="Sources are derived from the published snapshot, intent, and request metadata.",
         )
         return (
-            IntentResult(name=intent_name, confidence=confidence, reason=reason),
+            intent,
             entities,
             source_plan,
         )
-
-    @staticmethod
-    def _intent(lowered: str) -> tuple[str, float, str]:
-        """按优先级匹配受维护的意图词表；无匹配时返回低置信通用意图。"""
-        rules = [
-            (("refund", "退款", "退货"), "refund_application"),
-            (("audit", "review", "审查", "审核", "合规"), "compliance_review"),
-            (
-                ("create", "update", "delete", "execute", "创建", "更新", "执行"),
-                "tool_operation",
-            ),
-            (("find", "search", "query", "查询", "检索", "查找"), "knowledge_query"),
-        ]
-        for words, intent in rules:
-            if any(word in lowered for word in words):
-                return (
-                    intent,
-                    0.86,
-                    f"Matched deterministic intent vocabulary for {intent}.",
-                )
-        return "general_question", 0.62, "No specialized intent rule matched."
 
     @staticmethod
     def _entities(task: str) -> list[EntityResult]:
@@ -137,6 +130,8 @@ Only select knowledge bases present in the published snapshot. Never invent perm
 
     def analyze(self, state: dict[str, Any]) -> tuple[IntentResult, list[EntityResult], SourcePlan]:
         """向网关请求结构化语义分析，同时只暴露快照允许的来源范围。"""
+        compiled = state.get("compiled_plan", {})
+        catalog = resolve_catalog(compiled) if compiled else DEFAULT_INTENT_CATALOG
         payload = {
             "task": state["task"],
             "metadata": state.get("metadata", {}),
@@ -144,6 +139,19 @@ Only select knowledge bases present in the published snapshot. Never invent perm
             "conversation_history": state.get("conversation_history", [])[-12:],
             "user_context": state.get("user_context", {}),
             "context_status": state.get("context_status", {}),
+            # 语义模型只能在发布目录列出的意图空间中输出；目录正文也会进入 Plan 指纹。
+            "intent_catalog": {
+                "version": catalog.version,
+                "definitions": [
+                    {
+                        "name": item.name,
+                        "domain": item.domain,
+                        "action": item.action,
+                        "required_entities": list(item.required_entities),
+                    }
+                    for item in catalog.definitions
+                ],
+            },
             "published_execution_contract": {
                 "graph_execution_order": state.get("compiled_plan", {}).get(
                     "graph_execution_order", []
@@ -229,6 +237,7 @@ class RuntimePlanner:
         policy_fingerprint = _fingerprint(
             {
                 "workflow": compiled.get("workflow_policy", {}),
+                "intent_catalog": compiled.get("intent_catalog"),
                 "retrieval": effective_policy.model_dump(mode="json"),
                 "permissions": sorted(state.get("permissions", [])),
                 "budget_limits": budget.model_dump(mode="json"),
@@ -246,6 +255,13 @@ class RuntimePlanner:
             "graph_version": snapshot.get("graph_version", "runtime-planner-v1"),
             "model_policy_version": snapshot.get("model_policy_version", "local-unversioned"),
             "executor_profile": compiled.get("executor_profile", "local-default/v1"),
+            "execution_mode": _execution_mode(
+                str(compiled.get("executor_profile", "local-default/v1"))
+            ),
+            "execution_requirements": ExecutionRequirements.model_validate(
+                compiled.get("execution_requirements", {})
+            ).model_dump(mode="json"),
+            "intent_catalog_version": str(compiled.get("intent_catalog_version", "platform-default/v1")),
             "retrieval_policy": effective_policy.model_dump(mode="json"),
             "planner_version": "runtime-planner/v2",
             "analyzer_version": analyzer_version,
@@ -263,6 +279,11 @@ def _fingerprint(value: dict[str, Any]) -> str:
     """计算可复现 SHA-256 摘要，审计只保存输入特征而不重复保存用户原文。"""
     canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _execution_mode(executor_profile: str) -> ExecutionMode:
+    """将发布 Profile 映射为可解释运行模式，避免 Planner 依赖具体执行器实例。"""
+    return ExecutionMode(legacy_execution_mode(executor_profile))
 
 
 def _complexity(

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from app.contracts.rag import RagSearchRequest
+from app.retrieval.embedder import HashEmbedder
 from app.retrieval.search_projection import OpenSearchProjection
-from app.retrieval.vector_retriever import HashEmbeddingRetriever
 
 
 class SearchResponse:
@@ -29,7 +29,8 @@ def test_search_pushes_tenant_and_user_acl_into_index_query() -> None:
     projection = object.__new__(OpenSearchProjection)
     projection.alias = "agent-knowledge-current"
     projection.version = "v7"
-    projection.embedder = HashEmbeddingRetriever(8)
+    projection.embedder = HashEmbedder(8)
+    projection.embedding_contract = projection.embedder.contract
     captured: dict = {}
 
     def request(method: str, path: str, **kwargs):
@@ -51,4 +52,5 @@ def test_search_pushes_tenant_and_user_acl_into_index_query() -> None:
     assert "operator-a" in str(filters)
     assert captured["path"] == "agent-knowledge-current/_search"
     assert result.index_version == "v7"
+    assert result.embedding_contract_id == projection.embedding_contract.contract_id
     assert result.evidence[0].source_id == "doc-1"

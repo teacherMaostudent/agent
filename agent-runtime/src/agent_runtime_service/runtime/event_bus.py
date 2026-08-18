@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
@@ -16,6 +17,23 @@ _LOGGER = logging.getLogger(__name__)
 
 
 RuntimeEventSubscriber = Callable[[RuntimeLifecycleEvent], None]
+
+
+@dataclass
+class RuntimeEventRegistration:
+    """启动期事件投影注册句柄；关闭后不再接收事件，便于容器有序停止。"""
+
+    name: str
+    event_type: RuntimeEventType
+    _bus: RuntimeEventBus
+    _subscriber: RuntimeEventSubscriber
+    _active: bool = True
+
+    def close(self) -> None:
+        """移除该投影订阅；只允许在容器停止或尚未冻结的启动期调用。"""
+        if self._active:
+            self._bus._remove(self.event_type, self._subscriber)
+            self._active = False
 
 
 class RuntimeHookPhase(StrEnum):
@@ -83,6 +101,35 @@ class RuntimeEventBus:
             for event_type, callbacks in supplied.items()
             if callbacks
         }
+        self._frozen = False
+
+    def register_projector(
+        self,
+        *,
+        name: str,
+        event_type: RuntimeEventType,
+        subscriber: RuntimeEventSubscriber,
+    ) -> RuntimeEventRegistration:
+        """在启动期注册命名投影并返回生命周期句柄；请求期动态插件一律拒绝。"""
+        if self._frozen:
+            raise RuntimeError("runtime event bus is frozen after startup")
+        normalized = name.strip()
+        if not normalized:
+            raise ValueError("runtime projector requires a name")
+        callbacks = self._subscribers.setdefault(event_type, ())
+        if subscriber in callbacks:
+            raise ValueError(f"runtime projector is already registered: {normalized}")
+        self._subscribers[event_type] = (*callbacks, subscriber)
+        return RuntimeEventRegistration(normalized, event_type, self, subscriber)
+
+    def freeze(self) -> None:
+        """结束启动注册窗口；后续请求只能发布已提交事实，不能增加隐式投影。"""
+        self._frozen = True
+
+    def _remove(self, event_type: RuntimeEventType, subscriber: RuntimeEventSubscriber) -> None:
+        """按身份移除一个订阅者，供注册句柄在容器关闭时有序释放。"""
+        callbacks = self._subscribers.get(event_type, ())
+        self._subscribers[event_type] = tuple(item for item in callbacks if item is not subscriber)
 
     def publish(self, event: RuntimeLifecycleEvent) -> None:
         """同步通知本进程订阅者；失败只记录日志，审计可靠性仍由 Governance Outbox 保证。"""

@@ -127,7 +127,15 @@ class Settings(BaseSettings):
     generation_timeout: float = 120.0
 
     # 法规库 / embedding：provider=hash(默认,离线免密钥) | qwen(真实语义)。
+    # cloud_dashscope 是受控云基线; local_openai 通过自部署兼容端点承载 BGE-M3/Qwen3-Embedding。
     embedding_provider: str = "hash"
+    embedding_model_revision: str = "configured-v1"
+    embedding_normalized: bool = False
+    embedding_max_input_chars: int = Field(default=16_000, ge=1, le=1_000_000)
+    # 本地开发可显式允许 Hash 兜底；生产默认拒绝，避免查询与已发布索引进入不同向量空间。
+    embedding_allow_hash_fallback: bool = False
+    embedding_instruction_template: str = ""
+    embedding_license: str = "unspecified"
     # 通义密钥(sk-开头)，聊天与 embedding 共用。同时接受裸 DASHSCOPE_API_KEY
     # 和带前缀 RAG_DASHSCOPE_API_KEY，用户已有的裸变量可直接用。
     dashscope_api_key: str = Field(
@@ -136,6 +144,13 @@ class Settings(BaseSettings):
     )
     qwen_embedding_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_embedding_model: str = "text-embedding-v3"
+    qwen_embedding_dimension: int = Field(default=1024, ge=1, le=16_384)
+    local_embedding_base_url: str = "http://localhost:8008/v1"
+    local_embedding_api_key: str = Field(default="", repr=False)
+    local_embedding_model: str = "BAAI/bge-m3"
+    local_embedding_dimension: int = Field(default=1024, ge=1, le=16_384)
+    local_embedding_batch_size: int = Field(default=16, ge=1, le=512)
+    local_embedding_license: str = "open-source"
     qwen_embedding_batch_size: int = 10
     # 法规原件 PDF 所在目录(默认桌面项目根)；建库时从这里读取纳入的 5 部法规。
     regulation_source_dir: Path = Path("..")
@@ -186,6 +201,14 @@ class Settings(BaseSettings):
                 unsafe.append("RAG_OBJECT_STORAGE_BACKEND must be s3 and S3_BUCKET is required")
             if self.search_backend != "opensearch" or not self.opensearch_url:
                 unsafe.append("RAG_SEARCH_BACKEND must be opensearch")
+            if self.embedding_provider not in {"cloud_dashscope", "qwen", "local_openai"}:
+                unsafe.append("RAG_EMBEDDING_PROVIDER must select a semantic cloud or self-hosted provider")
+            if self.embedding_allow_hash_fallback:
+                unsafe.append("RAG_EMBEDDING_ALLOW_HASH_FALLBACK must be false")
+            if self.embedding_provider in {"cloud_dashscope", "qwen"} and not self.dashscope_api_key:
+                unsafe.append("DASHSCOPE_API_KEY is required for the cloud embedding baseline")
+            if self.embedding_provider == "local_openai" and not self.local_embedding_base_url.startswith(("http://", "https://")):
+                unsafe.append("RAG_LOCAL_EMBEDDING_BASE_URL must be http(s)")
             if not self.oidc_enabled or not self.oidc_issuer or not self.oidc_jwks_url:
                 unsafe.append("RAG_OIDC_ENABLED, OIDC_ISSUER and OIDC_JWKS_URL are required")
             if not self.oidc_permissions_claim.strip():

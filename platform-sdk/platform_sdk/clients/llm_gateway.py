@@ -3,6 +3,7 @@
 import json
 import re
 from contextvars import ContextVar
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -24,6 +25,7 @@ class LlmGatewayClient:
         user_id: str = "rag-agent-service",
         timeout: float = 60.0,
         workload_identity: WorkloadTokenProvider | None = None,
+        mtls: dict[str, Any] | None = None,
     ) -> None:
         """保存网关地址、服务身份与每次上下文独立的最近用量。
 
@@ -35,6 +37,7 @@ class LlmGatewayClient:
         self.user_id = user_id.strip() or "rag-agent-service"
         self.timeout = timeout
         self.workload_identity = workload_identity
+        self.mtls = mtls or {}
         self._last_usage: ContextVar[dict | None] = ContextVar(
             f"llm_gateway_usage_{id(self)}",
             default=None,
@@ -61,7 +64,7 @@ class LlmGatewayClient:
             headers.update({key: value for key, value in execution_headers.items() if value})
         with trace.get_tracer(__name__).start_as_current_span("gateway.chat_completion") as span:
             span.set_attribute("gen_ai.request.model", str(payload.get("model", "")))
-            with httpx.Client(timeout=self.timeout) as client:
+            with httpx.Client(timeout=self.timeout, **self.mtls) as client:
                 response = client.post(
                     f"{self.base_url}/v1/chat/completions",
                     json=payload,
@@ -131,6 +134,6 @@ class LlmGatewayClient:
 
     def healthcheck(self) -> None:
         """探测网关健康状态，不消耗模型额度或创建审计运行。"""
-        with httpx.Client(timeout=min(self.timeout, 5.0)) as client:
+        with httpx.Client(timeout=min(self.timeout, 5.0), **self.mtls) as client:
             response = client.get(f"{self.base_url}/actuator/health")
             response.raise_for_status()
