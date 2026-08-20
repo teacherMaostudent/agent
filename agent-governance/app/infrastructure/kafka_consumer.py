@@ -22,7 +22,9 @@ from app.domain.models import GovernanceEvent
 
 
 def _event(value: bytes) -> GovernanceEvent:
-    """处理 _event 对应的当前组件内部业务步骤。"""
+    """把 Kafka 消息解析并校验为规范化 GovernanceEvent；Schema
+    或租户字段无效时拒绝进入规则引擎。 回明确错误。 回明确错误。
+    """
     document: Any = json.loads(value)
     if isinstance(document, dict) and isinstance(document.get("payload"), dict):
         document = document["payload"]
@@ -68,7 +70,7 @@ def _event(value: bytes) -> GovernanceEvent:
 
 
 async def consume(settings: Settings) -> None:
-    """处理 consume 对应的当前组件内部业务步骤。"""
+    """消费规范化治理事件并幂等落库；可重试失败写回退避信息，超过上限后进入 DLQ。"""
     container = AppContainer(settings)
     await container.start()
     consumer = AIOKafkaConsumer(
@@ -141,7 +143,9 @@ async def consume(settings: Settings) -> None:
 
 
 def main() -> None:
-    """处理 main 对应的当前组件内部业务步骤。"""
+    """加载身份、Schema Registry 和 Kafka
+    配置后启动治理消费者；初始化失败使进程退出而非空转。
+    """
     settings = Settings()
     if not settings.kafka_bootstrap_servers:
         raise RuntimeError("GOVERNANCE_KAFKA_BOOTSTRAP_SERVERS is required")
@@ -149,7 +153,7 @@ def main() -> None:
 
 
 def _attempts(headers: list[tuple[str, bytes]] | None) -> int:
-    """处理 _attempts 对应的当前组件内部业务步骤。"""
+    """从消息 Header 安全解析重试次数；非法或缺失值按首次投递处理。"""
     for name, value in headers or []:
         if name == "x-attempt":
             try:
@@ -160,14 +164,11 @@ def _attempts(headers: list[tuple[str, bytes]] | None) -> int:
 
 
 async def _respect_retry_not_before(headers: list[tuple[str, bytes]] | None) -> None:
-    """处理 _respect_retry_not_before 对应的当前组件内部业务步骤。
+    """遵守消息声明的最早重试时间，防止消费者快速轮询放大故障。
 
-
-
-    The delay intentionally blocks the affected partition, preserving event
-    order for an aggregate.  Production deployments can replace this bounded
-    mechanism with a dedicated delayed-topic scheduler without changing the
-    event contract.
+    The delay intentionally blocks the affected partition, preserving event order for an
+    aggregate.  Production deployments can replace this bounded mechanism with a dedicated
+    delayed-topic scheduler without changing the event contract.
     """
     for name, value in headers or []:
         if name != "x-not-before":

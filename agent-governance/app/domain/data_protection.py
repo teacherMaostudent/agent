@@ -32,7 +32,9 @@ _PHONE = re.compile(r"(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)")
 
 
 def protect_payload(value: Any, *, capture_content: bool) -> Any:
-    """处理 protect_payload 对应的当前组件内部业务步骤。"""
+    """递归脱敏 Prompt/Response
+    中的敏感字段，并按采集策略保存摘要或受限正文，避免原文进入审计事件。
+    """
     if isinstance(value, dict):
         protected: dict[str, Any] = {}
         for key, item in value.items():
@@ -59,7 +61,7 @@ def classify_payload(*, capture_content: bool, protected: Any) -> str:
 
 
 def sampled(identifier: str, rate: float) -> bool:
-    """处理 sampled 对应的当前组件内部业务步骤。"""
+    """使用稳定请求 ID 做确定性采样，使同一请求在重放时保持相同采集决定。"""
     if rate >= 1:
         return True
     if rate <= 0:

@@ -31,7 +31,7 @@ public class LegacyAgentMemoryController {
 
     @GetMapping("/admin/engineering/memory")
     /**
-     * 执行 memory 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 返回兼容端点的只读内存投影；新 Runtime 不依赖该旧接口保存 Session。
     */
     public Object memory() {
         return memoryService.snapshot();
@@ -39,7 +39,7 @@ public class LegacyAgentMemoryController {
 
     @PostMapping("/admin/engineering/memory")
     /**
-     * 执行 write memory 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 写入兼容内存端点；仅供迁移窗口使用，不替代 Context Service 的会话所有权。
     */
     public Object writeMemory(@RequestBody AgentMemoryService.MemoryWriteRequest request) {
         return memoryService.put(request);
@@ -47,7 +47,7 @@ public class LegacyAgentMemoryController {
 
     @GetMapping("/v1/memory/context")
     /**
-     * 执行 memory context 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 读取兼容内存上下文并应用租户/会话隔离，不参与新 Context Service 排序。
     */
     public Object memoryContext(
             @RequestHeader(value = "X-User-Id", required = false) String userId,

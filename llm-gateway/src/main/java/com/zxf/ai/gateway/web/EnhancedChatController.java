@@ -33,7 +33,7 @@ public class EnhancedChatController {
 
     @PostMapping(path = "/chat", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     /**
-     * 执行 chat 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 执行增强聊天入口，并把上下文、RAG 与模型调用委托给既有服务边界。
     */
     public Mono<EnhancedChatResponse> chat(@Valid @RequestBody EnhancedChatRequest request) {
         return enhancedChatService.chat(request);

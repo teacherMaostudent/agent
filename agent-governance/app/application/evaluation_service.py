@@ -62,12 +62,14 @@ DEFAULT_JUDGE_PROMPT = (
 
 
 def _now() -> str:
-    """处理 _now 对应的当前组件内部业务步骤。"""
+    """生成带 UTC
+    时区的当前时间，供状态记录、保留策略和审计排序使用，避免各调用方自行处理时区。
+    """
     return datetime.now(UTC).isoformat()
 
 
 def _id(value: object | None = None) -> str:
-    """处理 _id 对应的当前组件内部业务步骤。"""
+    """规范化调用方提供的标识；缺失时生成随机 ID，使评测资产在租户范围内具有稳定主键。"""
     return str(value).strip() if value is not None and str(value).strip() else uuid4().hex
 
 
@@ -80,13 +82,17 @@ class EvaluationService:
         settings: Settings,
         gateway: LlmGatewayClient,
     ) -> None:
-        """初始化该组件的依赖、配置与内部状态。"""
+        """注入治理仓储、固定评测配置和仅负责模型执行的 Gateway
+        客户端；评测决策始终归 Governance 所有。
+        """
         self._repository = repository
         self._settings = settings
         self._gateway = gateway
 
     async def snapshot(self, tenant_id: str) -> dict[str, Any]:
-        """处理 snapshot 对应的当前组件内部业务步骤。"""
+        """汇总租户的 Prompt、检索策略、Golden
+        Case、Judge、校准和质量门禁资产，形成只读治理视图。
+        """
         return {
             "store": "governance",
             "promptVersions": await self._repository.list_documents(tenant_id, PROMPT_VERSION),
@@ -108,7 +114,10 @@ class EvaluationService:
     async def upsert_asset(
         self, tenant_id: str, kind: str, request: dict[str, Any]
     ) -> dict[str, Any]:
-        """处理 upsert_asset 对应的当前组件内部业务步骤。"""
+        """按租户和资产类型幂等保存版本化评测资产；Rubric
+        在写入时补齐显式门槛和维度。 Governance
+        后供校准、质量门禁与漂移分析复用。
+        """
         saved = dict(request)
         saved["id"] = _id(saved.get("id"))
         saved["createdAt"] = _now()
@@ -118,7 +127,9 @@ class EvaluationService:
         return await self._repository.upsert_document(tenant_id, kind, saved["id"], saved)
 
     async def record_trace(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
-        """处理 record_trace 对应的当前组件内部业务步骤。"""
+        """保存脱敏后的评测 Trace 与稳定 trace_id，供 Judge
+        证据和回放关联。 Governance 后供校准、质量门禁与漂移分析复用。
+        """
         saved = dict(request)
         saved["traceId"] = _id(saved.get("traceId"))
         saved["timestamp"] = _now()
@@ -127,7 +138,10 @@ class EvaluationService:
         )
 
     async def record_gateway_trace(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
-        """处理 record_gateway_trace 对应的当前组件内部业务步骤。"""
+        """按确定性采样和保留策略接收 Gateway
+        Trace；内容先脱敏/分类，再进入线上样本池。 Governance
+        后供校准、质量门禁与漂移分析复用。
+        """
         request_id = _id(request.get("requestId"))
         success = bool(request.get("success"))
         if success and not sampled(request_id, self._settings.online_trace_sample_rate):
@@ -198,7 +212,10 @@ class EvaluationService:
     async def record_feedback(
         self, tenant_id: str, user_id: str, request: dict[str, Any]
     ) -> dict[str, Any]:
-        """处理 record_feedback 对应的当前组件内部业务步骤。"""
+        """把具名用户反馈绑定到原
+        request_id；低评分样本进入人工复核队列而不直接变成 Golden
+        Case。 后供校准、质量门禁与漂移分析复用。
+        """
         sample_id = _id(request.get("requestId"))
         sample = await self._repository.get_document(tenant_id, ONLINE_SAMPLE, sample_id) or {
             "id": sample_id,
@@ -224,7 +241,9 @@ class EvaluationService:
         return await self._repository.upsert_document(tenant_id, ONLINE_SAMPLE, sample_id, sample)
 
     async def online_snapshot(self, tenant_id: str) -> dict[str, Any]:
-        """处理 online_snapshot 对应的当前组件内部业务步骤。"""
+        """汇总线上抽样、低分/分歧样本与人工复核状态，用于监控 Judge
+        漂移而不阻塞在线请求。
+        """
         samples = await self._repository.list_documents(tenant_id, ONLINE_SAMPLE)
         candidates = await self._repository.list_documents(tenant_id, GOLDEN_CANDIDATE)
         return {
@@ -238,7 +257,9 @@ class EvaluationService:
         }
 
     async def judge_online(self, tenant_id: str, user_id: str, sample_id: str) -> dict[str, Any]:
-        """处理 judge_online 对应的当前组件内部业务步骤。"""
+        """用已冻结 Judge
+        配置评判一条线上样本，并把分数、分歧和风险处置写回样本池供人工复核。
+        """
         sample = await self._repository.get_document(tenant_id, ONLINE_SAMPLE, sample_id)
         if not sample:
             raise NotFoundError(f"Unknown online sample: {sample_id}")
@@ -292,7 +313,9 @@ class EvaluationService:
         sample_id: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
-        """处理 review_online_sample 对应的当前组件内部业务步骤。"""
+        """记录具名审核人的线上样本结论；复核结果可进入 Golden
+        Candidate，但不会直接改写现有 Golden Case。
+        """
         sample = await self._repository.get_document(tenant_id, ONLINE_SAMPLE, sample_id)
         if not sample:
             raise NotFoundError(f"Unknown online sample: {sample_id}")
@@ -330,7 +353,10 @@ class EvaluationService:
         candidate_id: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
-        """处理 review_golden_candidate 对应的当前组件内部业务步骤。"""
+        """记录专家对 Golden Candidate
+        的决定；只有批准项才复制为带专家标签的 Golden Case。
+        Governance 后供校准、质量门禁与漂移分析复用。
+        """
         candidate = await self._repository.get_document(tenant_id, GOLDEN_CANDIDATE, candidate_id)
         if not candidate:
             raise NotFoundError(f"Unknown Golden candidate: {candidate_id}")
@@ -361,7 +387,9 @@ class EvaluationService:
         )
 
     async def run_regression(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
-        """执行 run_regression 对应的受控业务步骤。"""
+        """在冻结数据集和模型配置上执行确定性回归，保存逐用例结果、检索指标、红队结果和分组
+        Hard Gate 证据。
+        """
         answers = request.get("answerByQuestion") or {}
         cases = await self._repository.list_documents(tenant_id, GOLDEN_CASE)
         execution_snapshot = await self._compile_snapshot(
@@ -403,7 +431,9 @@ class EvaluationService:
         user_id: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
-        """处理 judge 对应的当前组件内部业务步骤。"""
+        """在固定模型、Prompt、Rubric、温度和输出 Schema
+        下评判回归结果，并保存每次 Judge 调用证据。
+        """
         rubric = await self._rubric(tenant_id, request.get("rubricId"))
         all_cases = await self._repository.list_documents(tenant_id, GOLDEN_CASE)
         selected = set(request.get("caseIds") or [])
@@ -522,7 +552,9 @@ class EvaluationService:
         return await self._repository.upsert_document(tenant_id, JUDGE_RUN, run["id"], run)
 
     async def calibrate(self, tenant_id: str, judge_run_id: str) -> dict[str, Any]:
-        """处理 calibrate 对应的当前组件内部业务步骤。"""
+        """将冻结 Judge 跑过专家标注集，计算准确率、MAE、混淆矩阵和
+        Kappa；未达门槛的 Judge 不可用于发布 Gate。
+        """
         run = await self._repository.get_document(tenant_id, JUDGE_RUN, judge_run_id)
         if not run:
             raise NotFoundError(f"Unknown judge run: {judge_run_id}")
@@ -585,8 +617,9 @@ class EvaluationService:
         )
 
     async def weekly_calibration_report(self, tenant_id: str) -> dict[str, Any]:
-        """处理 weekly_calibration_report 对应的当前组件内部业务步骤。
-
+        """比较最近两次校准的
+        Agreement/Kappa，并分层选出低分、分歧和高风险人工复核样本。
+        Governance 后供校准、质量门禁与漂移分析复用。
 
         Produce the weekly drift signal and a stratified human-review queue.
         """
@@ -622,7 +655,9 @@ class EvaluationService:
         cases: list[dict[str, Any]],
         rubric: dict[str, Any],
     ) -> dict[str, Any]:
-        """创建或构建 _compile_snapshot 对应的受控业务步骤。"""
+        """冻结 Prompt、Rubric、Golden
+        Case、模型修订、采样参数和输出 Schema，并计算内容摘要防止运行期漂移。
+        """
         prompt = await self._prompt(tenant_id, request.get("promptVersionId"))
         snapshot = {
             "id": f"evalsnap_{uuid4().hex}",
@@ -661,7 +696,9 @@ class EvaluationService:
         )
 
     async def _prompt(self, tenant_id: str, prompt_id: object) -> dict[str, Any]:
-        """处理 _prompt 对应的当前组件内部业务步骤。"""
+        """按租户读取指定 Prompt
+        版本；缺失时失败关闭，禁止静默使用进程内默认文本造成评测漂移。
+        """
         if prompt_id:
             prompt = await self._repository.get_document(tenant_id, PROMPT_VERSION, str(prompt_id))
             if not prompt:
@@ -672,7 +709,10 @@ class EvaluationService:
         return {"id": "governance-judge-v1", "version": "1.0.0", "system": DEFAULT_JUDGE_PROMPT}
 
     def _model_spec(self, role: str) -> dict[str, str]:
-        """处理 _model_spec 对应的当前组件内部业务步骤。"""
+        """读取固定 Judge 角色的模型名与
+        revision，生成可写入评测快照的不可变路由绑定。 Governance
+        后供校准、质量门禁与漂移分析复用。
+        """
         return {
             "model": str(getattr(self._settings, f"judge_{role}_model")),
             "revision": str(getattr(self._settings, f"judge_{role}_model_revision")),
@@ -681,7 +721,10 @@ class EvaluationService:
     async def quality_gate(
         self, tenant_id: str, run_id: str, request: dict[str, Any] | None
     ) -> dict[str, Any]:
-        """处理 quality_gate 对应的当前组件内部业务步骤。"""
+        """综合校准准入、总体指标、分组阈值和高风险零失败规则生成发布
+        Gate；平均分不能覆盖 Hard Gate。
+        后供校准、质量门禁与漂移分析复用。
+        """
         run = await self._repository.get_document(tenant_id, JUDGE_RUN, run_id)
         if not run:
             raise NotFoundError(f"Unknown judge run: {run_id}")
@@ -746,7 +789,10 @@ class EvaluationService:
         return await self._repository.upsert_document(tenant_id, QUALITY_GATE, result["id"], result)
 
     async def _rubric(self, tenant_id: str, rubric_id: object) -> dict[str, Any]:
-        """处理 _rubric 对应的当前组件内部业务步骤。"""
+        """按租户解析指定 Rubric
+        版本并校验权重和通过分；未知版本不回退到其他租户或最新版本。
+        Governance 后供校准、质量门禁与漂移分析复用。
+        """
         resolved = str(rubric_id or "default")
         rubric = await self._repository.get_document(tenant_id, JUDGE_RUBRIC, resolved)
         if rubric:
@@ -799,7 +845,9 @@ class EvaluationService:
         prompt: dict[str, Any],
         case: dict[str, Any],
     ) -> str:
-        """处理 _candidate_answer 对应的当前组件内部业务步骤。"""
+        """调用候选模型生成待评答案，固定模型 revision 和快照参数；该结果没有
+        Judge 权限。 后供校准、质量门禁与漂移分析复用。
+        """
         response = await self._gateway.complete(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -827,7 +875,9 @@ class EvaluationService:
         prompt: dict[str, Any] | None = None,
         prior: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """处理 _judge_once 对应的当前组件内部业务步骤。"""
+        """执行一次确定性的 Judge 请求并严格校验结构化输出；模型文本不符合
+        Schema 时整次评判失败。
+        """
         payload = {
             "question": case.get("question"),
             "groundTruth": case.get("groundTruth"),
@@ -881,14 +931,13 @@ class EvaluationService:
 
 
 def _hash(value: object) -> str:
-    """处理 _hash 对应的当前组件内部业务步骤。"""
+    """对规范化评测对象计算稳定摘要，用于冻结资产、比较版本和发现 Judge 配置漂移。"""
     serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return sha256(serialized.encode()).hexdigest()
 
 
 def _validated_judge_output(text: str) -> dict[str, Any]:
-    """处理 _validated_judge_output 对应的当前组件内部业务步骤。
-
+    """解析并逐字段验证 Judge JSON，拒绝代码围栏、额外文本、越界分数和缺失证据。
 
     Fail closed when a provider ignores the requested strict JSON schema.
     """
@@ -915,12 +964,12 @@ def _validated_judge_output(text: str) -> dict[str, Any]:
 
 
 def _tokens(value: str) -> set[str]:
-    """处理 _tokens 对应的当前组件内部业务步骤。"""
+    """将文本规范化为用于离线基线指标的词项集合；该简化指标不替代语义或人工评测。"""
     return {item for item in re.split(r"[\W_]+", value.lower()) if item}
 
 
 def _similarity(left: str, right: str) -> float:
-    """处理 _similarity 对应的当前组件内部业务步骤。"""
+    """计算两个词项集合的 Jaccard 相似度，仅作为确定性回归辅助信号。"""
     left_tokens = _tokens(left)
     if not left_tokens or not right:
         return 0.0
@@ -929,13 +978,15 @@ def _similarity(left: str, right: str) -> float:
 
 
 def _average(values: Any) -> float:
-    """处理 _average 对应的当前组件内部业务步骤。"""
+    """对可转换为数值的结果求平均；空集合返回零，避免质量门禁出现 NaN。"""
     items = [float(item) for item in values]
     return round(sum(items) / len(items), 4) if items else 0.0
 
 
 def _retrieval_metrics(case: dict[str, Any], retrieved: list[dict[str, Any]]) -> dict[str, float]:
-    """处理 _retrieval_metrics 对应的当前组件内部业务步骤。"""
+    """依据固定 document/chunk 期望集合计算
+    Recall@K、Precision@K、MRR 与 nDCG。
+    """
     expected = set(case.get("expectedEvidenceIds") or [])
     ids = [
         str(item.get("id") or item.get("chunkId") or item.get("documentId") or "")
@@ -956,7 +1007,9 @@ def _retrieval_metrics(case: dict[str, Any], retrieved: list[dict[str, Any]]) ->
 
 
 def _average_retrieval(results: list[dict[str, Any]]) -> dict[str, float]:
-    """处理 _average_retrieval 对应的当前组件内部业务步骤。"""
+    """逐指标汇总多个 Golden Case 的检索结果，保留与单用例 Hard Gate
+    分离的总体视图。
+    """
     return {
         key: _average(item["retrieval"][key] for item in results)
         for key in ("recallAtK", "precisionAtK", "mrr", "ndcg")
@@ -966,7 +1019,9 @@ def _average_retrieval(results: list[dict[str, Any]]) -> dict[str, float]:
 def _group_metrics(
     results: list[dict[str, Any]], cases: list[dict[str, Any]]
 ) -> dict[str, dict[str, int]]:
-    """处理 _group_metrics 对应的当前组件内部业务步骤。"""
+    """按
+    criticality、业务域和风险类型分桶统计通过率，防止平均分掩盖高风险失败。
+    """
     criticality = {item["id"]: str(item.get("criticality") or "normal").lower() for item in cases}
     groups: dict[str, dict[str, int]] = {}
     for result in results:
@@ -977,7 +1032,9 @@ def _group_metrics(
 
 
 def _kappa(pairs: list[tuple[bool, bool, dict[str, Any]]]) -> float:
-    """处理 _kappa 对应的当前组件内部业务步骤。"""
+    """计算 Judge 与专家二分类标签的 Cohen's
+    Kappa，扣除随机一致造成的虚高。
+    """
     total = len(pairs)
     observed = sum(expected == actual for expected, actual, _ in pairs) / total
     expected_positive = sum(expected for expected, _, _ in pairs) / total
@@ -987,7 +1044,7 @@ def _kappa(pairs: list[tuple[bool, bool, dict[str, Any]]]) -> float:
 
 
 def _weighted_score(scores: dict[str, int], rubric: dict[str, Any]) -> int:
-    """处理 _weighted_score 对应的当前组件内部业务步骤。"""
+    """按冻结 Rubric 权重聚合维度分数；缺失维度不会被未声明权重隐式补偿。"""
     dimensions = rubric.get("dimensions") or []
     total = sum(Decimal(str(item.get("weight", 0))) for item in dimensions)
     if not total:
@@ -1002,7 +1059,7 @@ def _weighted_score(scores: dict[str, int], rubric: dict[str, Any]) -> int:
 def _consensus(
     left: dict[str, Any], right: dict[str, Any], rubric: dict[str, Any]
 ) -> dict[str, Any]:
-    """处理 _consensus 对应的当前组件内部业务步骤。"""
+    """聚合多次 Judge 结果并标记分歧；无法达成一致时转人工复核而非强行给出通过结论。"""
     scores = {
         item["name"]: round(
             (
@@ -1031,7 +1088,7 @@ def _consensus(
 
 
 def _question(request: dict[str, Any]) -> str:
-    """处理 _question 对应的当前组件内部业务步骤。"""
+    """从版本化请求契约提取评测问题，兼容已声明字段而不扫描任意嵌套内容。"""
     messages = request.get("messages") or []
     for item in reversed(messages):
         if item.get("role") == "user":
@@ -1040,7 +1097,7 @@ def _question(request: dict[str, Any]) -> str:
 
 
 def _answer(response: dict[str, Any]) -> str:
-    """处理 _answer 对应的当前组件内部业务步骤。"""
+    """从 Gateway 响应提取候选答案；缺失正文返回空串并由后续门禁判失败。"""
     choices = response.get("choices") or []
     if choices:
         return str((choices[0].get("message") or {}).get("content") or "")

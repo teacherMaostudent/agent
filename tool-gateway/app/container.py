@@ -81,8 +81,8 @@ class Container:
         )
 
     def ready(self) -> dict:
-        """处理 ready 对应的当前组件内部业务步骤。
-
+        """检查仓储、目录和必需共享依赖是否可用；失败返回未就绪，避免实例接收可能产生副作用
+        的流量。
 
         Probe only owned dependencies so readiness never executes a business tool.
         """
@@ -93,8 +93,7 @@ class Container:
         }
 
     def close(self) -> None:
-        """处理 close 对应的当前组件内部业务步骤。
-
+        """停止事件发布器并关闭所有工具适配器和仓储连接，供应用生命周期幂等清理资源。
 
         Close adapters before persistence to avoid abandoning in-flight transport resources.
         """
@@ -106,8 +105,8 @@ class Container:
 
 
 async def _close_all(adapters) -> None:
-    """管理生命周期 _close_all 对应的受控业务步骤。
-
+    """并发关闭去重后的适配器集合；收集关闭异常但保证每个资源都获得清理机会。
+    在产生外部副作用前返回明确错误。
 
     Release independent adapter sessions concurrently during a controlled shutdown.
     """

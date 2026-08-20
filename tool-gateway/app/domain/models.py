@@ -9,8 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 def utc_now() -> datetime:
-    """处理 utc_now 对应的当前组件内部业务步骤。
-
+    """生成带 UTC 时区的默认时间，确保审批、执行和审计记录可跨节点排序。
+    无效配置延迟到执行期失败。 无效配置延迟到执行期失败。
 
     Generate UTC timestamps so approvals and audit expiry are comparable across regions.
     """
@@ -56,8 +56,9 @@ class HttpTransport(StrictModel):
     @field_validator("allowed_hosts")
     @classmethod
     def normalize_hosts(cls, value: list[str]) -> list[str]:
-        """处理 normalize_hosts 对应的当前组件内部业务步骤。
-
+        """规范化并去重允许主机列表；空值、通配根域和重复项在配置加载期处理。
+        化和不变量校验，避免无效配置延迟到执行期失败。
+        化和不变量校验，避免无效配置延迟到执行期失败。
 
         Canonicalise allow-listed hosts before SSRF validation compares them.
         """
@@ -77,8 +78,9 @@ class McpTransport(StrictModel):
     @field_validator("allowed_hosts")
     @classmethod
     def normalize_hosts(cls, value: list[str]) -> list[str]:
-        """处理 normalize_hosts 对应的当前组件内部业务步骤。
-
+        """规范化并去重允许主机列表；空值、通配根域和重复项在配置加载期处理。
+        化和不变量校验，避免无效配置延迟到执行期失败。
+        化和不变量校验，避免无效配置延迟到执行期失败。
 
         Canonicalise MCP server host allow-lists using the same SSRF-safe rule.
         """
@@ -109,8 +111,9 @@ class ToolSpec(StrictModel):
     @field_validator("required_permissions", "enabled_tenants")
     @classmethod
     def unique_values(cls, value: list[str]) -> list[str]:
-        """处理 unique_values 对应的当前组件内部业务步骤。
-
+        """保持工具权限与租户列表的声明顺序去重，避免同一约束被重复执行。
+        不变量校验，避免无效配置延迟到执行期失败。
+        不变量校验，避免无效配置延迟到执行期失败。
 
         Remove blank and duplicate permissions or tenant bindings at catalog load time.
         """
@@ -118,8 +121,10 @@ class ToolSpec(StrictModel):
 
     @model_validator(mode="after")
     def validate_governance(self) -> ToolSpec:
-        """校验 validate_governance 对应的受控业务步骤。
-
+        """校验‘validate_governance’资源的领域约束，在对象进入应用层前
+        完成规范化和不变量校验，避免无效配置延迟到执行期失败。
+        完成规范化和不变量校验，避免无效配置延迟到执行期失败。
+        完成规范化和不变量校验，避免无效配置延迟到执行期失败。
 
         Forbid unsafe retry and approval combinations before a tool reaches Runtime.
         """
@@ -135,8 +140,8 @@ class ToolSpec(StrictModel):
 
     @property
     def key(self) -> tuple[str, str]:
-        """处理 key 对应的当前组件内部业务步骤。
-
+        """返回工具名称和版本组成的不可变目录键，禁止仅按名称覆盖另一版本。
+        配置延迟到执行期失败。 配置延迟到执行期失败。
 
         Return the immutable catalog identity used for version-safe lookup.
         """
@@ -144,16 +149,18 @@ class ToolSpec(StrictModel):
 
     @property
     def requires_idempotency_key(self) -> bool:
-        """处理 requires_idempotency_key 对应的当前组件内部业务步骤。
-
+        """处理幂等执行记录的领域约束，在对象进入应用层前完成规范化和不变量校验，避免无效配
+        置延迟到执行期失败。
 
         Require replay protection for every operation that can change business state.
         """
         return self.risk != ToolRisk.READ_ONLY
 
     def is_enabled_for(self, tenant_id: str) -> bool:
-        """判断 is_enabled_for 对应的受控业务步骤。
-
+        """处理‘is_enabled_for’资源的领域约束，在对象进入应用层前完成规范化
+        和不变量校验，避免无效配置延迟到执行期失败。
+        和不变量校验，避免无效配置延迟到执行期失败。
+        和不变量校验，避免无效配置延迟到执行期失败。
 
         Check the tenant allow-list before exposing a tool or invoking its adapter.
         """
@@ -165,8 +172,8 @@ class ToolCatalog(StrictModel):
 
     @model_validator(mode="after")
     def unique_tool_versions(self) -> ToolCatalog:
-        """处理 unique_tool_versions 对应的当前组件内部业务步骤。
-
+        """处理工具目录项的领域约束，在对象进入应用层前完成规范化和不变量校验，避免无效配置
+        延迟到执行期失败。
 
         Reject duplicate logical versions so release selection stays unambiguous.
         """
@@ -188,8 +195,9 @@ class ToolManifest(StrictModel):
 
     @classmethod
     def from_spec(cls, spec: ToolSpec) -> ToolManifest:
-        """处理 from_spec 对应的当前组件内部业务步骤。
-
+        """从内部 ToolSpec 生成不含凭据和端点秘密的对外
+        ToolManifest。 验，避免无效配置延迟到执行期失败。
+        验，避免无效配置延迟到执行期失败。
 
         Project an executable catalog entry into the safe manifest visible to Runtime.
         """

@@ -77,8 +77,8 @@ class AppContainer:
         )
 
     async def start(self) -> None:
-        """处理 start 对应的当前组件内部业务步骤。
-
+        """按依赖顺序初始化仓储、远程客户端和后台编排器；任一必需依赖失败都会阻止服务进入就
+        绪。
 
         Initialize persistence before serving release-management requests.
         """
@@ -87,8 +87,7 @@ class AppContainer:
             self._monitor_task = asyncio.create_task(self._monitor_model_releases())
 
     async def stop(self) -> None:
-        """处理 stop 对应的当前组件内部业务步骤。
-
+        """按逆序停止后台任务并关闭连接池；关闭过程不推进任何业务状态。
 
         Release workflow and repository resources during process shutdown.
         """

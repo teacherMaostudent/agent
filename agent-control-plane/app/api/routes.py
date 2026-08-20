@@ -167,7 +167,9 @@ async def readiness(container: Container, response: Response) -> HealthStatus:
 async def create_skill(
     request: SkillCreate, identity: ManagementIdentity, container: Container, trace_id: TraceId
 ) -> SkillDefinition:
-    """创建可编辑 Skill 草稿；它尚未被 Runtime 或 Capability Resolver 使用。"""
+    """创建可编辑 Skill 草稿；它尚未被 Runtime 或 Capability
+    Resolver 使用。
+    """
     return await service(container).create_skill(identity, request, trace_id)
 
 
@@ -177,7 +179,9 @@ async def list_skill_cards(
     container: Container,
     capability_id: str = Query(default="", max_length=160),
 ) -> list[SkillCard]:
-    """渐进披露 Skill Card，不向 Planner/用户泄露完整 Prompt 和工具绑定。"""
+    """渐进披露 Skill Card，不向 Planner/用户泄露完整 Prompt
+    和工具绑定。
+    """
     return await service(container).list_skill_cards(identity, capability_id)
 
 
@@ -214,7 +218,9 @@ async def publish_skill_version(
     container: Container,
     trace_id: TraceId,
 ) -> SkillVersion:
-    """编译并冻结 SkillVersion，供 Agent/Workflow 以摘要精确绑定。"""
+    """编译并冻结 SkillVersion，供 Agent/Workflow
+    以摘要精确绑定。
+    """
     return await service(container).publish_skill_version(identity, skill_id, request, trace_id)
 
 
@@ -245,7 +251,9 @@ async def update_skill_status(
 async def resolve_skill(
     skill_id: str, version: str, identity: RuntimeIdentity, container: Container
 ) -> SkillRuntimeResolution:
-    """供 Runtime 与 Agent Lab 解析 Active SkillVersion。"""
+    """供 Runtime 与 Agent Lab 解析 Active
+    SkillVersion。
+    """
     return await service(container).resolve_skill(identity, skill_id, version)
 
 
@@ -261,8 +269,8 @@ async def create_agent(
     container: Container,
     trace_id: TraceId,
 ) -> AgentDefinition:
-    """创建或构建 create_agent 对应的受控业务步骤。
-
+    """创建Agent 定义的 HTTP
+    入口：先从已验证身份构造租户上下文，再调用应用服务；路由层不复制授权或状态机逻辑。
 
     Create a tenant-scoped mutable draft; it is not Runtime-executable yet.
     """
@@ -466,8 +474,8 @@ async def resolve_runtime(
     environment: str = Query(default="production"),
     session_id: str = Query(min_length=1, max_length=200),
 ) -> RuntimeResolution:
-    """处理 resolve_runtime 对应的当前组件内部业务步骤。
-
+    """解析Runtime 身份的 HTTP
+    入口：先从已验证身份构造租户上下文，再调用应用服务；路由层不复制授权或状态机逻辑。
 
     Return the published snapshot selected for one authenticated Runtime run.
     """

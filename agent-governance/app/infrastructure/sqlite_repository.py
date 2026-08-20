@@ -21,6 +21,7 @@ T = TypeVar("T")
 
 class GovernanceRepositoryOperations:
     """与数据库方言无关的治理聚合操作；具体连接、锁与迁移由适配器负责。"""
+
     """Serialize audit ledger writes so every tenant chain has one predecessor."""
 
     def __init__(self, database_path: Path, schema_path: Path) -> None:

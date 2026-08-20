@@ -1,5 +1,8 @@
 # Plan-Execute 与分层授权执行架构
 
+> 本文是计划和授权契约的权威说明。对应的 Runtime、Control Plane、Tool Gateway 与 Governance
+> 文件和方法调用顺序见 [代码阅读与方法职责指南](code-reading-guide.md)。
+
 ## 最终抽象
 
 平台不把 Plan-Execute、ReAct、Managed Context、LangGraph、Deep Agents 和 Temporal

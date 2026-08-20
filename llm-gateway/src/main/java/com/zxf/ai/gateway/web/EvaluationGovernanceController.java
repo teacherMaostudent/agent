@@ -29,7 +29,7 @@ public class EvaluationGovernanceController {
 
     @PostMapping("/v1/feedback")
     /**
-     * 执行 feedback 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 把用户反馈与 request_id、租户和主体身份绑定后写入 Governance 线上校准闭环。
     */
     public Mono<JsonNode> feedback(
             @RequestHeader(value = "X-User-Id", required = false) String userId,
@@ -45,7 +45,7 @@ public class EvaluationGovernanceController {
 
     @GetMapping("/admin/eval/governance")
     /**
-     * 执行 snapshot 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 返回当前组件的脱敏只读快照，调用不会推进业务状态或产生外部副作用。
     */
     public Mono<JsonNode> snapshot(
             @RequestHeader(value = "X-Tenant-Id", required = false) String tenant,
@@ -57,7 +57,7 @@ public class EvaluationGovernanceController {
 
     @PostMapping("/admin/eval/governance/samples/{sampleId}/judge")
     /**
-     * 执行 judge 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 请求 Governance 对指定线上样本执行冻结 Judge，并返回评判与人工复核处置。
     */
     public Mono<JsonNode> judge(
             @PathVariable String sampleId,
@@ -71,7 +71,7 @@ public class EvaluationGovernanceController {
 
     @PostMapping("/admin/eval/governance/samples/{sampleId}/review")
     /**
-     * 执行 review sample 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 提交具名人工线上样本复核，决定进入校准集候选而非直接改变发布 Gate。
     */
     public Mono<JsonNode> reviewSample(
             @PathVariable String sampleId,
@@ -86,7 +86,7 @@ public class EvaluationGovernanceController {
 
     @PostMapping("/admin/eval/governance/golden-candidates/{candidateId}/review")
     /**
-     * 执行 review golden candidate 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 把专家对 Golden Candidate 的决定转发 Governance，批准后仍由 Governance 生成正式 Golden Case。
     */
     public Mono<JsonNode> reviewGoldenCandidate(
             @PathVariable String candidateId,

@@ -64,7 +64,7 @@ public class AdminController {
 
     @GetMapping("/overview")
     /**
-     * 执行 overview 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 组合路由、供应商、成本、性能与健康的只读管理概览，不执行控制操作。
     */
     public Map<String, Object> overview() {
         // 管理后台首页聚合最常看的运行态数据，避免前端首屏需要连续请求多个接口。
@@ -80,7 +80,7 @@ public class AdminController {
 
     @GetMapping("/providers")
     /**
-     * 执行 providers 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 返回脱敏供应商与模型配置，不暴露 API Key 或内部凭据。
     */
     public Object providers() {
         // API Key 只暴露是否配置，不返回明文，避免管理接口意外泄露上游厂商密钥。
@@ -107,7 +107,7 @@ public class AdminController {
 
     @GetMapping("/routes")
     /**
-     * 执行 routes 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 返回当前版本化路由配置和修订号，不执行模型调用。
     */
     public Object routes() {
         return properties.getRoutes();
@@ -151,7 +151,7 @@ public class AdminController {
 
     @GetMapping("/api-keys")
     /**
-     * 执行 api keys 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 返回脱敏后的 API Key 管理视图；读取不会创建、启用或撤销凭据。
     */
     public Object apiKeys() {
         return apiKeyService.snapshot();
@@ -159,7 +159,7 @@ public class AdminController {
 
     @GetMapping("/prompt-templates")
     /**
-     * 执行 prompt templates 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 返回版本化 Prompt 模板管理投影；正式评测 Prompt 仍由 Governance 冻结。
     */
     public Object promptTemplates() {
         return promptTemplateService.snapshot();
@@ -167,7 +167,7 @@ public class AdminController {
 
     @GetMapping("/cache")
     /**
-     * 执行 cache 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 返回缓存命中、容量和后端状态的只读运维快照，不修改任何缓存项。
     */
     public Object cache() {
         return requestCacheService.snapshot();
@@ -184,7 +184,7 @@ public class AdminController {
 
     @GetMapping("/models/health")
     /**
-     * 执行 model health 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 返回模型端点最近健康状态与熔断事实，不主动发起探测。
     */
     public Object modelHealth() {
         return policyService.snapshot();
@@ -192,7 +192,7 @@ public class AdminController {
 
     @PostMapping("/models/probe")
     /**
-     * 执行 probe models 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 对已配置模型端点执行受限健康探测，并返回逐端点结果而不修改路由。
     */
     public Map<String, Object> probeModels() {
         // 这里先提供轻量逻辑探测：展示网关侧熔断/限流状态。
@@ -206,7 +206,7 @@ public class AdminController {
 
     @GetMapping("/reports/cost")
     /**
-     * 执行 cost report 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 读取当前筛选窗口的成本聚合，不改变预算或计费记录。
     */
     public Object costReport() {
         return usageReportService.report();
@@ -214,7 +214,7 @@ public class AdminController {
 
     @GetMapping("/reports/cost/daily")
     /**
-     * 执行 daily cost report 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 按自然日返回成本趋势投影，币种与金额沿用已规范化执行事实。
     */
     public Object dailyCostReport() {
         return usageReportService.dailyReport();
@@ -231,7 +231,7 @@ public class AdminController {
 
     @GetMapping("/reports/performance")
     /**
-     * 执行 performance report 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 返回筛选窗口内的模型性能聚合，供运维分析而非发布自动决策。
     */
     public Object performanceReport() {
         // 性能报表用于比较云端模型与本地推理服务的延迟、吞吐、错误率和成本。
@@ -240,7 +240,7 @@ public class AdminController {
 
     @GetMapping("/reports/performance/daily")
     /**
-     * 执行 daily performance report 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 按自然日聚合请求量、延迟、错误和超时，供发布观察使用。
     */
     public Object dailyPerformanceReport() {
         return performanceService.dailyReport();
@@ -249,7 +249,7 @@ public class AdminController {
     /** Read-only metric execution used by the Control Plane release controller. */
     @GetMapping("/reports/performance/summary")
     /**
-     * 执行 performance summary 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 按路由、候选目标和时间窗返回灰度发布所需的最小性能指标集合。
     */
     public Object performanceSummary(
             @RequestParam Instant since,
@@ -271,7 +271,7 @@ public class AdminController {
 
     @GetMapping("/eval")
     /**
-     * 执行 evaluation snapshot 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 读取 Governance 中冻结的评测资产视图；Gateway 只做代理，不拥有评测版本。
     */
     public Mono<JsonNode> evaluationSnapshot() {
         return platform.governance("GET", "/v1/governance/evaluations", null, null, null);
@@ -306,7 +306,7 @@ public class AdminController {
 
     @PostMapping("/eval/regression-runs")
     /**
-     * 执行 run regression 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 请求 Governance 使用冻结数据集和配置运行回归评测，返回可审计 Run ID。
     */
     public Mono<JsonNode> runRegression(@RequestBody JsonNode request) {
         return platform.governance("POST", "/v1/governance/evaluations/regression-runs",
@@ -324,7 +324,7 @@ public class AdminController {
 
     @PostMapping("/eval/judge-runs")
     /**
-     * 执行 run llm judge 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 把候选结果交给 Governance 的冻结 Judge 执行，不在 Gateway 内决定通过。
     */
     public Mono<JsonNode> runLlmJudge(@RequestBody JsonNode request) {
         return platform.governance("POST", "/v1/governance/evaluations/judge-runs",
@@ -333,7 +333,7 @@ public class AdminController {
 
     @PostMapping("/eval/judge-runs/{runId}/quality-gate")
     /**
-     * 执行 evaluate quality gate 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 把固定 Judge Run 与门槛请求提交给 Governance，返回其正式 Gate 决定。
     */
     public Mono<JsonNode> evaluateQualityGate(
             @PathVariable String runId,
@@ -346,7 +346,7 @@ public class AdminController {
 
     @PostMapping("/observability/phoenix/traces")
     /**
-     * 执行 record phoenix trace 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 将已脱敏 Trace 转发 Governance 保存，Gateway 不拥有 Trace 保留策略。
     */
     public Mono<JsonNode> recordPhoenixTrace(@RequestBody JsonNode trace) {
         return platform.governance("POST", "/v1/governance/evaluations/traces",

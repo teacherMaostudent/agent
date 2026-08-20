@@ -366,7 +366,9 @@ def _reachable(entrypoint: str, adjacency: dict[str, set[str]]) -> set[str]:
 
 
 def _workflow_role(kind: str, *, terminal: bool) -> str:
-    """将 Control Plane Graph 节点映射为 Runtime 受限工作流角色。"""
+    """将 Control Plane Graph 节点映射为 Runtime
+    受限工作流角色。
+    """
     normalized = kind.strip().lower()
     if normalized in {"decision", "planner"}:
         return "decision"

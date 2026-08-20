@@ -14,8 +14,7 @@ def validate_outbound_url(
     allow_private_networks: bool,
     resolve_dns: bool = True,
 ) -> None:
-    """校验 validate_outbound_url 对应的受控业务步骤。
-
+    """校验协议、主机、端口和 DNS 解析结果，拒绝环回、私网和未注册目标以防 SSRF。
 
     Block SSRF by enforcing protocol, host allow-list and resolved-address policy.
     """
@@ -50,8 +49,8 @@ def validate_outbound_url(
 
 
 def _host_allowed(hostname: str, allowed_hosts: list[str]) -> bool:
-    """处理 _host_allowed 对应的当前组件内部业务步骤。
-
+    """将解析后的目标主机与精确主机/受控子域列表比较，阻止 URL 模板绕过 SSRF
+    边界。
 
     Match exact hosts or one-label wildcard suffixes without accepting the root domain.
     """

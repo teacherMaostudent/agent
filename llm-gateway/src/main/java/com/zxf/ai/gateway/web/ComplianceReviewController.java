@@ -46,7 +46,7 @@ public class ComplianceReviewController {
 
     @GetMapping("/admin/compliance")
     /**
-     * 执行 snapshot 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 返回当前组件的脱敏只读快照，调用不会推进业务状态或产生外部副作用。
     */
     public Mono<JsonNode> snapshot(
             @RequestHeader(value = "X-Tenant-Id", required = false) String tenant,
@@ -58,7 +58,7 @@ public class ComplianceReviewController {
 
     @GetMapping("/admin/compliance/reviews")
     /**
-     * 执行 reviews 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 按租户列出合规审查队列，不在 Gateway 内执行筛选规则或状态迁移。
     */
     public Mono<JsonNode> reviews(
             @RequestHeader(value = "X-Tenant-Id", required = false) String tenant,
@@ -70,7 +70,7 @@ public class ComplianceReviewController {
 
     @GetMapping("/admin/compliance/reviews/{reviewId}")
     /**
-     * 执行 review 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 读取当前租户的单条合规审查，禁止跨租户使用 review_id 查询。
     */
     public Mono<JsonNode> review(
             @PathVariable String reviewId,
@@ -84,7 +84,7 @@ public class ComplianceReviewController {
 
     @PostMapping("/admin/compliance/reviews/{reviewId}/confirm")
     /**
-     * 执行 confirm 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 把具名审核人的合规决定转发到 Governance；Gateway 不自行修改审查状态。
     */
     public Mono<JsonNode> confirm(
             @PathVariable String reviewId,
@@ -99,7 +99,7 @@ public class ComplianceReviewController {
 
     @GetMapping("/admin/compliance/audit-logs")
     /**
-     * 执行 audit logs 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 把租户和分页条件转发到 Governance 审计接口；Gateway 不复制审计存储。
     */
     public Mono<JsonNode> auditLogs(
             @RequestHeader(value = "X-Tenant-Id", required = false) String tenant,

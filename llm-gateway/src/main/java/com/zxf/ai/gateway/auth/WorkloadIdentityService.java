@@ -51,7 +51,7 @@ public class WorkloadIdentityService {
     }
 
     /**
-     * 执行 authorization header 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 获取带缓存和到期刷新的工作负载 Bearer Token，用于 Gateway 调用内部平台服务。
     */
     public Mono<String> authorizationHeader() {
         if (!isEnabled()) {

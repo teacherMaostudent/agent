@@ -59,9 +59,8 @@ def runtime_identity(
     x_user_id: str = Header(default="agent-runtime", alias="X-User-Id"),
     x_runtime_key: str | None = Header(default=None, alias="X-Runtime-Key"),
 ) -> Identity:
-    """处理 runtime_identity 对应的当前组件内部业务步骤。
-
-
+    """从已验证的 OIDC 声明构造 Runtime
+    工作负载身份，不信任调用方可伪造的身份 Header。
 
     Authenticate Runtime resolution without granting authoring permissions.
     """

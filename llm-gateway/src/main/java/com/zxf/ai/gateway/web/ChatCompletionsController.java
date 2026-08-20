@@ -101,7 +101,7 @@ public class ChatCompletionsController {
     }
 
     /**
-     * 执行 request context 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 从可信认证结果、请求头和请求体构造路由上下文，统一 deadline、budget 与 trace 字段。
     */
     private GatewayRequestContext requestContext(HttpHeaders headers, JsonNode request, boolean stream) {
         String claimedUserId = headers.getFirst("X-User-Id");
@@ -162,7 +162,7 @@ public class ChatCompletionsController {
 
     /** Parses a non-negative request-scoped budget in the gateway base currency. */
     /**
-     * 执行 parse cost budget 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 解析并校验调用方成本预算；负数、非法精度或无效文本在路由前拒绝。
     */
     private BigDecimal parseCostBudget(String rawBudget) {
         if (rawBudget == null || rawBudget.isBlank()) {

@@ -37,20 +37,17 @@ class ControlPlaneRepositoryOperations:
     """与数据库方言无关的 Control Plane 聚合操作；I/O 事务由子类提供。"""
 
     def __init__(self, database_path: Path, schema_path: Path) -> None:
-        """初始化该组件的依赖、配置与内部状态。
-
-
-        Initialize SqliteRepository dependencies and local state.
+        """保存数据库与 Schema
+        配置并建立进程内写锁；连接按操作创建，避免跨线程共享事务状态。
+        维护状态与审计/Outbox 一致性。
         """
         self._database_path = database_path
         self._schema_path = schema_path
         self._write_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
-        """处理 initialize 对应的当前组件内部业务步骤。
-
-
-        Perform initialize within the SqliteRepository ownership boundary.
+        """执行 Schema 初始化和向前兼容列迁移；迁移完成前仓储不会对应用层宣告可用。
+        内同步维护状态与审计/Outbox 一致性。
         """
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         schema = self._schema_path.read_text(encoding="utf-8")
@@ -83,10 +80,8 @@ class ControlPlaneRepositoryOperations:
         await asyncio.to_thread(operation)
 
     async def healthcheck(self) -> bool:
-        """处理 healthcheck 对应的当前组件内部业务步骤。
-
-
-        Perform healthcheck within the SqliteRepository ownership boundary.
+        """使用独立短连接执行只读探活查询；不持有业务写锁，也不修改任何聚合状态。
+        作在事务内同步维护状态与审计/Outbox 一致性。
         """
 
         def operation() -> bool:
@@ -98,8 +93,8 @@ class ControlPlaneRepositoryOperations:
         return await asyncio.to_thread(operation)
 
     async def acquire_lease(self, lease_name: str, owner_id: str, ttl_seconds: float) -> bool:
-        """处理 acquire_lease 对应的当前组件内部业务步骤。
-
+        """在单个写事务中创建、续租自有或接管已过期租约；其他有效持有者存在时返回
+        false。 /Outbox 一致性。 /Outbox 一致性。
 
         Acquire or renew only an expired/self-owned lease using one write transaction.
         """
@@ -131,10 +126,9 @@ class ControlPlaneRepositoryOperations:
         return await self._write(operation)
 
     async def create_agent(self, agent: AgentDefinition, event: OutboxEvent) -> None:
-        """创建或构建 create_agent 对应的受控业务步骤。
-
-
-        Persist state while preserving the transaction and audit boundary.
+        """在同一事务插入 Agent Draft 与创建 Outbox
+        事件，重复业务主键由数据库约束拒绝。 与审计/Outbox 一致性。
+        与审计/Outbox 一致性。
         """
 
         def operation(connection: sqlite3.Connection) -> None:
@@ -167,8 +161,9 @@ class ControlPlaneRepositoryOperations:
         expected_revision: int,
         event: OutboxEvent,
     ) -> bool:
-        """更新 update_agent 对应的受控业务步骤。
-
+        """以 expected_revision 条件更新 Agent Draft，并仅在
+        CAS 成功时写入对应 Outbox 事件。 与审计/Outbox 一致性。
+        与审计/Outbox 一致性。
 
         Apply the requested state transition with configured consistency checks.
         """
@@ -199,8 +194,9 @@ class ControlPlaneRepositoryOperations:
         return await self._write(operation)
 
     async def get_agent(self, tenant_id: str, agent_id: str) -> AgentDefinition | None:
-        """读取或查询 get_agent 对应的受控业务步骤。
-
+        """按 tenant_id 和 agent_id 读取单个
+        Draft；不存在返回空，不执行跨租户查询。 与审计/Outbox 一致性。
+        与审计/Outbox 一致性。
 
         Return the requested value through the established ownership boundary.
         """
@@ -216,8 +212,9 @@ class ControlPlaneRepositoryOperations:
         return await self._read(operation)
 
     async def list_agents(self, tenant_id: str) -> list[AgentDefinition]:
-        """读取或查询 list_agents 对应的受控业务步骤。
-
+        """在仓储事务边界内执行 list_agents
+        数据访问；查询必须携带租户或业务主键，写入必须保持状态与审计/Outbox
+        原子一致。
 
         List only values visible within the caller's tenant and lifecycle scope.
         """
@@ -233,10 +230,9 @@ class ControlPlaneRepositoryOperations:
         return await self._read(operation)
 
     async def create_version(self, version: AgentVersion, event: OutboxEvent) -> None:
-        """创建或构建 create_version 对应的受控业务步骤。
-
-
-        Persist state while preserving the transaction and audit boundary.
+        """原子插入不可变 AgentVersion 与发布事件；已存在
+        version_id 不允许覆盖。 /Outbox 一致性。 /Outbox
+        一致性。
         """
 
         def operation(connection: sqlite3.Connection) -> None:
@@ -583,7 +579,9 @@ class ControlPlaneRepositoryOperations:
     async def resolve_workflow_release(
         self, tenant_id: str, workflow_id: str, environment: str
     ) -> tuple[WorkflowRelease, WorkflowVersion] | None:
-        """解析当前 Active Release 及其不可变 WorkflowVersion。"""
+        """解析当前 Active Release 及其不可变
+        WorkflowVersion。
+        """
 
         def operation(connection: sqlite3.Connection):
             """在同一只读快照中读取 Release 与 Version，避免版本错配。"""
@@ -609,8 +607,8 @@ class ControlPlaneRepositoryOperations:
         agent_id: str,
         version_id: str,
     ) -> AgentVersion | None:
-        """读取或查询 get_version 对应的受控业务步骤。
-
+        """按租户、Agent 和 version_id 读取不可变版本，缺失时返回空。
+        /Outbox 一致性。 /Outbox 一致性。
 
         Return the requested value through the established ownership boundary.
         """
@@ -629,8 +627,9 @@ class ControlPlaneRepositoryOperations:
         return await self._read(operation)
 
     async def list_versions(self, tenant_id: str, agent_id: str) -> list[AgentVersion]:
-        """读取或查询 list_versions 对应的受控业务步骤。
-
+        """在仓储事务边界内执行 list_versions
+        数据访问；查询必须携带租户或业务主键，写入必须保持状态与审计/Outbox
+        原子一致。
 
         List only values visible within the caller's tenant and lifecycle scope.
         """
@@ -655,10 +654,8 @@ class ControlPlaneRepositoryOperations:
         event: OutboxEvent,
         retire_release_id: str | None = None,
     ) -> None:
-        """创建或构建 create_release 对应的受控业务步骤。
-
-
-        Persist state while preserving the transaction and audit boundary.
+        """原子保存 Release、Snapshot 摘要、质量/集群证据和 Outbox
+        事件。 Outbox 一致性。 Outbox 一致性。
         """
 
         def operation(connection: sqlite3.Connection) -> None:
@@ -722,8 +719,8 @@ class ControlPlaneRepositoryOperations:
         related_status: ReleaseStatus | None = None,
         expected_updated_at: str | None = None,
     ) -> bool:
-        """更新 update_release 对应的受控业务步骤。
-
+        """以当前状态和 revision 执行 Release CAS
+        迁移；条件不匹配时不写事件。 Outbox 一致性。 Outbox 一致性。
 
         Apply the requested state transition with configured consistency checks.
         """
@@ -769,8 +766,8 @@ class ControlPlaneRepositoryOperations:
         return await self._write(operation)
 
     async def get_release(self, tenant_id: str, release_id: str) -> ReleaseManifest | None:
-        """读取或查询 get_release 对应的受控业务步骤。
-
+        """按租户和 release_id 读取完整发布清单及不可变 Snapshot
+        绑定。 Outbox 一致性。 Outbox 一致性。
 
         Return the requested value through the established ownership boundary.
         """
@@ -791,8 +788,9 @@ class ControlPlaneRepositoryOperations:
         agent_id: str,
         environment: str | None = None,
     ) -> list[ReleaseManifest]:
-        """读取或查询 list_releases 对应的受控业务步骤。
-
+        """在仓储事务边界内执行 list_releases
+        数据访问；查询必须携带租户或业务主键，写入必须保持状态与审计/Outbox
+        原子一致。
 
         List only values visible within the caller's tenant and lifecycle scope.
         """
@@ -828,8 +826,8 @@ class ControlPlaneRepositoryOperations:
         environment: str,
         session_id: str,
     ) -> dict[str, str] | None:
-        """读取或查询 get_session_binding 对应的受控业务步骤。
-
+        """读取会话到 Release/Snapshot 的稳定绑定，使同一 Session
+        在灰度期间保持一致。 Outbox 一致性。 Outbox 一致性。
 
         Return the requested value through the established ownership boundary.
         """
@@ -857,10 +855,9 @@ class ControlPlaneRepositoryOperations:
         assignment: str,
         timestamp: str,
     ) -> None:
-        """处理 bind_session 对应的当前组件内部业务步骤。
-
-
-        Persist state while preserving the transaction and audit boundary.
+        """以租户、Agent、环境和 Session
+        为联合键写入稳定发布绑定；后续解析不得因新发布而漂移。 Outbox 一致性。
+        Outbox 一致性。
         """
 
         def operation(connection: sqlite3.Connection) -> None:
@@ -891,8 +888,8 @@ class ControlPlaneRepositoryOperations:
         await self._write(operation)
 
     async def get_tenant_policy(self, tenant_id: str) -> TenantPolicy | None:
-        """读取或查询 get_tenant_policy 对应的受控业务步骤。
-
+        """读取租户发布、风险和预算策略；不存在返回空，由应用层决定默认策略。 Outbox
+        一致性。 Outbox 一致性。
 
         Return the requested value through the established ownership boundary.
         """
@@ -908,10 +905,8 @@ class ControlPlaneRepositoryOperations:
         return await self._read(operation)
 
     async def upsert_tenant_policy(self, policy: TenantPolicy, event: OutboxEvent) -> None:
-        """处理 upsert_tenant_policy 对应的当前组件内部业务步骤。
-
-
-        Persist state while preserving the transaction and audit boundary.
+        """原子写入租户策略及变更 Outbox 事件，使策略状态与审计事实一致。
+        计/Outbox 一致性。 计/Outbox 一致性。
         """
 
         def operation(connection: sqlite3.Connection) -> None:
@@ -942,8 +937,8 @@ class ControlPlaneRepositoryOperations:
         after_sequence: int,
         limit: int,
     ) -> tuple[list[OutboxEvent], int | None]:
-        """读取或查询 list_outbox 对应的受控业务步骤。
-
+        """按游标和数量上限读取已提交 Outbox 事件，返回下一游标而不修改投递状态。
+        态与审计/Outbox 一致性。 态与审计/Outbox 一致性。
 
         List only values visible within the caller's tenant and lifecycle scope.
         """
@@ -968,10 +963,8 @@ class ControlPlaneRepositoryOperations:
     async def save_model_release(
         self, tenant_id: str, release_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        """持久化 save_model_release 对应的受控业务步骤。
-
-
-        Persist state while preserving the transaction and audit boundary.
+        """幂等保存模型路由发布监控状态、指标和原因，供 Temporal 恢复和审计。
+        Outbox 一致性。 Outbox 一致性。
         """
         created = str(payload["startedAt"])
         updated = str(payload["updatedAt"])
@@ -994,8 +987,8 @@ class ControlPlaneRepositoryOperations:
         return await self._write(operation)
 
     async def get_model_release(self, tenant_id: str, release_id: str) -> dict[str, Any] | None:
-        """读取或查询 get_model_release 对应的受控业务步骤。
-
+        """按租户和发布 ID 读取模型路由灰度记录；不存在返回空。 Outbox 一致性。
+        Outbox 一致性。
 
         Return the requested value through the established ownership boundary.
         """
@@ -1014,8 +1007,8 @@ class ControlPlaneRepositoryOperations:
         return await self._read(operation)
 
     async def list_model_releases(self, tenant_id: str) -> list[dict[str, Any]]:
-        """读取或查询 list_model_releases 对应的受控业务步骤。
-
+        """列出单租户全部模型路由发布，不触发监控或 Gateway 写入。
+        计/Outbox 一致性。 计/Outbox 一致性。
 
         List only values visible within the caller's tenant and lifecycle scope.
         """
@@ -1034,8 +1027,8 @@ class ControlPlaneRepositoryOperations:
         return await self._read(operation)
 
     async def list_active_model_releases(self) -> list[tuple[str, dict[str, Any]]]:
-        """读取或查询 list_active_model_releases 对应的受控业务步骤。
-
+        """跨租户列出仅处于灰度/监控状态的发布，供内部租约持有者调度检查。
+        计/Outbox 一致性。 计/Outbox 一致性。
 
         List only values visible within the caller's tenant and lifecycle scope.
         """
@@ -1060,17 +1053,11 @@ class ControlPlaneRepositoryOperations:
         return await self._read(operation)
 
     async def _read(self, operation: Callable[[sqlite3.Connection], T]) -> T:
-        """处理 _read 对应的当前组件内部业务步骤。
-
-
-        Internal helper for SqliteRepository; preserve its caller-facing invariant.
-        """
+        """把阻塞式 SQLite 读操作移到工作线程；每次调用使用独立连接且不持有写锁。"""
 
         def run() -> T:
-            """处理 run 对应的当前组件内部业务步骤。
-
-
-            Perform run within the module ownership boundary.
+            """在独立连接或事务中执行外层 _read
+            操作；数据库异常向外传播，由统一读写边界负责回滚和连接释放。
             """
             with self._connect() as connection:
                 return operation(connection)
@@ -1078,18 +1065,14 @@ class ControlPlaneRepositoryOperations:
         return await asyncio.to_thread(run)
 
     async def _write(self, operation: Callable[[sqlite3.Connection], T]) -> T:
-        """处理 _write 对应的当前组件内部业务步骤。
-
-
-        Internal helper for SqliteRepository; preserve its caller-facing invariant.
+        """串行化 SQLite 写事务并使用 BEGIN
+        IMMEDIATE；异常时回滚，确保业务数据与 Outbox 事件原子提交。
         """
         async with self._write_lock:
 
             def run() -> T:
-                """处理 run 对应的当前组件内部业务步骤。
-
-
-                Perform run within the module ownership boundary.
+                """在独立连接或事务中执行外层 _write
+                操作；数据库异常向外传播，由统一读写边界负责回滚和连接释放。
                 """
                 with self._connect() as connection:
                     connection.execute("BEGIN IMMEDIATE")
@@ -1104,10 +1087,8 @@ class ControlPlaneRepositoryOperations:
             return await asyncio.to_thread(run)
 
     def _connect(self) -> sqlite3.Connection:
-        """处理 _connect 对应的当前组件内部业务步骤。
-
-
-        Internal helper for SqliteRepository; preserve its caller-facing invariant.
+        """创建启用外键约束和 Row 映射的短生命周期 SQLite
+        连接，连接所有权交给调用方上下文管理器。
         """
         connection = sqlite3.connect(self._database_path, timeout=30)
         connection.row_factory = sqlite3.Row
@@ -1116,11 +1097,7 @@ class ControlPlaneRepositoryOperations:
 
     @staticmethod
     def _insert_event(connection: sqlite3.Connection, event: OutboxEvent) -> None:
-        """处理 _insert_event 对应的当前组件内部业务步骤。
-
-
-        Internal helper for SqliteRepository; preserve its caller-facing invariant.
-        """
+        """在当前业务事务内插入 Outbox 事件，禁止在事务中同步调用消息代理。"""
         connection.execute(
             """
             INSERT INTO outbox_events (
@@ -1144,11 +1121,7 @@ class ControlPlaneRepositoryOperations:
 
 
 def _json(value: Any) -> str:
-    """处理 _json 对应的当前组件内部业务步骤。
-
-
-    Internal helper for module; preserve its caller-facing invariant.
-    """
+    """以稳定键序和紧凑格式序列化 JSON，使摘要、CAS 与数据库比较结果可重复。"""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
@@ -1157,10 +1130,8 @@ class SqliteRepository(ControlPlaneRepositoryOperations):
 
 
 def _agent_from_row(row: sqlite3.Row) -> AgentDefinition:
-    """处理 _agent_from_row 对应的当前组件内部业务步骤。
-
-
-    Internal helper for module; preserve its caller-facing invariant.
+    """把数据库行显式映射为Agent
+    定义领域模型；通过模型校验阻止损坏或旧格式数据进入应用层。
     """
     return AgentDefinition.model_validate(
         {
@@ -1177,11 +1148,7 @@ def _agent_from_row(row: sqlite3.Row) -> AgentDefinition:
 
 
 def _version_from_row(row: sqlite3.Row) -> AgentVersion:
-    """处理 _version_from_row 对应的当前组件内部业务步骤。
-
-
-    Internal helper for module; preserve its caller-facing invariant.
-    """
+    """把数据库行显式映射为不可变版本领域模型；通过模型校验阻止损坏或旧格式数据进入应用层。"""
     return AgentVersion.model_validate(
         {
             "tenant_id": row["tenant_id"],
@@ -1268,7 +1235,9 @@ def _workflow_version_from_row(row: sqlite3.Row) -> WorkflowVersion:
 
 
 def _workflow_release_from_row(row: sqlite3.Row) -> WorkflowRelease:
-    """将 Active/Retired Workflow Release 行还原为领域模型。"""
+    """将 Active/Retired Workflow Release
+    行还原为领域模型。
+    """
     return WorkflowRelease.model_validate(
         {
             "tenant_id": row["tenant_id"],
@@ -1284,11 +1253,7 @@ def _workflow_release_from_row(row: sqlite3.Row) -> WorkflowRelease:
 
 
 def _release_from_row(row: sqlite3.Row) -> ReleaseManifest:
-    """处理 _release_from_row 对应的当前组件内部业务步骤。
-
-
-    Internal helper for module; preserve its caller-facing invariant.
-    """
+    """把数据库行显式映射为发布记录领域模型；通过模型校验阻止损坏或旧格式数据进入应用层。"""
     return ReleaseManifest.model_validate(
         {
             "tenant_id": row["tenant_id"],
@@ -1316,11 +1281,7 @@ def _release_from_row(row: sqlite3.Row) -> ReleaseManifest:
 
 
 def _event_from_row(row: sqlite3.Row) -> OutboxEvent:
-    """处理 _event_from_row 对应的当前组件内部业务步骤。
-
-
-    Internal helper for module; preserve its caller-facing invariant.
-    """
+    """把数据库行显式映射为治理事件领域模型；通过模型校验阻止损坏或旧格式数据进入应用层。"""
     return OutboxEvent.model_validate(
         {
             "event_id": row["event_id"],

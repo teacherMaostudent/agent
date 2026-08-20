@@ -22,7 +22,7 @@ public class WebClientConfig {
     @Bean
     @Primary
     /**
-     * 执行 web client builder 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 创建统一连接池、超时、代理和观测过滤器的 WebClient Builder。
     */
     public WebClient.Builder webClientBuilder() {
         HttpClient httpClient = HttpClient.create();
@@ -75,7 +75,7 @@ public class WebClientConfig {
     }
 
     /**
-     * 执行 proxy config 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 解析显式 HTTP 代理开关、主机和端口；配置不完整时保持禁用而非猜测。
     */
     private ProxyConfig proxyConfig() {
         // 优先读取 JVM 参数，适合在 IDEA Run Configuration 的 VM options 中配置：
@@ -106,7 +106,7 @@ public class WebClientConfig {
     }
 
     /**
-     * 执行 first non blank 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 按配置优先级选择首个非空值，用于显式环境覆盖而不是拼接多个代理来源。
     */
     private String firstNonBlank(String... values) {
         for (String value : values) {
@@ -118,11 +118,11 @@ public class WebClientConfig {
     }
 
     /**
-     * 执行 proxy config 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 解析显式 HTTP 代理开关、主机和端口；配置不完整时保持禁用而非猜测。
     */
     private record ProxyConfig(boolean enabled, String host, int port) {
         /**
-         * 执行 disabled 对应的受控业务步骤，并保持网关边界与状态约束。
+         * 创建显式禁用的代理配置，避免使用空主机或隐式系统代理。
         */
         static ProxyConfig disabled() {
             return new ProxyConfig(false, "", 0);

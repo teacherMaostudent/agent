@@ -18,17 +18,12 @@ from app.domain.errors import CircuitOpenError, RateLimitError
 
 class FixedWindowRateLimiter:
     def __init__(self) -> None:
-        """初始化该组件的依赖、配置与内部状态。
-
-
-        Initialize FixedWindowRateLimiter dependencies and local state.
-        """
+        """初始化进程内韧性状态；该实现适合单实例测试，生产多副本应使用共享限流状态。"""
         self._events: dict[str, deque[float]] = defaultdict(deque)
         self._lock = Lock()
 
     def acquire(self, key: str, limit_per_minute: int) -> None:
-        """处理 acquire 对应的当前组件内部业务步骤。
-
+        """按租户、工具和版本的固定窗口原子扣减配额；超限时抛出明确限流错误且不执行适配器。
 
         Reject above-limit work before any external side effect begins.
         """
@@ -52,19 +47,11 @@ class RedisFixedWindowRateLimiter:
     """
 
     def __init__(self, redis_url: str) -> None:
-        """初始化该组件的依赖、配置与内部状态。
-
-
-        Initialize RedisFixedWindowRateLimiter dependencies and local state.
-        """
+        """初始化进程内韧性状态；该实现适合单实例测试，生产多副本应使用共享限流状态。"""
         self._client = redis.Redis.from_url(redis_url, decode_responses=True)
 
     def acquire(self, key: str, limit_per_minute: int) -> None:
-        """处理 acquire 对应的当前组件内部业务步骤。
-
-
-        Perform acquire within the RedisFixedWindowRateLimiter ownership boundary.
-        """
+        """按租户、工具和版本的固定窗口原子扣减配额；超限时抛出明确限流错误且不执行适配器。"""
         window = int(time() // 60)
         allowed = self._client.eval(
             self._SCRIPT,
@@ -77,11 +64,7 @@ class RedisFixedWindowRateLimiter:
             raise RateLimitError("tool rate limit exceeded")
 
     def ping(self) -> bool:
-        """处理 ping 对应的当前组件内部业务步骤。
-
-
-        Perform ping within the RedisFixedWindowRateLimiter ownership boundary.
-        """
+        """探测共享 Redis 限流后端；失败仅表示当前实例未就绪，不自动切换为本地限流。"""
         return bool(self._client.ping())
 
 
@@ -93,17 +76,13 @@ class _CircuitState:
 
 class CircuitBreaker:
     def __init__(self) -> None:
-        """初始化该组件的依赖、配置与内部状态。
-
-
-        Initialize CircuitBreaker dependencies and local state.
-        """
+        """初始化进程内韧性状态；该实现适合单实例测试，生产多副本应使用共享限流状态。"""
         self._states: dict[str, _CircuitState] = defaultdict(_CircuitState)
         self._lock = Lock()
 
     def allow(self, key: str, reset_seconds: float) -> None:
-        """处理 allow 对应的当前组件内部业务步骤。
-
+        """在调用下游前检查熔断窗口；OPEN
+        且未到恢复时间时立即拒绝，避免持续压垮故障依赖。
 
         Fail fast while an unhealthy upstream circuit is open.
         """
@@ -119,17 +98,12 @@ class CircuitBreaker:
             raise CircuitOpenError("tool circuit breaker is open")
 
     def record_success(self, key: str) -> None:
-        """处理 record_success 对应的当前组件内部业务步骤。
-
-
-        Run the bounded record success operation and surface failures.
-        """
+        """在一次完整工具调用成功后清除对应熔断失败状态。"""
         with self._lock:
             self._states[key] = _CircuitState()
 
     def record_failure(self, key: str, threshold: int) -> None:
-        """处理 record_failure 对应的当前组件内部业务步骤。
-
+        """仅累计上游或超时类失败；达到阈值后打开熔断器并记录开始时间。
 
         Open a circuit only after the catalogued failure threshold is reached.
         """

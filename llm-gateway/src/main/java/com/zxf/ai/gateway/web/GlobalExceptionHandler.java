@@ -71,14 +71,14 @@ public class GlobalExceptionHandler {
     }
     @ExceptionHandler(PlatformServiceClient.PlatformServiceException.class)
     /**
-     * 执行 platform service 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 保留下游平台服务的稳定状态码与可重试标记，同时移除内部响应细节。
     */
     public ResponseEntity<JsonNode> platformService(PlatformServiceClient.PlatformServiceException error) {
         return ResponseEntity.status(error.status()).body(error.body());
     }
     @ExceptionHandler(GatewayException.class)
     /**
-     * 执行 gateway exception 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 把已分类 GatewayException 映射为稳定 HTTP 状态与错误码，保留其可重试语义。
     */
     public ResponseEntity<Map<String, Object>> gatewayException(GatewayException exception) {
         return ResponseEntity.status(exception.status()).body(error(exception.status(), exception.getMessage()));
@@ -86,7 +86,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(IllegalArgumentException.class)
     /**
-     * 执行 illegal argument 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 把输入或配置校验错误映射为 400，避免以 500 暴露为平台故障。
     */
     public ResponseEntity<Map<String, Object>> illegalArgument(IllegalArgumentException exception) {
         return ResponseEntity.badRequest().body(error(HttpStatus.BAD_REQUEST, exception.getMessage()));
@@ -94,7 +94,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     /**
-     * 执行 unknown 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 记录关联 ID 后返回通用 500，禁止把未分类异常和堆栈暴露给调用方。
     */
     public ResponseEntity<Map<String, Object>> unknown(Exception exception) {
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -102,7 +102,7 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 执行 error 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 构建不含堆栈和敏感上游正文的稳定错误响应，并附带可关联请求 ID。
     */
     private Map<String, Object> error(HttpStatus status, String message) {
         return Map.of(

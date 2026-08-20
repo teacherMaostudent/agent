@@ -28,10 +28,8 @@ logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
-    """处理 _now 对应的当前组件内部业务步骤。
-
-
-    Internal helper for module; preserve its caller-facing invariant.
+    """生成带 UTC
+    时区的当前时间，供状态记录、保留策略和审计排序使用，避免各调用方自行处理时区。
     """
     return datetime.now(UTC).isoformat()
 
@@ -47,10 +45,8 @@ class ModelReleaseService:
         governance: GovernanceQualityClient,
         model_lab: ModelLabClient | None = None,
     ) -> None:
-        """初始化该组件的依赖、配置与内部状态。
-
-
-        Initialize ModelReleaseService dependencies and local state.
+        """注入发布仓储、质量门禁、Gateway 与可选 Model Lab
+        客户端；该对象只编排模型路由生命周期，不执行模型请求。
         """
         self._repository = repository
         self._settings = settings
@@ -59,8 +55,8 @@ class ModelReleaseService:
         self._model_lab = model_lab
 
     async def start(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
-        """处理 start 对应的当前组件内部业务步骤。
-
+        """启动有界灰度发布：先读取旧路由并核验 Governance Gate 与
+        Model Lab 工件，再写入候选流量；门禁未通过时只保存拒绝事实。
 
         Start a bounded canary only when the referenced quality gate passed.
         """
@@ -107,8 +103,8 @@ class ModelReleaseService:
         return await self._repository.save_model_release(tenant_id, release["id"], release)
 
     async def monitor(self, tenant_id: str, release_id: str) -> dict[str, Any]:
-        """处理 monitor 对应的当前组件内部业务步骤。
-
+        """读取 Gateway 的真实灰度指标，并按样本量、错误率、超时率和延迟决定继续观
+        察、晋级或恢复已记录的旧路由。
 
         Promote, continue, or roll back using recorded—not inferred—baseline state.
         """
@@ -155,19 +151,15 @@ class ModelReleaseService:
         return await self._promote(tenant_id, release, metrics)
 
     async def rollback(self, tenant_id: str, release_id: str, reason: str) -> dict[str, Any]:
-        """处理 rollback 对应的当前组件内部业务步骤。
-
-
-        Perform rollback within the ModelReleaseService ownership boundary.
+        """执行人工回滚入口；原因与观测指标一并持久化，恢复目标来自发布前快照而不是当前路由
+        推断。
         """
         release = await self.get(tenant_id, release_id)
         return await self._rollback(tenant_id, release, {}, [reason or "manual rollback"])
 
     async def get(self, tenant_id: str, release_id: str) -> dict[str, Any]:
-        """处理 get 对应的当前组件内部业务步骤。
-
-
-        Perform get within the ModelReleaseService ownership boundary.
+        """按租户读取模型路由发布；不存在时返回明确的
+        NotFound，禁止跨租户猜测发布状态。
         """
         release = await self._repository.get_model_release(tenant_id, release_id)
         if not release:
@@ -175,18 +167,12 @@ class ModelReleaseService:
         return release
 
     async def list(self, tenant_id: str) -> list[dict[str, Any]]:
-        """处理 list 对应的当前组件内部业务步骤。
-
-
-        Perform list within the ModelReleaseService ownership boundary.
-        """
+        """列出当前租户的模型路由发布记录，不触发监控、晋级或任何 Gateway 写操作。"""
         return await self._repository.list_model_releases(tenant_id)
 
     async def monitor_active(self) -> None:
-        """处理 monitor_active 对应的当前组件内部业务步骤。
-
-
-        Run the bounded monitor active operation and surface failures.
+        """扫描所有进行中的模型发布并逐一评估；单个发布失败只记录结构化错误，不阻断其他租户
+        。
         """
         for tenant_id, release in await self._repository.list_active_model_releases():
             try:
@@ -200,11 +186,7 @@ class ModelReleaseService:
     async def _promote(
         self, tenant_id: str, release: dict[str, Any], metrics: dict[str, Any]
     ) -> dict[str, Any]:
-        """处理 _promote 对应的当前组件内部业务步骤。
-
-
-        Internal helper for ModelReleaseService; preserve its caller-facing invariant.
-        """
+        """将已通过观察窗口的候选模型提升为主路由，并把旧主模型保留为首选回退目标。"""
         current = await self._gateway.route(release["routeName"])
         old_primary = current.get("primary")
         promoted = deepcopy(current)
@@ -224,11 +206,7 @@ class ModelReleaseService:
         metrics: dict[str, Any],
         reasons: list[str],
     ) -> dict[str, Any]:
-        """处理 _rollback 对应的当前组件内部业务步骤。
-
-
-        Internal helper for ModelReleaseService; preserve its caller-facing invariant.
-        """
+        """恢复发布开始前记录的完整路由快照；已正式晋级的发布禁止就地回滚，必须新建发布。"""
         if release["status"] == "PROMOTED":
             raise InvalidStateError("A promoted route requires a new release to roll back.")
         await self._gateway.upsert_route(release["routeName"], release["previousRoute"])
@@ -242,11 +220,7 @@ class ModelReleaseService:
         metrics: dict[str, Any],
         reasons: list[str],
     ) -> dict[str, Any]:
-        """处理 _save 对应的当前组件内部业务步骤。
-
-
-        Internal helper for ModelReleaseService; preserve its caller-facing invariant.
-        """
+        """持久化模型发布的新状态、指标、原因和更新时间，确保监控结果可审计。"""
         updated = {
             **release,
             "status": status,
@@ -258,10 +232,8 @@ class ModelReleaseService:
 
 
 def _required(request: dict[str, Any], name: str) -> str:
-    """处理 _required 对应的当前组件内部业务步骤。
-
-
-    Internal helper for module; preserve its caller-facing invariant.
+    """读取并去除必填发布字段的空白；缺失字段在调用 Governance 或
+    Gateway 前以策略错误拒绝。
     """
     value = str(request.get(name) or "").strip()
     if not value:

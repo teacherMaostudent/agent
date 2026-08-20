@@ -47,7 +47,7 @@ public class AnthropicMessagesClient implements LlmProviderClient {
 
     @Override
     /**
-     * 执行 protocol 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 声明客户端实现支持的上游协议标识，供注册表精确解析。
     */
     public String protocol() {
         return "anthropic";
@@ -55,7 +55,7 @@ public class AnthropicMessagesClient implements LlmProviderClient {
 
     @Override
     /**
-     * 执行 chat completion 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 把 OpenAI Chat Completions 请求转换为 Anthropic Messages 协议，并将响应映射回统一 Gateway Schema。
     */
     public Mono<JsonNode> chatCompletion(ModelEndpoint endpoint, JsonNode originalRequest) {
         ObjectNode upstreamRequest = toAnthropicRequest(endpoint, originalRequest, false);
@@ -75,7 +75,7 @@ public class AnthropicMessagesClient implements LlmProviderClient {
 
     @Override
     /**
-     * 执行 stream chat completion 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 把 Anthropic SSE 增量事件映射为 OpenAI 兼容流，并在下游取消时及时释放连接。
     */
     public Flux<String> streamChatCompletion(ModelEndpoint endpoint, JsonNode originalRequest) {
         ObjectNode upstreamRequest = toAnthropicRequest(endpoint, originalRequest, true);
@@ -93,7 +93,7 @@ public class AnthropicMessagesClient implements LlmProviderClient {
     }
 
     /**
-     * 执行 client 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 按目标模型端点创建受超时、代理和凭据约束的 WebClient，不接受请求体覆盖基础地址。
     */
     private WebClient client(ModelEndpoint endpoint) {
         WebClient.Builder builder = webClientBuilder.clone()
@@ -154,7 +154,7 @@ public class AnthropicMessagesClient implements LlmProviderClient {
     }
 
     /**
-     * 执行 max tokens 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 读取并约束 Anthropic 必需的 max_tokens；缺失时使用受控默认值。
     */
     private int maxTokens(JsonNode originalRequest) {
         if (originalRequest.has("max_tokens")) {
@@ -167,7 +167,7 @@ public class AnthropicMessagesClient implements LlmProviderClient {
     }
 
     /**
-     * 执行 system prompt 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 从 OpenAI 消息中提取 system 内容并保持顺序，普通消息不会被提升为系统指令。
     */
     private String systemPrompt(JsonNode originalRequest) {
         StringBuilder builder = new StringBuilder();
@@ -224,7 +224,7 @@ public class AnthropicMessagesClient implements LlmProviderClient {
     }
 
     /**
-     * 执行 text content 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 只提取 Anthropic 文本块并按顺序连接，工具块与未知内容类型不伪装成文本。
     */
     private String textContent(JsonNode content) {
         if (!content.isArray()) {
@@ -240,7 +240,7 @@ public class AnthropicMessagesClient implements LlmProviderClient {
     }
 
     /**
-     * 执行 retry spec 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 构造只针对瞬时上游故障的指数退避策略，并受最大尝试次数约束。
     */
     private Retry retrySpec() {
         return Retry.backoff(properties.getMaxRetries(), Duration.ofMillis(300))
@@ -248,7 +248,7 @@ public class AnthropicMessagesClient implements LlmProviderClient {
     }
 
     /**
-     * 执行 apply retry if enabled 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 仅在路由显式启用且错误可重试时应用退避策略，业务拒绝与流式已提交响应不会盲目重试。
     */
     private <T> Mono<T> applyRetryIfEnabled(Mono<T> mono) {
         if (properties.getMaxRetries() <= 0) {
@@ -258,7 +258,7 @@ public class AnthropicMessagesClient implements LlmProviderClient {
     }
 
     /**
-     * 执行 apply retry if enabled 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 仅在路由显式启用且错误可重试时应用退避策略，业务拒绝与流式已提交响应不会盲目重试。
     */
     private <T> Flux<T> applyRetryIfEnabled(Flux<T> flux) {
         if (properties.getMaxRetries() <= 0) {
@@ -307,7 +307,7 @@ public class AnthropicMessagesClient implements LlmProviderClient {
     }
 
     /**
-     * 执行 trim trailing slash 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 移除基础地址尾部斜杠，避免拼接固定 API Path 时产生双斜杠。
     */
     private String trimTrailingSlash(String baseUrl) {
         if (baseUrl == null) {

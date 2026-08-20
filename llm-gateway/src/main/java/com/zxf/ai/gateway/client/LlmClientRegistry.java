@@ -40,7 +40,7 @@ public class LlmClientRegistry {
     }
 
     /**
-     * 执行 normalize 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 把协议别名规范化为注册表键；未知协议不会回退到任意默认客户端。
     */
     private String normalize(String protocol) {
         return protocol == null || protocol.isBlank()

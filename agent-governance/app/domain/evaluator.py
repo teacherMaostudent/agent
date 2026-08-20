@@ -16,8 +16,8 @@ from app.domain.models import (
 
 
 def evaluate(event: GovernanceEvent, policy: TenantPolicy) -> list[Finding]:
-    """处理 evaluate 对应的当前组件内部业务步骤。
-
+    """把规范化治理事件交给规则集合评估并返回
+    Finding；规则只产生治理事实，不同步控制业务请求。
 
     Evaluate only the received event; this never calls back into the runtime.
     """

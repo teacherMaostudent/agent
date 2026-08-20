@@ -16,7 +16,7 @@ from app.infrastructure.kafka_consumer import _event
 
 
 async def replay(settings: Settings, event_id: str, max_records: int) -> int:
-    """处理 replay 对应的当前组件内部业务步骤。"""
+    """按租户和显式范围重放 DLQ 事件，并保留原 event_id 供消费者幂等去重。"""
     consumer = AIOKafkaConsumer(
         settings.kafka_dlq_topic,
         bootstrap_servers=settings.kafka_bootstrap_servers,
@@ -58,7 +58,7 @@ async def replay(settings: Settings, event_id: str, max_records: int) -> int:
 
 
 def main() -> None:
-    """处理 main 对应的当前组件内部业务步骤。"""
+    """校验重放参数后执行一次受控 DLQ 重放；不提供无范围的全量重放默认值。"""
     parser = argparse.ArgumentParser(description="Explicitly replay Governance DLQ events")
     parser.add_argument("--event-id", default="")
     parser.add_argument("--max-records", type=int, default=1)

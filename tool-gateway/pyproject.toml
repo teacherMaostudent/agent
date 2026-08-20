@@ -40,6 +40,8 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# 中文方法职责使用全角标点；RUF002 会把正常中文逗号和分号误判为 ASCII 易混淆字符。
+ignore = ["RUF002"]
 
 [tool.ruff.format]
 quote-style = "double"

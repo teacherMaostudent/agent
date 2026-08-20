@@ -22,16 +22,15 @@ class ToolAdapter(Protocol):
     """Execute a catalogued tool after Gateway authorization has already passed."""
 
     async def execute(self, arguments: dict[str, Any], context: InvocationContext) -> Any:
-        """处理 execute 对应的当前组件内部业务步骤。
-
+        """把已授权且通过 Schema
+        校验的参数转换为下游协议；只允许预注册主机，并统一映射超时和上游错误。
 
         Execute the already-authorized operation without adding a second policy decision.
         """
         ...
 
     async def close(self) -> None:
-        """处理 close 对应的当前组件内部业务步骤。
-
+        """关闭适配器持有的 HTTP/MCP 会话；该操作不撤销已提交的业务副作用。
 
         Release transport resources owned by the concrete adapter during shutdown.
         """
@@ -50,11 +49,7 @@ class HttpToolAdapter:
         client: httpx.AsyncClient | None = None,
         client_options: dict[str, Any] | None = None,
     ) -> None:
-        """初始化该组件的依赖、配置与内部状态。
-
-
-        Initialize HttpToolAdapter dependencies and local state.
-        """
+        """冻结适配器端点、凭据引用、超时和允许主机配置；运行期不接受模型修改这些安全参数。"""
         self.config = config
         self.allow_private_networks = allow_private_networks
         self.max_response_bytes = max_response_bytes
@@ -68,10 +63,8 @@ class HttpToolAdapter:
         )
 
     async def execute(self, arguments: dict[str, Any], context: InvocationContext) -> Any:
-        """处理 execute 对应的当前组件内部业务步骤。
-
-
-        Perform execute within the HttpToolAdapter ownership boundary.
+        """把已授权且通过 Schema
+        校验的参数转换为下游协议；只允许预注册主机，并统一映射超时和上游错误。
         """
         url, remaining = _render_url(self.config.url, arguments)
         validate_outbound_url(
@@ -120,11 +113,7 @@ class HttpToolAdapter:
         return response.text
 
     async def close(self) -> None:
-        """处理 close 对应的当前组件内部业务步骤。
-
-
-        Perform close within the HttpToolAdapter ownership boundary.
-        """
+        """关闭适配器持有的 HTTP/MCP 会话；该操作不撤销已提交的业务副作用。"""
         if self._owns_client:
             await self.client.aclose()
 
@@ -140,11 +129,7 @@ class McpToolAdapter:
         *,
         allow_private_networks: bool,
     ) -> None:
-        """初始化该组件的依赖、配置与内部状态。
-
-
-        Initialize McpToolAdapter dependencies and local state.
-        """
+        """冻结适配器端点、凭据引用、超时和允许主机配置；运行期不接受模型修改这些安全参数。"""
         self.config = config
         self.allow_private_networks = allow_private_networks
         validate_outbound_url(
@@ -155,10 +140,8 @@ class McpToolAdapter:
         )
 
     async def execute(self, arguments: dict[str, Any], context: InvocationContext) -> Any:
-        """处理 execute 对应的当前组件内部业务步骤。
-
-
-        Perform execute within the McpToolAdapter ownership boundary.
+        """把已授权且通过 Schema
+        校验的参数转换为下游协议；只允许预注册主机，并统一映射超时和上游错误。
         """
         validate_outbound_url(
             self.config.server_url,
@@ -202,11 +185,7 @@ class McpToolAdapter:
         return [item.model_dump(mode="json") for item in result.content]
 
     async def close(self) -> None:
-        """处理 close 对应的当前组件内部业务步骤。
-
-
-        Perform close within the McpToolAdapter ownership boundary.
-        """
+        """关闭适配器持有的 HTTP/MCP 会话；该操作不撤销已提交的业务副作用。"""
         return None
 
 
@@ -220,18 +199,12 @@ class CallableToolAdapter:
             Any | Awaitable[Any],
         ],
     ) -> None:
-        """初始化该组件的依赖、配置与内部状态。
-
-
-        Initialize CallableToolAdapter dependencies and local state.
-        """
+        """冻结适配器端点、凭据引用、超时和允许主机配置；运行期不接受模型修改这些安全参数。"""
         self.handler = handler
 
     async def execute(self, arguments: dict[str, Any], context: InvocationContext) -> Any:
-        """处理 execute 对应的当前组件内部业务步骤。
-
-
-        Perform execute within the CallableToolAdapter ownership boundary.
+        """把已授权且通过 Schema
+        校验的参数转换为下游协议；只允许预注册主机，并统一映射超时和上游错误。
         """
         result = self.handler(arguments, context)
         if isinstance(result, Awaitable):
@@ -239,11 +212,7 @@ class CallableToolAdapter:
         return result
 
     async def close(self) -> None:
-        """处理 close 对应的当前组件内部业务步骤。
-
-
-        Perform close within the CallableToolAdapter ownership boundary.
-        """
+        """关闭适配器持有的 HTTP/MCP 会话；该操作不撤销已提交的业务副作用。"""
         return None
 
 
@@ -254,8 +223,7 @@ def build_http_adapter(
     max_response_bytes: int,
     client_options: dict[str, Any] | None = None,
 ) -> HttpToolAdapter:
-    """创建或构建 build_http_adapter 对应的受控业务步骤。
-
+    """从已验证 ToolSpec 构建 HTTP 适配器，并把凭据解析留在受控配置边界。
 
     Create the only HTTP adapter type after its outbound policy has been validated.
     """
@@ -268,16 +236,15 @@ def build_http_adapter(
 
 
 def _render_url(template: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """序列化或渲染 _render_url 对应的受控业务步骤。
-
+    """将声明式路径参数渲染到固定 URL 模板，返回未消费参数作为请求体。
 
     Substitute allow-listed path placeholders with escaped scalars and retain other arguments.
     """
     consumed: set[str] = set()
 
     def replace(match: re.Match[str]) -> str:
-        """处理 replace 对应的当前组件内部业务步骤。
-
+        """将 URL
+        模板占位符替换为已校验参数并进行转义，防止参数改变协议、主机或路径边界。
 
         Reject missing or complex path values before they can change an outbound URL.
         """
@@ -300,8 +267,7 @@ def _build_headers(
     auth_env: str | None,
     context: InvocationContext,
 ) -> dict[str, str]:
-    """创建或构建 _build_headers 对应的受控业务步骤。
-
+    """构建下游请求头并传播可信 Trace；禁止参数覆盖认证、Host 或内部安全头。
 
     Build traceable upstream headers without placing raw approval data in the URL.
     """
@@ -322,8 +288,7 @@ def _build_headers(
 
 
 async def close_adapters(adapters: list[ToolAdapter]) -> None:
-    """管理生命周期 close_adapters 对应的受控业务步骤。
-
+    """去重并关闭全部适配器；单个关闭失败不会跳过其余资源清理。
 
     Release or remove owned state without bypassing cleanup rules.
     """

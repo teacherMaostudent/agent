@@ -23,7 +23,7 @@ public class ProductionConfigurationValidator implements InitializingBean {
 
     @Override
     /**
-     * 执行 after properties set 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 在 Spring 启动完成前校验生产路由、密钥、OIDC、限流与持久化配置；缺失必需项时阻止实例就绪。
     */
     public void afterPropertiesSet() {
         String deployment = environment.getProperty("DEPLOYMENT_ENVIRONMENT", "local");

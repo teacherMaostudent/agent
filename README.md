@@ -71,6 +71,19 @@ Workflow 不加载 Planner 或 Agent Session，支持重试、补偿、Human Sig
 3. 理解发布与质量：阅读 `agent-control-plane/README.md`、`agent-governance/README.md` 与 `agent-lab/README.md`。
 4. 准备部署：阅读 [部署指南](docs/deployment-guide.md)，再检查 `compose.production.yaml`、证书、OIDC 与 Kafka Connect 配置。
 5. 开发跨服务功能：先修改 `platform-contracts/` 或 `platform-sdk/` 中的版本化契约，再改各服务实现。
+6. 按调用链理解方法：阅读 [代码阅读与方法职责指南](docs/code-reading-guide.md)，它把入口、计划准入、
+   Graph、Context/RAG、模型、工具、发布、治理和故障恢复映射到具体文件与方法。
+
+## 注释与说明文件标准
+
+生产方法的注释不仅要求“存在”，还必须解释对理解实现真正有用的边界：输入的可信来源、核心职责、
+权限或状态不变量、失败/重试/降级语义，以及数据库或外部副作用。禁止使用“处理某方法对应步骤”、
+“内部帮助方法”一类仅重复名称的占位句。简单属性和纯转换函数可以较短，但仍要说明其不变量或只读性质。
+
+架构文字按以下权威顺序维护：根 README 负责导航，[架构总览](docs/architecture-overview.md) 负责服务边界，
+[Plan-Execute 与分层授权](docs/plan-execute-authorization-architecture.md) 负责在线执行契约，
+[Workflow / Agent / Skill 架构](docs/skill-architecture.md) 负责概念分类，
+[代码阅读指南](docs/code-reading-guide.md) 负责把上述设计落到文件、方法、状态和失败路径。
 
 ## 离线实验服务
 

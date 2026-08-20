@@ -112,8 +112,8 @@ class ControlPlaneService:
         request: AgentCreate,
         trace_id: str,
     ) -> AgentDefinition:
-        """创建或构建 create_agent 对应的受控业务步骤。
-
+        """在租户范围创建可编辑 Agent Draft 和初始
+        revision，并在同一事务写入创建事件。 部副作用前返回明确错误。
 
         Create an initial draft and its outbox fact in the same transaction.
         """
@@ -143,8 +143,8 @@ class ControlPlaneService:
         return agent
 
     async def get_agent(self, identity: Identity, agent_id: str) -> AgentDefinition:
-        """读取或查询 get_agent 对应的受控业务步骤。
-
+        """按租户和 Agent ID 读取 Draft 聚合；不存在时返回
+        NotFound，不泄露跨租户事实。 部副作用前返回明确错误。
 
         Return the tenant-scoped record or raise the domain not-found error.
         """
@@ -154,8 +154,8 @@ class ControlPlaneService:
         return agent
 
     async def list_agents(self, identity: Identity) -> list[AgentDefinition]:
-        """读取或查询 list_agents 对应的受控业务步骤。
-
+        """列出当前租户可见的 Agent Draft 投影，不解析 Release 或启动
+        Runtime。 失败时在产生外部副作用前返回明确错误。
 
         List records within the caller tenant without changing release state.
         """
@@ -164,7 +164,9 @@ class ControlPlaneService:
     async def create_workflow(
         self, identity: Identity, request: WorkflowCreate, trace_id: str
     ) -> WorkflowDefinition:
-        """创建独立 Workflow Draft，不借用 Agent Draft 生命周期。"""
+        """创建独立 Workflow Draft，不借用 Agent Draft
+        生命周期。
+        """
         if request.spec.workflow_id != request.workflow_id:
             raise PolicyViolationError("Workflow request ID must equal spec.workflow_id.")
         now = utc_now()
@@ -262,7 +264,9 @@ class ControlPlaneService:
         return item
 
     async def _validate_workflow_providers(self, identity: Identity, spec) -> None:
-        """发布前验证 Workflow 的 Tool/Skill Provider 确实存在且 Skill 已 Active。"""
+        """发布前验证 Workflow 的 Tool/Skill Provider
+        确实存在且 Skill 已 Active。
+        """
         tool_bindings = [
             {"tool_name": item.provider_id, "version": item.version}
             for item in spec.capability_providers
@@ -333,7 +337,9 @@ class ControlPlaneService:
     async def resolve_workflow(
         self, identity: Identity, workflow_id: str, environment: str
     ) -> WorkflowRuntimeResolution:
-        """向 Runtime 返回同一事务快照中的 Active Release 与冻结计划。"""
+        """向 Runtime 返回同一事务快照中的 Active Release
+        与冻结计划。
+        """
         resolved = await self._repository.resolve_workflow_release(
             identity.tenant_id, workflow_id, environment
         )
@@ -490,7 +496,9 @@ class ControlPlaneService:
     def _validate_skill_tool_risk(
         profile: SkillGovernanceProfile, catalog_items: list[dict[str, Any]]
     ) -> None:
-        """用 Tool Catalog 的真实风险校验 Skill Profile，防止 Skill 自报低风险。"""
+        """用 Tool Catalog 的真实风险校验 Skill Profile，防止
+        Skill 自报低风险。
+        """
         if not catalog_items:
             return
         write_items = [item for item in catalog_items if str(item.get("risk")) != "read_only"]
@@ -618,7 +626,9 @@ class ControlPlaneService:
     async def list_skill_cards(
         self, identity: Identity, capability_id: str = ""
     ) -> list[SkillCard]:
-        """只披露 Active Skill 的摘要和能力，Prompt/工具/知识绑定在选中前不可见。"""
+        """只披露 Active Skill
+        的摘要和能力，Prompt/工具/知识绑定在选中前不可见。
+        """
         capability = capability_id.strip().upper()
         cards: list[SkillCard] = []
         for item in await self._repository.list_active_skill_versions(identity.tenant_id):
@@ -643,8 +653,9 @@ class ControlPlaneService:
         request: AgentDraftUpdate,
         trace_id: str,
     ) -> AgentDefinition:
-        """更新 update_draft 对应的受控业务步骤。
-
+        """使用 expected_revision 执行 CAS 更新并写
+        Outbox；并发修改时返回最新 revision 供调用方重试。
+        产生外部副作用前返回明确错误。
 
         Reject stale revisions so concurrent editors cannot overwrite each other.
         """
@@ -686,8 +697,8 @@ class ControlPlaneService:
         return updated
 
     async def validate_draft(self, identity: Identity, agent_id: str) -> ValidationReport:
-        """校验 validate_draft 对应的受控业务步骤。
-
+        """按租户策略校验 Draft 的模型、知识、工具、Skill、Workflow
+        和风险约束；只返回报告，不修改 Draft。 产生外部副作用前返回明确错误。
 
         Validate release inputs against tenant policy without mutating the draft.
         """
@@ -702,8 +713,8 @@ class ControlPlaneService:
         request: AgentVersionPublish,
         trace_id: str,
     ) -> AgentVersion:
-        """发布或投递 publish_version 对应的受控业务步骤。
-
+        """验证 Draft 与绑定目录版本后冻结不可变
+        AgentVersion；任何发布依赖缺失都在写版本前失败。 用前返回明确错误。
 
         Freeze a validated draft only after its bound tool versions are verified.
         """
@@ -836,7 +847,9 @@ class ControlPlaneService:
         return version
 
     async def _validate_agent_workflow_providers(self, identity: Identity, spec) -> None:
-        """验证 Agent 可调用 Workflow 的版本和摘要，防止动态 latest 漂移。"""
+        """验证 Agent 可调用 Workflow 的版本和摘要，防止动态 latest
+        漂移。
+        """
         for provider in spec.capability_providers:
             if provider.kind != CapabilityProviderKind.WORKFLOW:
                 continue
@@ -854,7 +867,9 @@ class ControlPlaneService:
                 )
 
     async def _validate_skill_bindings(self, identity: Identity, draft) -> None:
-        """确认 Agent 绑定的每个 SkillVersion 存在、已准入且摘要完全匹配。"""
+        """确认 Agent 绑定的每个 SkillVersion
+        存在、已准入且摘要完全匹配。
+        """
         skill_plans = []
         for binding in draft.skills:
             version = await self._repository.get_skill_version_by_semantic(
@@ -1284,8 +1299,9 @@ class ControlPlaneService:
         environment: str,
         session_id: str,
     ) -> RuntimeResolution:
-        """处理 resolve_runtime 对应的当前组件内部业务步骤。
-
+        """按租户、环境和 Session 稳定解析已发布
+        Snapshot；已有会话绑定不会随新灰度发布漂移。
+        生外部副作用前返回明确错误。
 
         Resolve a stable execution snapshot for one tenant and session binding.
         """
@@ -1385,8 +1401,8 @@ class ControlPlaneService:
         request: TenantPolicyUpdate,
         trace_id: str,
     ) -> TenantPolicy:
-        """更新 update_tenant_policy 对应的受控业务步骤。
-
+        """使用管理员身份更新租户发布、预算和风险策略，并写入可审计的策略变更事件。
+        前返回明确错误。
 
         Apply a concurrency-safe update and publish its auditable state transition.
         """

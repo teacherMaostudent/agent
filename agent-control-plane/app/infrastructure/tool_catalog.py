@@ -44,7 +44,9 @@ class ToolCatalogValidator:
             raise ValueError("published tools are absent from Tool Catalog: " + ", ".join(missing))
 
     def resolve_bindings(self, bindings: list[dict]) -> list[dict]:
-        """以 Catalog 为风险与权限事实源，返回可冻结进 Snapshot 的精确绑定。"""
+        """以 Catalog 为风险与权限事实源，返回可冻结进 Snapshot
+        的精确绑定。
+        """
         if not self.required:
             return [dict(item) for item in bindings]
         catalog = self._load_catalog()
@@ -69,7 +71,9 @@ class ToolCatalogValidator:
         return resolved
 
     def resolve_catalog_items(self, bindings: list[dict]) -> list[dict]:
-        """返回精确目录项供 Skill/Workflow 校验风险，调用者不得把它写成另一份事实源。"""
+        """返回精确目录项供 Skill/Workflow
+        校验风险，调用者不得把它写成另一份事实源。
+        """
         if not self.required:
             return []
         catalog = self._load_catalog()

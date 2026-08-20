@@ -24,7 +24,7 @@ public class SecurityConfig {
 
     @Bean
     /**
-     * 执行 security web filter chain 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 配置 OIDC、管理端 Basic Auth、CSRF 与端点授权顺序，未匹配路径默认拒绝。
     */
     public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
         GatewayProperties.Security security = properties.getAdmin().getSecurity();
@@ -59,7 +59,7 @@ public class SecurityConfig {
 
     @Bean
     /**
-     * 执行 admin users 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 从受控配置创建仅用于管理端点的响应式用户仓储，并使用已注入编码器处理密码。
     */
     public MapReactiveUserDetailsService adminUsers(PasswordEncoder passwordEncoder) {
         GatewayProperties.Security security = properties.getAdmin().getSecurity();
@@ -72,7 +72,7 @@ public class SecurityConfig {
 
     @Bean
     /**
-     * 执行 password encoder 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 提供单向自适应密码编码器，禁止以明文比较管理用户密码。
     */
     public PasswordEncoder passwordEncoder() {
         return PasswordEncoderFactories.createDelegatingPasswordEncoder();

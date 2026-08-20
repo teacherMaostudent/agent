@@ -14,8 +14,8 @@ from app.domain.errors import GatewayError
 
 
 def create_app(container: Container | None = None) -> FastAPI:
-    """创建或构建 create_app 对应的受控业务步骤。
-
+    """组装 Tool Gateway
+    的身份中间件、路由、错误映射和生命周期；应用工厂不承载工具业务规则。
 
     Build the HTTP boundary once so tests can inject an isolated container.
     """
@@ -24,8 +24,7 @@ def create_app(container: Container | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        """处理 lifespan 对应的当前组件内部业务步骤。
-
+        """在接收流量前启动容器并在退出时统一释放资源，启动异常会阻止应用标记就绪。
 
         Close the composition root after FastAPI has stopped accepting requests.
         """
@@ -52,8 +51,7 @@ def create_app(container: Container | None = None) -> FastAPI:
     )
 
     def require_admin(request: Request) -> None:
-        """处理 require_admin 对应的当前组件内部业务步骤。
-
+        """检查已验证身份是否具备工具管理权限，拒绝依赖可伪造的调用方 Header。
 
         Protect catalog administration separately from ordinary service invocation.
         """
@@ -67,8 +65,7 @@ def create_app(container: Container | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def service_auth(request: Request, call_next):
-        """处理 service_auth 对应的当前组件内部业务步骤。
-
+        """验证 Runtime 工作负载身份和调用权限，并把可信声明投影到请求上下文。
 
         Reject oversized or unauthenticated requests before parsing tool payloads.
         """
@@ -108,8 +105,7 @@ def create_app(container: Container | None = None) -> FastAPI:
 
     @app.exception_handler(GatewayError)
     async def gateway_error_handler(_: Request, exc: GatewayError) -> JSONResponse:
-        """处理 gateway_error_handler 对应的当前组件内部业务步骤。
-
+        """把领域异常映射为稳定错误码和 HTTP 状态，同时避免把敏感上游细节返回调用方。
 
         Convert domain failures into a stable public error envelope without tracebacks.
         """
@@ -126,8 +122,7 @@ def create_app(container: Container | None = None) -> FastAPI:
 
     @app.get(f"{settings.api_prefix}/health", tags=["health"])
     def health() -> dict:
-        """处理 health 对应的当前组件内部业务步骤。
-
+        """返回进程存活信号，不探测外部依赖，避免短暂依赖故障触发无意义重启。
 
         Report process liveness without touching databases or downstream systems.
         """
@@ -135,8 +130,7 @@ def create_app(container: Container | None = None) -> FastAPI:
 
     @app.get(f"{settings.api_prefix}/health/ready", tags=["health"])
     def ready() -> dict:
-        """处理 ready 对应的当前组件内部业务步骤。
-
+        """执行仓储、工具目录和共享限流依赖检查；未就绪实例不会进入服务发现。
 
         Report whether catalog and persistence dependencies are ready for execution.
         """

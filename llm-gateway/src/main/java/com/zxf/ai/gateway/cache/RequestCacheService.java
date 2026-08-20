@@ -46,7 +46,7 @@ public class RequestCacheService {
     }
 
     /**
-     * 执行 cached or compute 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 按租户和规范化请求摘要读取缓存；未命中时只执行一次 loader 并按策略写回。
     */
     public Mono<JsonNode> cachedOrCompute(String tenantId, JsonNode request, Supplier<Mono<JsonNode>> loader) {
         // Cache only deterministic non-streaming requests and keep blocking state access off the event loop.
@@ -58,7 +58,7 @@ public class RequestCacheService {
     }
 
     /**
-     * 执行 cached or compute cacheable 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 对已通过缓存资格校验的请求执行单飞加载，防止并发未命中放大上游模型调用。
     */
     private Mono<JsonNode> cachedOrComputeCacheable(
             String tenantId, JsonNode request, Supplier<Mono<JsonNode>> loader) {
@@ -118,7 +118,7 @@ public class RequestCacheService {
     }
 
     /**
-     * 执行 put 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 按租户隔离键写入已批准缓存的响应和抖动后过期时间。
     */
     public void put(String tenantId, JsonNode request, JsonNode response) {
         // Store a deep copy with jittered expiry so callers cannot mutate cache state or trigger avalanche.
@@ -140,7 +140,7 @@ public class RequestCacheService {
     }
 
     /**
-     * 执行 snapshot 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 返回当前组件的脱敏只读快照，调用不会推进业务状态或产生外部副作用。
     */
     public Map<String, Object> snapshot() {
         // Expose safe operational counters without returning request payloads or tenant cache keys.
@@ -184,7 +184,7 @@ public class RequestCacheService {
     }
 
     /**
-     * 执行 cacheable 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 仅允许确定性、非流式且不含敏感控制字段的请求进入响应缓存。
     */
     private boolean cacheable(JsonNode request) {
         // Exclude streams, tool calls and stochastic generation because replay could change semantics.
@@ -199,7 +199,7 @@ public class RequestCacheService {
     }
 
     /**
-     * 执行 ttl with jitter 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 在配置 TTL 上加入有界随机抖动，降低多副本缓存同时过期造成的惊群。
     */
     private Duration ttlWithJitter() {
         // Spread expiration over a bounded window to avoid synchronized upstream cache misses.
@@ -213,7 +213,7 @@ public class RequestCacheService {
     }
 
     /**
-     * 执行 key 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 用租户和规范化请求内容计算缓存摘要，防止不同租户共享同一响应。
     */
     private String key(String tenantId, JsonNode request) {
         // Bind the cache to tenant and policy revision so changed prompts/routes never reuse old responses.
@@ -228,7 +228,7 @@ public class RequestCacheService {
     }
 
     /**
-     * 执行 cache entry 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 保存响应与绝对过期时间的进程内缓存值；租户隔离由外层键保证。
     */
     private record CacheEntry(JsonNode response, Instant expiresAt) {
     }

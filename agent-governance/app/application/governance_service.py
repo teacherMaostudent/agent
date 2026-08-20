@@ -34,7 +34,9 @@ class GovernanceService:
     """
 
     def __init__(self, repository: SqliteRepository) -> None:
-        """初始化该组件的依赖、配置与内部状态。"""
+        """注入治理仓储与规则评估器；服务负责记录和评估事实，不在事件消费事务中调用在线
+        Runtime。
+        """
         self._repository = repository
 
     async def ingest(self, event: GovernanceEvent) -> IngestionResult:

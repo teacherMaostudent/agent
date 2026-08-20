@@ -35,8 +35,7 @@ class ToolRegistry:
         self._versions: dict[str, list[str]] = defaultdict(list)
 
     def register(self, spec: ToolSpec, adapter: ToolAdapter) -> None:
-        """处理 register 对应的当前组件内部业务步骤。
-
+        """注册一个固定名称和版本的工具及适配器；重复键或清单不一致时拒绝覆盖。
 
         Register one immutable catalog version; duplicates are configuration errors.
         """
@@ -50,8 +49,7 @@ class ToolRegistry:
         self._versions[spec.name].append(spec.version)
 
     def resolve(self, name: str, version: str | None = None) -> tuple[ToolSpec, ToolAdapter]:
-        """处理 resolve 对应的当前组件内部业务步骤。
-
+        """按精确名称和版本解析工具，不允许回退到最新版本，避免发布快照发生隐式漂移。
 
         Resolve an explicit or latest published version without bypassing the catalog.
         """
@@ -72,8 +70,7 @@ class ToolRegistry:
         tenant_id: str,
         permissions: frozenset[str],
     ) -> list[ToolManifest]:
-        """处理 manifests 对应的当前组件内部业务步骤。
-
+        """返回调用租户可见的工具清单投影，不暴露适配器凭据或内部端点。
 
         Expose only the latest tenant-visible version whose permissions the caller owns.
         """
@@ -95,8 +92,7 @@ class ToolRegistry:
         return manifests
 
     def assert_visible(self, spec: ToolSpec, tenant_id: str) -> None:
-        """校验 assert_visible 对应的受控业务步骤。
-
+        """确认工具版本对当前租户可见；租户不在允许列表时在解析适配器前失败关闭。
 
         Enforce tenant allow-lists before an adapter observes invocation input.
         """
@@ -105,16 +101,14 @@ class ToolRegistry:
 
     @property
     def count(self) -> int:
-        """处理 count 对应的当前组件内部业务步骤。
-
+        """返回已注册工具版本数量，用于就绪检查而不触发下游调用。
 
         Return the number of immutable catalog entries for readiness diagnostics.
         """
         return len(self._specs)
 
     def adapters(self) -> list[ToolAdapter]:
-        """处理 adapters 对应的当前组件内部业务步骤。
-
+        """返回生命周期管理所需的适配器集合；调用方只能用于统一关闭，不用于绕过目录执行。
 
         Return de-duplicated adapter instances because multiple versions may share one client.
         """
@@ -129,8 +123,8 @@ def load_registry(
     client_options: dict[str, Any] | None = None,
     schema_dir: Path | None = None,
 ) -> ToolRegistry:
-    """读取或查询 load_registry 对应的受控业务步骤。
-
+    """从版本化 Tool Catalog
+    构建只读目录和适配器；任一清单或传输配置无效都会阻止服务就绪。
 
     Load and schema-validate the deployed catalog before creating any network adapter.
     """

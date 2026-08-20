@@ -131,7 +131,7 @@ public class BadCaseService {
     }
 
     /**
-     * 执行 bad case request 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 定义坏案例登记输入；请求只描述事实，不允许调用方直接伪造已解决状态。
     */
     public record BadCaseRequest(
             String title,
@@ -150,13 +150,13 @@ public class BadCaseService {
     }
 
     /**
-     * 执行 resolve bad case request 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 定义坏案例人工处置输入，必须包含根因、修复策略、评测证据和负责人。
     */
     public record ResolveBadCaseRequest(String rootCause, String fixStrategy, String evaluationEvidence, String owner) {
     }
 
     /**
-     * 执行 bad case record 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 定义坏案例的持久化投影，绑定根因、修复策略、评测证据、负责人和处置状态。
     */
     public record BadCaseRecord(
             String id,

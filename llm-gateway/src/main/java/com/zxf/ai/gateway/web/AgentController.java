@@ -46,7 +46,7 @@ public class AgentController {
 
     @PostMapping("/run")
     /**
-     * 执行 run 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 执行兼容 Agent API 请求，并把身份、Trace 和预算传入受控运行链路。
     */
     public Mono<JsonNode> run(
             @RequestHeader(value = "X-User-Id", required = false) String userId,
@@ -67,7 +67,7 @@ public class AgentController {
     }
 
     /**
-     * 执行 publish trace 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 异步发布脱敏执行 Trace；治理链路失败只记录告警，不改变已完成模型响应。
     */
     private void publishTrace(String requestId, ApiKeyService.AuthResult auth, JsonNode request,
                               JsonNode response, Instant started, Throwable error) {

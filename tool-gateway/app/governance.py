@@ -30,10 +30,8 @@ class GovernanceOutboxPublisher:
         delivery_mode: str = "direct",
         mtls: dict | None = None,
     ) -> None:
-        """初始化该组件的依赖、配置与内部状态。
-
-
-        Initialize GovernanceOutboxPublisher dependencies and local state.
+        """注入 Outbox 仓储、Governance
+        端点和服务身份；事件发送与业务工具事务保持解耦。
         """
         self.repository = repository
         self.base_url = base_url.rstrip("/")
@@ -50,10 +48,8 @@ class GovernanceOutboxPublisher:
         spec: ToolSpec,
         approval_granted: bool,
     ) -> None:
-        """发布或投递 publish_invocation 对应的受控业务步骤。
-
-
-        Perform publish invocation within the GovernanceOutboxPublisher ownership boundary.
+        """把工具执行结果转换为规范化治理事件并写入本地
+        Outbox；不在工具事务内同步等待 Governance。
         """
         occurred_at = datetime.now(UTC).isoformat()
         if response.authorization and context.operation_id:
@@ -108,10 +104,8 @@ class GovernanceOutboxPublisher:
         )
 
     async def flush(self) -> None:
-        """处理 flush 对应的当前组件内部业务步骤。
-
-
-        Perform flush within the GovernanceOutboxPublisher ownership boundary.
+        """批量投递已提交的待发送事件并记录成功或失败；单条失败不丢弃事件，留待指数退避重试
+        。
         """
         # CDC observes the committed outbox row.  Sending the same row over
         # HTTP would create a second transport and turn deduplication into a

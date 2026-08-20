@@ -27,7 +27,10 @@ class ComplianceService:
     def __init__(
         self, repository: SqliteRepository, gateway: LlmGatewayClient, default_model: str
     ) -> None:
-        """初始化该组件的依赖、配置与内部状态。"""
+        """注入合规仓储和固定输出
+        Schema；服务只管理审查事实，不同步执行被审查的业务动作。
+        进入审计链而不直接驱动线上业务流程。 进入审计链而不直接驱动线上业务流程。
+        """
         self._repository = repository
         self._gateway = gateway
         self._default_model = default_model
@@ -38,7 +41,9 @@ class ComplianceService:
         user_id: str,
         request: dict[str, Any],
     ) -> dict[str, Any]:
-        """处理 create 对应的当前组件内部业务步骤。"""
+        """创建租户隔离的合规审查并调用冻结模型策略生成结构化意见；解析失败仍保存失败原因供
+        人工处置。 审计链而不直接驱动线上业务流程。 审计链而不直接驱动线上业务流程。
+        """
         model = str(request.get("model") or self._default_model)
         response = await self._gateway.complete(
             tenant_id=tenant_id,
@@ -94,20 +99,26 @@ class ComplianceService:
         return result
 
     async def get(self, tenant_id: str, review_id: str) -> dict[str, Any]:
-        """处理 get 对应的当前组件内部业务步骤。"""
+        """按租户和审查 ID 读取合规记录；不存在时返回明确错误，不暴露其他租户记录。
+        而不直接驱动线上业务流程。 而不直接驱动线上业务流程。
+        """
         result = await self._repository.get_document(tenant_id, REVIEW, review_id)
         if not result:
             raise NotFoundError(f"Unknown compliance review: {review_id}")
         return result
 
     async def list(self, tenant_id: str) -> list[dict[str, Any]]:
-        """处理 list 对应的当前组件内部业务步骤。"""
+        """列出当前租户的合规审查投影，不触发重新评判或状态迁移。
+        链而不直接驱动线上业务流程。 链而不直接驱动线上业务流程。
+        """
         return await self._repository.list_documents(tenant_id, REVIEW)
 
     async def confirm(
         self, tenant_id: str, review_id: str, request: dict[str, Any]
     ) -> dict[str, Any]:
-        """处理 confirm 对应的当前组件内部业务步骤。"""
+        """记录具名审核人的确认或驳回决定并写入审计；终态审查不能被重复处置。
+        入审计链而不直接驱动线上业务流程。 入审计链而不直接驱动线上业务流程。
+        """
         current = await self.get(tenant_id, review_id)
         now = _now()
         confirmed = {
@@ -139,7 +150,7 @@ class ComplianceService:
         return confirmed
 
     async def snapshot(self, tenant_id: str) -> dict[str, Any]:
-        """处理 snapshot 对应的当前组件内部业务步骤。"""
+        """汇总当前租户的合规审查、审计记录和处置状态，返回只读投影而不推进审查流程。"""
         return {
             "store": "governance",
             "reviews": await self.list(tenant_id),
@@ -147,7 +158,9 @@ class ComplianceService:
         }
 
     async def audit_logs(self, tenant_id: str) -> list[dict[str, Any]]:
-        """处理 audit_logs 对应的当前组件内部业务步骤。"""
+        """处理审计记录，在租户隔离下执行结构化校验并保留审查决定；失败原因进入审计链而不直
+        接驱动线上业务流程。
+        """
         return await self._repository.list_documents(tenant_id, AUDIT, 200)
 
     async def _audit(
@@ -160,7 +173,7 @@ class ComplianceService:
         after: dict[str, Any],
         notes: str = "",
     ) -> None:
-        """处理 _audit 对应的当前组件内部业务步骤。"""
+        """对成功、失败、审批和幂等重放统一生成审计记录与治理事件，并对敏感参数仅保存摘要。"""
         entry = {
             "id": uuid4().hex,
             "reviewId": review_id,
@@ -175,7 +188,9 @@ class ComplianceService:
 
 
 def _parse(raw: str) -> tuple[dict[str, Any], list[str]]:
-    """处理 _parse 对应的当前组件内部业务步骤。"""
+    """从模型文本提取单个 JSON 对象并收集解析错误；额外文本和缺失字段不会被静默接受。
+    链而不直接驱动线上业务流程。 链而不直接驱动线上业务流程。
+    """
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I)
     try:
         value = json.loads(text)
@@ -187,7 +202,9 @@ def _parse(raw: str) -> tuple[dict[str, Any], list[str]]:
 
 
 def _validate(value: dict[str, Any], errors: list[str]) -> None:
-    """处理 _validate 对应的当前组件内部业务步骤。"""
+    """按固定合规输出 Schema 校验字段和值域，把全部结构化错误返回审查流程。
+    入审计链而不直接驱动线上业务流程。 入审计链而不直接驱动线上业务流程。
+    """
     if not isinstance(value.get("summary"), str):
         errors.append("summary must be a string.")
     if not isinstance(value.get("defects"), list):

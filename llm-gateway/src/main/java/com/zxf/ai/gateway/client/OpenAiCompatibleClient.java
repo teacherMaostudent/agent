@@ -36,7 +36,7 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
 
     @Override
     /**
-     * 执行 protocol 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 声明客户端实现支持的上游协议标识，供注册表精确解析。
     */
     public String protocol() {
         return "openai-compatible";
@@ -88,7 +88,7 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
     }
 
     /**
-     * 执行 client 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 按目标模型端点创建受超时、代理和凭据约束的 WebClient，不接受请求体覆盖基础地址。
     */
     private WebClient client(ModelEndpoint endpoint) {
         // WebClient.Builder 是 Spring 管理的共享 builder，clone 后再设置 baseUrl/header，
@@ -104,7 +104,7 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
     }
 
     /**
-     * 执行 with upstream model 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 复制请求并写入解析后的上游模型名与 stream 标记，不修改调用方原始 JsonNode。
     */
     private JsonNode withUpstreamModel(ModelEndpoint endpoint, JsonNode originalRequest, boolean stream) {
         // 对外暴露的 model 可以是网关逻辑模型名；真正发给厂商的模型名使用 upstreamModel。
@@ -123,7 +123,7 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
     }
 
     /**
-     * 执行 retry spec 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 构造只针对瞬时上游故障的指数退避策略，并受最大尝试次数约束。
     */
     private Retry retrySpec() {
         // 指数退避比固定间隔更温和，能减少上游短暂故障时的瞬时流量放大。
@@ -132,7 +132,7 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
     }
 
     /**
-     * 执行 apply retry if enabled 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 仅在路由显式启用且错误可重试时应用退避策略，业务拒绝与流式已提交响应不会盲目重试。
     */
     private <T> Mono<T> applyRetryIfEnabled(Mono<T> mono) {
         // Reactor 的 retryWhen 在 0 次重试时会直接抛 Retries exhausted，单独跳过更符合直觉。
@@ -143,7 +143,7 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
     }
 
     /**
-     * 执行 apply retry if enabled 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 仅在路由显式启用且错误可重试时应用退避策略，业务拒绝与流式已提交响应不会盲目重试。
     */
     private <T> Flux<T> applyRetryIfEnabled(Flux<T> flux) {
         if (properties.getMaxRetries() <= 0) {
@@ -196,7 +196,7 @@ public class OpenAiCompatibleClient implements LlmProviderClient {
     }
 
     /**
-     * 执行 trim trailing slash 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 移除基础地址尾部斜杠，避免拼接固定 API Path 时产生双斜杠。
     */
     private String trimTrailingSlash(String baseUrl) {
         if (baseUrl == null) {

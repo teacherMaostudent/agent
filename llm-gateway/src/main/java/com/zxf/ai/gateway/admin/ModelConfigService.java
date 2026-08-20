@@ -118,19 +118,19 @@ public class ModelConfigService {
     }
 
     /**
-     * 执行 provider override 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 定义供应商级持久化覆盖项，内容在应用前接受配置校验。
     */
     public record ProviderOverride(String providerName, GatewayProperties.Provider provider) {
     }
 
     /**
-     * 执行 model override 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 定义模型级持久化覆盖项，键由 provider 与 modelName 共同确定。
     */
     public record ModelOverride(String providerName, String modelName, GatewayProperties.Model model) {
     }
 
     /**
-     * 执行 route override 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 定义路由级持久化覆盖项，包含固定 primary、fallback 与 canary 策略。
     */
     public record RouteOverride(String routeName, GatewayProperties.Route route) {
     }

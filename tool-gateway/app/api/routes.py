@@ -59,10 +59,8 @@ def _context(
     # When OIDC is enabled, middleware has already verified the JWT and
     # reconstructed these identity headers.  The route intentionally remains
     # header-shaped so local/test callers and existing adapters stay compatible.
-    """处理 _context 对应的当前组件内部业务步骤。
-
-
-    Internal helper for module; preserve its caller-facing invariant.
+    """从已验证服务身份、请求头和准入计划字段构造
+    InvocationContext；不信任模型提供的权限或租户。
     """
     return InvocationContext(
         tenant_id=x_tenant_id,
@@ -93,8 +91,7 @@ def list_tools(
     request: Request,
     context: Annotated[InvocationContext, Depends(_context)],
 ) -> list[ToolManifest]:
-    """读取或查询 list_tools 对应的受控业务步骤。
-
+    """返回当前租户和主体权限可见的工具版本清单，不暴露适配器凭据或内部地址。
 
     List only values visible within the caller's tenant and lifecycle scope.
     """
@@ -116,10 +113,8 @@ async def invoke_tool(
     request: Request,
     context: Annotated[InvocationContext, Depends(_context)],
 ) -> InvocationResponse:
-    """处理 invoke_tool 对应的当前组件内部业务步骤。
-
-
-    Perform invoke tool within the module ownership boundary.
+    """处理工具目录项的 HTTP
+    入口：先从已验证身份构造租户上下文，再调用应用服务；路由层不复制授权或状态机逻辑。
     """
     response = await request.app.state.container.execution.invoke(tool_name, payload, context)
     await request.app.state.container.governance.flush()
@@ -140,8 +135,8 @@ def get_current_execution(
 ) -> ToolExecutionState:
     """按调用方幂等键查询工具执行账本, 供 Runtime 从崩溃窗口安全恢复。
 
-    不接受 URL 参数形式的幂等键, 避免该敏感关联键进入代理日志; 缺失键返回校验错误,
-    不能用 request_id 或工具参数替代查询条件。
+    不接受 URL 参数形式的幂等键, 避免该敏感关联键进入代理日志;
+    缺失键返回校验错误, 不能用 request_id 或工具参数替代查询条件。
     """
     if not context.idempotency_key:
         from fastapi import HTTPException
@@ -162,8 +157,7 @@ def get_approval(
     request: Request,
     context: Annotated[InvocationContext, Depends(_context)],
 ) -> ApprovalRecord:
-    """读取或查询 get_approval 对应的受控业务步骤。
-
+    """按审批 ID 读取当前租户的审批状态；读取会先刷新过期状态但不会消费授权。
 
     Return the requested value through the established ownership boundary.
     """
@@ -186,11 +180,7 @@ def approve(
     request: Request,
     context: Annotated[InvocationContext, Depends(_context)],
 ) -> ApprovalRecord:
-    """处理 approve 对应的当前组件内部业务步骤。
-
-
-    Perform approve within the module ownership boundary.
-    """
+    """以具名审批人身份批准与请求摘要绑定的待审批记录；决定只可执行一次。"""
     request.app.state.require_admin(request)
     return request.app.state.container.repository.decide_approval(
         approval_id,
@@ -212,11 +202,7 @@ def reject(
     request: Request,
     context: Annotated[InvocationContext, Depends(_context)],
 ) -> ApprovalRecord:
-    """处理 reject 对应的当前组件内部业务步骤。
-
-
-    Perform reject within the module ownership boundary.
-    """
+    """以具名审批人身份拒绝待审批记录并保存原因；拒绝后同一审批不得恢复或复用。"""
     request.app.state.require_admin(request)
     return request.app.state.container.repository.decide_approval(
         approval_id,
@@ -234,10 +220,8 @@ def audit(
     tool_name: str | None = Query(default=None, max_length=150),
     limit: int = Query(default=100, ge=1, le=1_000),
 ) -> AuditPage:
-    """处理 audit 对应的当前组件内部业务步骤。
-
-
-    Perform audit within the module ownership boundary.
+    """处理审计记录的 HTTP
+    入口：先从已验证身份构造租户上下文，再调用应用服务；路由层不复制授权或状态机逻辑。
     """
     items = request.app.state.container.repository.list_audit(
         context.tenant_id,

@@ -21,7 +21,7 @@ from app.core.config import Settings
 
 
 def _merkle_root(hashes: list[str]) -> str:
-    """处理 _merkle_root 对应的当前组件内部业务步骤。"""
+    """根据有序审计摘要构造 Merkle Root，用于证明导出批次未被删改或重排。"""
     if not hashes:
         return hashlib.sha256(b"").hexdigest()
     level = [bytes.fromhex(value) for value in hashes]
@@ -36,7 +36,9 @@ def _merkle_root(hashes: list[str]) -> str:
 
 
 async def export_tenant(settings: Settings, tenant_id: str) -> dict:
-    """处理 export_tenant 对应的当前组件内部业务步骤。"""
+    """分页导出租户审计记录，计算 Hash Chain/Merkle 证明并写入 WORM
+    对象存储。 确错误。
+    """
     container = AppContainer(settings)
     await container.start()
     verification = await container.repository.verify_audit_chain(tenant_id)
@@ -98,7 +100,7 @@ async def export_tenant(settings: Settings, tenant_id: str) -> dict:
 
 
 def main() -> None:
-    """处理 main 对应的当前组件内部业务步骤。"""
+    """执行租户审计 WORM 导出入口，并把对象存储或外部锚定失败反馈为非零退出。"""
     import argparse
 
     parser = argparse.ArgumentParser(description="Export an audit chain to WORM storage")

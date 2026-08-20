@@ -60,7 +60,7 @@ public class ApiKeyService {
     }
 
     /**
-     * 执行 snapshot 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 返回当前组件的脱敏只读快照，调用不会推进业务状态或产生外部副作用。
     */
     public Object snapshot() {
         /** Return an operational view with masked keys so administration cannot disclose credentials. */
@@ -73,7 +73,7 @@ public class ApiKeyService {
     }
 
     /**
-     * 执行 extract key 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 按明确优先级提取 API Key Header，并拒绝空值或不支持的认证格式。
     */
     private String extractKey(String authorization, String xApiKey) {
         /** Prefer the dedicated key header but accept Bearer syntax for compatible gateway clients. */
@@ -88,7 +88,7 @@ public class ApiKeyService {
     }
 
     /**
-     * 执行 mask 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 仅保留密钥首尾有限字符生成管理视图，长度不足时完全遮蔽。
     */
     private String mask(String key) {
         /** Preserve enough key prefix/suffix for support correlation without exposing the secret. */
@@ -99,13 +99,13 @@ public class ApiKeyService {
     }
 
     /**
-     * 执行 auth result 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 封装认证后可信的 tenant、user 与认证状态，供后续路由和配额键使用。
     */
     public record AuthResult(String tenantId, String userId, boolean authenticated) {
     }
 
     /**
-     * 执行 api key view 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 定义管理快照中的脱敏 API Key 投影，不暴露可直接用于认证的原始密钥。
     */
     private record ApiKeyView(String key, String tenantId, String userId, boolean enabled,
                               boolean trustedService, List<String> allowedModels) {

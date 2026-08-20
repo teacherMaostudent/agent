@@ -27,10 +27,8 @@ from app.domain.models import (
 
 
 def _now() -> datetime:
-    """处理 _now 对应的当前组件内部业务步骤。
-
-
-    Internal helper for module; preserve its caller-facing invariant.
+    """生成带 UTC
+    时区的当前时间，供状态记录、保留策略和审计排序使用，避免各调用方自行处理时区。
     """
     return datetime.now(UTC)
 
@@ -43,10 +41,8 @@ class IdempotencyClaim:
 
 class SqliteRepository:
     def __init__(self, path: Path) -> None:
-        """初始化该组件的依赖、配置与内部状态。
-
-
-        Initialize SqliteRepository dependencies and local state.
+        """打开本地 SQLite、启用 WAL 与外键约束并迁移 Outbox
+        重试列；RLock 串行化同连接事务。 维护状态与审计/Outbox 一致性。
         """
         path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
@@ -75,10 +71,8 @@ class SqliteRepository:
                     self.connection.execute(statement)
 
     def ping(self) -> None:
-        """处理 ping 对应的当前组件内部业务步骤。
-
-
-        Perform ping within the SqliteRepository ownership boundary.
+        """在仓储锁内执行只读探活查询；失败使实例未就绪，不触发本地降级。
+        与审计/Outbox 一致性。
         """
         with self._lock:
             self.connection.execute("SELECT 1").fetchone()
@@ -91,8 +85,9 @@ class SqliteRepository:
         request_hash: str,
         expires_at: datetime,
     ) -> IdempotencyClaim:
-        """处理 claim_idempotency 对应的当前组件内部业务步骤。
-
+        """在 BEGIN IMMEDIATE
+        事务中占用租户、工具和幂等键；同键异摘要冲突，同摘要已完成则返回可重放响应。
+        与审计/Outbox 一致性。
 
         Atomically claim a key or return its completed response for replay.
         """
@@ -154,10 +149,8 @@ class SqliteRepository:
         key: str,
         request_hash: str,
     ) -> InvocationResponse | None:
-        """读取或查询 find_idempotency 对应的受控业务步骤。
-
-
-        Perform find idempotency within the SqliteRepository ownership boundary.
+        """按租户、工具和幂等键读取已完成结果；请求摘要不一致时拒绝重放。 计/Outbox
+        一致性。
         """
         now = _now().isoformat()
         with self._lock:
@@ -220,8 +213,8 @@ class SqliteRepository:
         key: str,
         response: InvocationResponse,
     ) -> None:
-        """处理 complete_idempotency 对应的当前组件内部业务步骤。
-
+        """仅把当前占用记录原子迁移为 COMPLETED
+        并保存响应，避免并发调用覆盖结果。 与审计/Outbox 一致性。
 
         Apply the requested state transition with configured consistency checks.
         """
@@ -242,8 +235,8 @@ class SqliteRepository:
             )
 
     def release_idempotency(self, tenant_id: str, tool_name: str, key: str) -> None:
-        """处理 release_idempotency 对应的当前组件内部业务步骤。
-
+        """删除失败调用留下的占用记录，使同一请求可安全重试；已完成记录不会被释放。
+        计/Outbox 一致性。
 
         Release or remove owned state without bypassing cleanup rules.
         """
@@ -261,8 +254,8 @@ class SqliteRepository:
         self,
         record: ApprovalRecord,
     ) -> ApprovalRecord:
-        """读取或查询 get_or_create_approval 对应的受控业务步骤。
-
+        """按请求摘要复用仍有效的待审批记录，否则创建与租户、工具版本和参数摘要绑定的新审批
+        。 Outbox 一致性。
 
         Return the requested value through the established ownership boundary.
         """
@@ -312,8 +305,8 @@ class SqliteRepository:
             return record
 
     def get_approval(self, approval_id: str) -> ApprovalRecord | None:
-        """读取或查询 get_approval 对应的受控业务步骤。
-
+        """读取审批并先刷新过期状态；该方法不批准、不拒绝也不消费授权。 Outbox
+        一致性。
 
         Return the requested value through the established ownership boundary.
         """
@@ -334,10 +327,8 @@ class SqliteRepository:
         decided_by: str,
         reason: str,
     ) -> ApprovalRecord:
-        """处理 decide_approval 对应的当前组件内部业务步骤。
-
-
-        Perform decide approval within the SqliteRepository ownership boundary.
+        """在租户约束下把 PENDING 审批迁移为 APPROVED 或
+        REJECTED，并保存审批人、原因和时间。 Outbox 一致性。
         """
         now = _now()
         with self._lock:
@@ -367,8 +358,9 @@ class SqliteRepository:
             return self._approval_from_row(updated)
 
     def consume_approval(self, approval_id: str) -> None:
-        """处理 consume_approval 对应的当前组件内部业务步骤。
-
+        """以条件更新把 APPROVED 原子迁移为
+        CONSUMED；更新行数不为一表示授权已用或状态非法。 审计/Outbox
+        一致性。
 
         Apply the requested state transition with configured consistency checks.
         """
@@ -384,10 +376,8 @@ class SqliteRepository:
                 raise ApprovalError("approval was already consumed")
 
     def append_audit(self, record: AuditRecord) -> None:
-        """持久化 append_audit 对应的受控业务步骤。
-
-
-        Persist state while preserving the transaction and audit boundary.
+        """追加一次不可变工具执行审计，保存参数和幂等键摘要而不是敏感原文。 Outbox
+        一致性。
         """
         with self._lock:
             self.connection.execute(
@@ -417,10 +407,8 @@ class SqliteRepository:
             )
 
     def enqueue_event(self, event: dict[str, Any]) -> None:
-        """发布或投递 enqueue_event 对应的受控业务步骤。
-
-
-        Persist state while preserving the transaction and audit boundary.
+        """把规范化治理事件幂等写入本地 Outbox；重复 event_id
+        不产生第二条消息。 护状态与审计/Outbox 一致性。
         """
         with self._lock:
             self.connection.execute(
@@ -431,10 +419,9 @@ class SqliteRepository:
             )
 
     def pending_events(self, limit: int = 100) -> list[dict[str, Any]]:
-        """处理 pending_events 对应的当前组件内部业务步骤。
-
-
-        Perform pending events within the SqliteRepository ownership boundary.
+        """按 next_attempt_at 和数量上限读取待投递 Outbox
+        事件；读取本身不增加尝试次数。 在事务内同步维护状态与审计/Outbox
+        一致性。
         """
         with self._lock:
             rows = self.connection.execute(
@@ -445,10 +432,8 @@ class SqliteRepository:
         return [json.loads(row["payload_json"]) for row in rows]
 
     def mark_event_delivered(self, event_id: str) -> None:
-        """处理 mark_event_delivered 对应的当前组件内部业务步骤。
-
-
-        Perform mark event delivered within the SqliteRepository ownership boundary.
+        """在消息代理确认后记录 Outbox 投递时间；业务工具状态保持不变。
+        Outbox 一致性。
         """
         with self._lock:
             self.connection.execute(
@@ -457,10 +442,8 @@ class SqliteRepository:
             )
 
     def mark_event_failed(self, event_id: str, error: str) -> None:
-        """处理 mark_event_failed 对应的当前组件内部业务步骤。
-
-
-        Perform mark event failed within the SqliteRepository ownership boundary.
+        """记录投递错误、增加尝试次数并计算指数退避时间，事件仍保留在 Outbox。
+        Outbox 一致性。
         """
         from datetime import timedelta
 
@@ -483,8 +466,8 @@ class SqliteRepository:
         tool_name: str | None = None,
         limit: int = 100,
     ) -> list[AuditRecord]:
-        """读取或查询 list_audit 对应的受控业务步骤。
-
+        """按租户、时间游标和数量上限分页读取审计记录，禁止无租户全表查询。 Outbox
+        一致性。
 
         List only values visible within the caller's tenant and lifecycle scope.
         """
@@ -518,19 +501,15 @@ class SqliteRepository:
         ]
 
     def close(self) -> None:
-        """处理 close 对应的当前组件内部业务步骤。
-
-
-        Perform close within the SqliteRepository ownership boundary.
+        """在仓储锁内关闭 SQLite 连接；不提交未完成的工具执行或审批事务。
+        态与审计/Outbox 一致性。
         """
         with self._lock:
             self.connection.close()
 
     def _expire_approvals(self, now: datetime) -> None:
-        """处理 _expire_approvals 对应的当前组件内部业务步骤。
-
-
-        Internal helper for SqliteRepository; preserve its caller-facing invariant.
+        """把超过有效期且仍为待处理的审批转为 EXPIRED，确保过期授权不能被消费。
+        ；写操作在事务内同步维护状态与审计/Outbox 一致性。
         """
         self.connection.execute(
             """
@@ -542,10 +521,8 @@ class SqliteRepository:
 
     @staticmethod
     def _approval_from_row(row: sqlite3.Row) -> ApprovalRecord:
-        """处理 _approval_from_row 对应的当前组件内部业务步骤。
-
-
-        Internal helper for SqliteRepository; preserve its caller-facing invariant.
+        """把数据库行显式映射为审批记录领域模型；通过模型校验阻止损坏或旧格式数据进入应用层
+        。
         """
         return ApprovalRecord(
             approval_id=row["approval_id"],

@@ -23,8 +23,8 @@ _monitor: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None
 
 
 def bind_monitor(executor: Callable[[str, str], Awaitable[dict[str, Any]]]) -> None:
-    """处理 bind_monitor 对应的当前组件内部业务步骤。
-
+    """在 Worker 启动时绑定模型发布监控回调；未绑定时 Activity
+    必须失败而不是静默跳过。
 
     Bind the process-local activity implementation at worker start-up.
     """
@@ -34,10 +34,8 @@ def bind_monitor(executor: Callable[[str, str], Awaitable[dict[str, Any]]]) -> N
 
 @activity.defn(name="monitor_model_release")
 async def monitor_model_release(tenant_id: str, release_id: str) -> dict[str, Any]:
-    """处理 monitor_model_release 对应的当前组件内部业务步骤。
-
-
-    Run the bounded monitor model release operation and surface failures.
+    """Temporal Activity 调用已绑定的 Control Plane
+    监控器；未绑定时失败以触发可观察重试。 回明确错误。 回明确错误。
     """
     if _monitor is None:
         raise RuntimeError("release monitor activity is not bound")
@@ -50,10 +48,8 @@ class ModelReleaseWorkflow:
     async def run(self, tenant_id: str, release_id: str, interval_seconds: float) -> str:
         # The activity is retryable; the release monitor itself must remain
         # idempotent because a completed activity can be replayed by Temporal.
-        """处理 run 对应的当前组件内部业务步骤。
-
-
-        Perform run within the ModelReleaseWorkflow ownership boundary.
+        """周期调用模型发布监控 Activity，直到发布进入终态；等待使用
+        Temporal Timer，因而 Worker 重启后仍可恢复。
         """
         while True:
             release = await workflow.execute_activity(
@@ -74,10 +70,8 @@ class ModelReleaseWorkflow:
 
 class TemporalReleaseOrchestrator:
     def __init__(self, target: str, namespace: str, task_queue: str) -> None:
-        """初始化该组件的依赖、配置与内部状态。
-
-
-        Initialize TemporalReleaseOrchestrator dependencies and local state.
+        """创建专用事件循环并连接 Temporal；目标、命名空间和 Task Queue
+        在实例生命周期内保持不变。
         """
         self.task_queue = task_queue
         self._loop = asyncio.new_event_loop()
@@ -88,10 +82,8 @@ class TemporalReleaseOrchestrator:
     def start(self, tenant_id: str, release_id: str, interval_seconds: float) -> None:
         # A deterministic workflow id turns a duplicate API request into a
         # Temporal-level conflict instead of starting two release monitors.
-        """处理 start 对应的当前组件内部业务步骤。
-
-
-        Perform start within the TemporalReleaseOrchestrator ownership boundary.
+        """以租户和发布 ID 组成确定性 Workflow
+        ID，避免同一发布启动两个并行监控器。
         """
         self._call(
             self._client.start_workflow(
@@ -103,29 +95,20 @@ class TemporalReleaseOrchestrator:
         )
 
     def close(self) -> None:
-        """处理 close 对应的当前组件内部业务步骤。
-
-
-        Perform close within the TemporalReleaseOrchestrator ownership boundary.
-        """
+        """停止后台事件循环并等待线程退出；只释放编排客户端资源，不改变发布状态。"""
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5)
 
     def _call(self, coroutine):
-        """处理 _call 对应的当前组件内部业务步骤。
-
-
-        Internal helper for TemporalReleaseOrchestrator; preserve its caller-facing invariant.
-        """
+        """把协程提交到后台事件循环并同步取得结果；连接或启动错误原样返回给调用方。"""
         future: Future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
         return future.result(timeout=30)
 
 
 async def run_worker() -> None:
-    """执行 run_worker 对应的受控业务步骤。
-
-
-    Run the bounded run worker operation and surface failures.
+    """连接指定 Temporal Namespace 并在固定 Task Queue 注册
+    Workflow/Activity，连接失败阻止 Worker 启动。
+    在产生外部副作用前返回明确错误。 在产生外部副作用前返回明确错误。
     """
     from app.container import AppContainer
     from app.core.config import Settings
@@ -148,9 +131,7 @@ async def run_worker() -> None:
 
 
 def main() -> None:
-    """处理 main 对应的当前组件内部业务步骤。
-
-
-    Perform main within the module ownership boundary.
+    """启动独立 Temporal Worker 进程入口，并让进程退出码反映 Worker
+    初始化或运行失败。
     """
     asyncio.run(run_worker())

@@ -1,5 +1,8 @@
 # Workflow / Agent / Skill 收敛架构
 
+> 本文负责概念分类和 Owner 边界；具体类、方法、持久化状态和故障恢复路径见
+> [代码阅读与方法职责指南](code-reading-guide.md)，避免把 Skill 概念重复解释成执行实现。
+
 ## 唯一分类方式
 
 平台只有两种顶层主控：`WORKFLOW` 和 `AGENT`。Single/Sub/Multi-Agent 是

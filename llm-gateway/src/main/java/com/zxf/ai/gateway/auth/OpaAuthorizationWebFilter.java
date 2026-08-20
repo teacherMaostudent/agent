@@ -64,7 +64,7 @@ public class OpaAuthorizationWebFilter implements WebFilter, Ordered {
     }
 
     /**
-     * 执行 allowed 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 解析 OPA 响应中的 allow 决策；字段缺失或类型错误一律按拒绝处理。
     */
     private boolean allowed(Map<?, ?> document) {
         Object result = document.get("result");
@@ -73,7 +73,7 @@ public class OpaAuthorizationWebFilter implements WebFilter, Ordered {
     }
 
     /**
-     * 执行 deny 对应的受控业务步骤，并保持网关边界与状态约束。
+     * 以统一 403 错误体终止未获 OPA 授权的请求，不继续进入控制器或模型调用。
     */
     private Mono<Void> deny(ServerWebExchange exchange) {
         exchange.getResponse().setStatusCode(HttpStatus.FORBIDDEN);

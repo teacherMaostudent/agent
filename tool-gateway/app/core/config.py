@@ -61,8 +61,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_auth(self) -> "Settings":
-        """校验 validate_auth 对应的受控业务步骤。
-
+        """校验生产模式必须配置 OIDC、受众和工作负载身份；缺失安全配置时拒绝启动。
 
         Fail startup for production configurations that would weaken identity or durability.
         """
@@ -105,8 +104,8 @@ class Settings(BaseSettings):
         return self
 
     def ensure_directories(self) -> None:
-        """处理 ensure_directories 对应的当前组件内部业务步骤。
-
+        """仅在本地 SQLite 模式创建数据库父目录；生产 PostgreSQL
+        模式不会隐式修改文件系统。
 
         Create only the local SQLite parent path; managed backends own their storage.
         """
@@ -115,8 +114,7 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """读取或查询 get_settings 对应的受控业务步骤。
-
+    """创建并缓存已校验配置，保证同一进程的安全和韧性参数不会在请求间漂移。
 
     Build one immutable settings object per process after validating deployment invariants.
     """

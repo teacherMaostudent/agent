@@ -72,8 +72,8 @@ class ToolExecutionService:
         payload: InvocationRequest,
         context: InvocationContext,
     ) -> InvocationResponse:
-        """处理 invoke 对应的当前组件内部业务步骤。
-
+        """按‘目录解析、身份与策略授权、Schema 校验、审批、幂等占用、限流熔断、执行
+        、审计’的固定顺序调用工具；任何前置门禁失败都不得触发外部副作用。
 
         Execute only after policy, schema, approval and idempotency gates pass.
         """
@@ -254,8 +254,8 @@ class ToolExecutionService:
         context: InvocationContext,
         request_hash: str,
     ) -> InvocationResponse | None:
-        """处理 _authorize_approval 对应的当前组件内部业务步骤。
-
+        """校验审批是否与租户、工具版本和请求摘要精确绑定，并原子消费一次性审批；未获批时返
+        回待审批状态而不执行工具。
 
         Create or atomically consume an approval bound to this exact request hash.
         """
@@ -299,7 +299,9 @@ class ToolExecutionService:
 
     @staticmethod
     def _validate_runtime_action_identity(spec: ToolSpec, context: InvocationContext) -> None:
-        """生产 Runtime 的写操作必须绑定准入计划和单步 operation; 禁止漂移调用。"""
+        """生产 Runtime 的写操作必须绑定准入计划和单步 operation;
+        禁止漂移调用。
+        """
         if spec.risk.value == "read_only" or not context.snapshot_id:
             return
         required = {
@@ -339,8 +341,8 @@ class ToolExecutionService:
         arguments: dict[str, Any],
         context: InvocationContext,
     ) -> tuple[Any, int]:
-        """执行 _execute_with_retry 对应的受控业务步骤。
-
+        """在 Deadline
+        与剩余尝试预算内执行工具适配器；仅重试声明为可重试的上游错误。
 
         Retry only declared-idempotent tools within the caller's remaining deadline.
         """
@@ -378,8 +380,7 @@ class ToolExecutionService:
 
     @staticmethod
     def _authorize(spec: ToolSpec, context: InvocationContext) -> None:
-        """处理 _authorize 对应的当前组件内部业务步骤。
-
+        """校验调用主体具备工具声明的权限集合；权限不足时在进入适配器前失败关闭。
 
         Reject before execution when the caller lacks any catalogued permission.
         """
@@ -396,8 +397,8 @@ class ToolExecutionService:
         *,
         arguments: bool,
     ) -> None:
-        """校验 _validate_json 对应的受控业务步骤。
-
+        """按工具版本绑定的 JSON Schema
+        校验输入或输出；失败时不进入下一副作用阶段。
 
         Validate untrusted input or adapter output and expose only bounded schema errors.
         """
@@ -433,8 +434,7 @@ class ToolExecutionService:
         error_type: str = "",
         approval_granted: bool = False,
     ) -> None:
-        """处理 _audit 对应的当前组件内部业务步骤。
-
+        """对成功、失败、审批和幂等重放统一生成审计记录与治理事件，并对敏感参数仅保存摘要。
 
         Persist the immutable invocation record before asynchronously publishing governance.
         """
@@ -465,8 +465,7 @@ def _request_hash(
     arguments: dict[str, Any],
     context: InvocationContext,
 ) -> str:
-    """处理 _request_hash 对应的当前组件内部业务步骤。
-
+    """将工具版本、参数、租户和执行上下文规范化后计算请求摘要，用于审批绑定和幂等冲突检测。
 
     Bind approval and idempotency to tenant, user, tool version and exact arguments.
     """
@@ -486,8 +485,7 @@ def _request_hash(
 
 
 def _sha256_json(value: Any) -> str:
-    """处理 _sha256_json 对应的当前组件内部业务步骤。
-
+    """对排序后的紧凑 JSON 计算 SHA-256，保证跨进程对同一结构得到一致摘要。
 
     Canonicalise JSON so semantically identical argument maps hash identically.
     """
@@ -496,8 +494,7 @@ def _sha256_json(value: Any) -> str:
 
 
 def _sha256_text(value: str) -> str:
-    """处理 _sha256_text 对应的当前组件内部业务步骤。
-
+    """对 UTF-8 文本计算 SHA-256，避免在审计与日志中直接持久化敏感原文。
 
     Return a non-reversible audit correlation digest rather than raw sensitive data.
     """
