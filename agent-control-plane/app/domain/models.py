@@ -4,7 +4,24 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
+from platform_sdk.contracts.execution_profile import (
+    ContextStrategy,
+    DurabilityStrategy,
+    ExecutionEngine,
+    PlanningStrategy,
+    StepExecutionStrategy,
+    ToolPresentationMode,
+)
+from platform_sdk.contracts.orchestration import ReasoningPolicy
+from platform_sdk.contracts.skills import (
+    CapabilityProviderDescriptor,
+    CapabilityRoutingPolicy,
+    CompiledSkillPlan,
+    SkillBinding,
+    SkillSpec,
+)
 from platform_sdk.contracts.subagents import SubAgentBinding
+from platform_sdk.contracts.workflow import CompiledWorkflowPlan, WorkflowSpec
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -71,6 +88,7 @@ class ToolBinding(StrictModel):
     timeout_seconds: int = Field(default=30, ge=1, le=600)
     side_effect: bool = False
     idempotent: bool = False
+    required_permissions: list[str] = Field(default_factory=list, max_length=200)
     config: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -111,10 +129,40 @@ class RuntimeLimits(StrictModel):
 
 
 class ExecutionRequirements(StrictModel):
-    """声明运行耐久性和推理形态，避免用一个执行器名称混合表达两个维度。"""
+    """冻结宏观规划、执行内核、持久化和上下文等正交运行维度。"""
 
     lifecycle: Literal["request_scoped", "durable_workflow"] = "request_scoped"
     reasoning: Literal["minimal", "agentic", "graph"] = "graph"
+    engine: ExecutionEngine | None = None
+    durability: DurabilityStrategy | None = None
+    planning_strategy: PlanningStrategy = PlanningStrategy.PLAN_EXECUTE
+    default_step_strategy: StepExecutionStrategy = StepExecutionStrategy.DETERMINISTIC
+    adaptive_step_strategy: StepExecutionStrategy = StepExecutionStrategy.REACT
+    context_strategy: ContextStrategy = ContextStrategy.MANAGED_LEDGER
+    tool_presentation: ToolPresentationMode = ToolPresentationMode.NATIVE
+
+    @model_validator(mode="after")
+    def normalize_execution_projection(self) -> ExecutionRequirements:
+        """以新执行维度生成兼容字段，并拒绝一个声明表达两套相反语义。"""
+        if self.engine is not None:
+            expected_reasoning = {
+                ExecutionEngine.SIMPLE: "minimal",
+                ExecutionEngine.DEEP_AGENTS: "agentic",
+                ExecutionEngine.LANGGRAPH: "graph",
+            }[self.engine]
+            if "reasoning" in self.model_fields_set and self.reasoning != expected_reasoning:
+                raise ValueError("reasoning conflicts with execution engine")
+            self.reasoning = expected_reasoning
+        if self.durability is not None:
+            expected_lifecycle = (
+                "durable_workflow"
+                if self.durability == DurabilityStrategy.TEMPORAL
+                else "request_scoped"
+            )
+            if "lifecycle" in self.model_fields_set and self.lifecycle != expected_lifecycle:
+                raise ValueError("lifecycle conflicts with durability strategy")
+            self.lifecycle = expected_lifecycle
+        return self
 
 
 class IntentDefinition(StrictModel):
@@ -150,6 +198,12 @@ class AgentDraftSpec(StrictModel):
     labels: dict[str, str] = Field(default_factory=dict)
     retrieval_policy: dict[str, Any] = Field(default_factory=dict)
     subagents: list[SubAgentBinding] = Field(default_factory=list)
+    # 引用的是 Skill Registry 已发布版本的摘要, 而非可在运行时变动的名字或 URL。
+    skills: list[SkillBinding] = Field(default_factory=list)
+    # Planner 只输出能力需求, 候选 Provider 和顺序与 Snapshot 一起冻结。
+    capability_providers: list[CapabilityProviderDescriptor] = Field(default_factory=list)
+    capability_routing: list[CapabilityRoutingPolicy] = Field(default_factory=list)
+    reasoning_policy: ReasoningPolicy = Field(default_factory=ReasoningPolicy)
 
     @model_validator(mode="after")
     def _validate_intent_catalog_binding(self) -> AgentDraftSpec:
@@ -162,6 +216,173 @@ class AgentDraftSpec(StrictModel):
 class AgentCreate(StrictModel):
     agent_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
     spec: AgentDraftSpec
+
+
+class SkillStatus(StrEnum):
+    """不可变 SkillVersion 的可用状态；草稿本身不进入该状态机。"""
+
+    VALIDATING = "validating"
+    CANDIDATE = "candidate"
+    CANARY = "canary"
+    ACTIVE = "active"
+    DEPRECATED = "deprecated"
+    RETIRED = "retired"
+    DEGRADED = "degraded"
+    QUARANTINED = "quarantined"
+
+
+class SkillCreate(StrictModel):
+    """创建可编辑 Skill 草稿；Skill 的运行工件只能通过后续发布生成。"""
+
+    skill_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
+    spec: SkillSpec
+
+    @model_validator(mode="after")
+    def match_skill_identity(self) -> SkillCreate:
+        """保证请求 ID 与草稿内容一致，避免跨 Skill 覆盖。"""
+        if self.skill_id != self.spec.skill_id:
+            raise ValueError("skill_id must equal spec.skill_id")
+        return self
+
+
+class SkillDraftUpdate(StrictModel):
+    """带乐观锁修订号的 Skill 草稿更新请求。"""
+
+    expected_revision: int = Field(ge=1)
+    spec: SkillSpec
+
+
+class SkillDefinition(StrictModel):
+    """租户隔离的可编辑 Skill 草稿聚合。"""
+
+    tenant_id: str
+    skill_id: str
+    revision: int
+    draft: SkillSpec
+    created_by: str
+    updated_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class SkillVersionPublish(StrictModel):
+    """将 Skill 草稿冻结为精确版本的发布命令。"""
+
+    semantic_version: str = Field(pattern=r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+    change_summary: str = Field(default="", max_length=2_000)
+
+
+class SkillVersion(StrictModel):
+    """已编译 Skill 工件；Runtime 只接受其摘要一致的精确引用。"""
+
+    tenant_id: str
+    version_id: str
+    skill_id: str
+    semantic_version: str
+    source_revision: int
+    artifact_digest: str
+    plan: CompiledSkillPlan
+    status: SkillStatus = SkillStatus.VALIDATING
+    change_summary: str
+    published_by: str
+    published_at: datetime
+    updated_at: datetime
+
+
+class SkillRuntimeResolution(StrictModel):
+    """Runtime/Agent Lab 可读取的 Active SkillVersion 冻结工件。"""
+
+    tenant_id: str
+    skill_id: str
+    version: str
+    artifact_digest: str
+    plan: CompiledSkillPlan
+
+
+class SkillStatusUpdate(StrictModel):
+    """治理或运维发起的受控状态切换；不允许修改冻结工件。"""
+
+    status: SkillStatus
+    quality_gate_run_id: str | None = Field(default=None, max_length=160)
+
+
+class WorkflowCreate(StrictModel):
+    """创建 Workflow Draft；该对象与 Agent Draft 分离，不能借用 Agent 发布链。"""
+
+    workflow_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
+    spec: WorkflowSpec
+
+
+class WorkflowDefinition(StrictModel):
+    """租户隔离的可编辑 Workflow Draft。"""
+
+    tenant_id: str
+    workflow_id: str
+    revision: int
+    draft: WorkflowSpec
+    created_by: str
+    updated_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkflowVersionPublish(StrictModel):
+    """将 Workflow Draft 固化为零 Agent 运行时工件。"""
+
+    semantic_version: str = Field(pattern=r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+
+
+class WorkflowVersion(StrictModel):
+    """不可变 WorkflowVersion；Runtime 仅加载其中的已编译计划。"""
+
+    tenant_id: str
+    version_id: str
+    workflow_id: str
+    semantic_version: str
+    source_revision: int
+    artifact_digest: str
+    plan: CompiledWorkflowPlan
+    published_by: str
+    published_at: datetime
+
+
+class WorkflowDraftUpdate(StrictModel):
+    """通过 CAS 更新 Workflow Draft，禁止并发覆盖。"""
+
+    expected_revision: int = Field(ge=1)
+    spec: WorkflowSpec
+
+
+class WorkflowReleaseCreate(StrictModel):
+    """把一个冻结 WorkflowVersion 激活到目标环境。"""
+
+    version_id: str = Field(min_length=1, max_length=160)
+    environment: str = Field(default="production", pattern=r"^[a-z][a-z0-9-]{1,31}$")
+
+
+class WorkflowRelease(StrictModel):
+    """Runtime 可解析的 Workflow 发布记录；同环境仅一个 Active 版本。"""
+
+    tenant_id: str
+    release_id: str
+    workflow_id: str
+    version_id: str
+    environment: str
+    status: Literal["active", "retired"] = "active"
+    created_by: str
+    created_at: datetime
+
+
+class WorkflowRuntimeResolution(StrictModel):
+    """Control Plane 返回给 Runtime 的冻结零 Agent Workflow 工件。"""
+
+    tenant_id: str
+    workflow_id: str
+    environment: str
+    release_id: str
+    version_id: str
+    plan: CompiledWorkflowPlan
+    artifact_digest: str
 
 
 class AgentDraftUpdate(StrictModel):

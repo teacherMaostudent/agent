@@ -123,9 +123,7 @@ class Settings(BaseSettings):
                 unsafe.append("CONTROL_PLANE_RUNTIME_EXECUTOR_CATALOG_SERVICE_API_KEY is required")
             if not self.mtls_enabled:
                 unsafe.append("CONTROL_PLANE_MTLS_ENABLED must be true")
-            elif not all(
-                (self.mtls_ca_file, self.mtls_cert_file, self.mtls_key_file)
-            ):
+            elif not all((self.mtls_ca_file, self.mtls_cert_file, self.mtls_key_file)):
                 unsafe.append("CONTROL_PLANE mTLS certificate paths are required")
             if unsafe:
                 raise ValueError("Unsafe production configuration: " + "; ".join(unsafe))

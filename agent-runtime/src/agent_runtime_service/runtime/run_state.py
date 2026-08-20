@@ -82,20 +82,41 @@ _TRANSITIONS: dict[tuple[AgentRunState, AgentRunEvent], AgentRunState] = {
     (AgentRunState.CREATED, AgentRunEvent.RUN_FAILED): AgentRunState.FAILED,
     (AgentRunState.CREATED, AgentRunEvent.CANCEL_REQUESTED): AgentRunState.CANCELLED,
     (AgentRunState.PREPARING_CONTEXT, AgentRunEvent.CONTEXT_READY): AgentRunState.REQUESTING_MODEL,
-    (AgentRunState.PREPARING_CONTEXT, AgentRunEvent.APPROVAL_REQUIRED): AgentRunState.WAITING_APPROVAL,
+    (
+        AgentRunState.PREPARING_CONTEXT,
+        AgentRunEvent.APPROVAL_REQUIRED,
+    ): AgentRunState.WAITING_APPROVAL,
     (AgentRunState.PREPARING_CONTEXT, AgentRunEvent.INPUT_REQUIRED): AgentRunState.WAITING_INPUT,
     (AgentRunState.REQUESTING_MODEL, AgentRunEvent.MODEL_REQUESTED): AgentRunState.REQUESTING_MODEL,
     (AgentRunState.REQUESTING_MODEL, AgentRunEvent.MODEL_COMPLETED): AgentRunState.RECONCILING,
-    (AgentRunState.REQUESTING_MODEL, AgentRunEvent.TOOL_INTENT_RECORDED): AgentRunState.EXECUTING_TOOLS,
-    (AgentRunState.REQUESTING_MODEL, AgentRunEvent.APPROVAL_REQUIRED): AgentRunState.WAITING_APPROVAL,
+    (
+        AgentRunState.REQUESTING_MODEL,
+        AgentRunEvent.TOOL_INTENT_RECORDED,
+    ): AgentRunState.EXECUTING_TOOLS,
+    (
+        AgentRunState.REQUESTING_MODEL,
+        AgentRunEvent.APPROVAL_REQUIRED,
+    ): AgentRunState.WAITING_APPROVAL,
     (AgentRunState.REQUESTING_MODEL, AgentRunEvent.INPUT_REQUIRED): AgentRunState.WAITING_INPUT,
-    (AgentRunState.REQUESTING_MODEL, AgentRunEvent.FOLLOW_UP_RECEIVED): AgentRunState.PREPARING_CONTEXT,
-    (AgentRunState.REQUESTING_MODEL, AgentRunEvent.STEERING_RECEIVED): AgentRunState.PREPARING_CONTEXT,
+    (
+        AgentRunState.REQUESTING_MODEL,
+        AgentRunEvent.FOLLOW_UP_RECEIVED,
+    ): AgentRunState.PREPARING_CONTEXT,
+    (
+        AgentRunState.REQUESTING_MODEL,
+        AgentRunEvent.STEERING_RECEIVED,
+    ): AgentRunState.PREPARING_CONTEXT,
     (AgentRunState.EXECUTING_TOOLS, AgentRunEvent.TOOLS_COMPLETED): AgentRunState.REQUESTING_MODEL,
-    (AgentRunState.EXECUTING_TOOLS, AgentRunEvent.APPROVAL_REQUIRED): AgentRunState.WAITING_APPROVAL,
+    (
+        AgentRunState.EXECUTING_TOOLS,
+        AgentRunEvent.APPROVAL_REQUIRED,
+    ): AgentRunState.WAITING_APPROVAL,
     (AgentRunState.EXECUTING_TOOLS, AgentRunEvent.RECOVERY_REQUIRED): AgentRunState.RECONCILING,
     (AgentRunState.WAITING_INPUT, AgentRunEvent.STEERING_RECEIVED): AgentRunState.PREPARING_CONTEXT,
-    (AgentRunState.WAITING_INPUT, AgentRunEvent.FOLLOW_UP_RECEIVED): AgentRunState.PREPARING_CONTEXT,
+    (
+        AgentRunState.WAITING_INPUT,
+        AgentRunEvent.FOLLOW_UP_RECEIVED,
+    ): AgentRunState.PREPARING_CONTEXT,
     (AgentRunState.WAITING_APPROVAL, AgentRunEvent.APPROVAL_RECEIVED): AgentRunState.RECONCILING,
     (AgentRunState.RECONCILING, AgentRunEvent.RECONCILED): AgentRunState.REQUESTING_MODEL,
     # 审批恢复后通常会直接继续此前已计划的工具步骤，不要求虚构一次新的模型请求。
@@ -115,9 +136,7 @@ _GLOBAL_TRANSITIONS: dict[AgentRunEvent, AgentRunState] = {
 }
 
 
-def transition_run_state(
-    current: AgentRunState | str, event: AgentRunEvent | str
-) -> RunTransition:
+def transition_run_state(current: AgentRunState | str, event: AgentRunEvent | str) -> RunTransition:
     """严格计算下一状态；只有相同事件的安全重放可作为幂等无操作通过。"""
     previous = AgentRunState(current)
     trigger = AgentRunEvent(event)

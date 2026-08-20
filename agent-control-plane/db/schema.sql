@@ -31,6 +31,78 @@ CREATE TABLE IF NOT EXISTS agent_versions (
 CREATE INDEX IF NOT EXISTS idx_agent_versions_lookup
     ON agent_versions (tenant_id, agent_id, published_at DESC);
 
+CREATE TABLE IF NOT EXISTS skills (
+    tenant_id TEXT NOT NULL,
+    skill_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    draft_json TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS skill_versions (
+    tenant_id TEXT NOT NULL,
+    version_id TEXT PRIMARY KEY,
+    skill_id TEXT NOT NULL,
+    semantic_version TEXT NOT NULL,
+    source_revision INTEGER NOT NULL,
+    artifact_digest TEXT NOT NULL,
+    plan_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    change_summary TEXT NOT NULL,
+    published_by TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (tenant_id, skill_id, semantic_version),
+    FOREIGN KEY (tenant_id, skill_id) REFERENCES skills (tenant_id, skill_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_versions_lookup
+    ON skill_versions (tenant_id, skill_id, published_at DESC);
+
+CREATE TABLE IF NOT EXISTS workflows (
+    tenant_id TEXT NOT NULL,
+    workflow_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    draft_json TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, workflow_id)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_versions (
+    tenant_id TEXT NOT NULL,
+    version_id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    semantic_version TEXT NOT NULL,
+    source_revision INTEGER NOT NULL,
+    artifact_digest TEXT NOT NULL,
+    plan_json TEXT NOT NULL,
+    published_by TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    UNIQUE (tenant_id, workflow_id, semantic_version),
+    FOREIGN KEY (tenant_id, workflow_id) REFERENCES workflows (tenant_id, workflow_id)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_releases (
+    tenant_id TEXT NOT NULL,
+    release_id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    version_id TEXT NOT NULL,
+    environment TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (version_id) REFERENCES workflow_versions (version_id)
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_releases_resolve
+    ON workflow_releases (tenant_id, workflow_id, environment, status, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS releases (
     tenant_id TEXT NOT NULL,
     release_id TEXT PRIMARY KEY,

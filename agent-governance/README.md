@@ -4,6 +4,10 @@
 
 它**不是** `agent-control-plane`：控制面决定 Agent 的定义、版本和发布；治理服务拥有评测资产、Judge、质量门禁、线上样本和合规工作流。Control Plane 可以同步读取质量门禁结论，但治理服务不直接修改 Gateway 路由，也不执行 Agent 或业务工具。
 
+在线请求中的计划准入由 Runtime Guard 完成，具体 Tool 动作的最终授权由 Tool Gateway
+完成。Governance 接收 `tool.authorization.decided`、执行结果和 Trace 做异步审计，并负责
+Golden、回归、Bad Case 与发布质量门禁；它不成为每次副作用调用的同步授权代理。
+
 它也**不是** `agent-lab`：Agent Lab 负责冻结发布快照、编排离线回放和保存基线差异；本服务
 继续是通用评测引擎与规则所有者。即使直接调用 Governance 的 Judge/Gate API，也不会自动获得
 发布权限；启用 Agent Lab 门禁时，Control Plane 还会校验同一实验生成的内部 release evidence。

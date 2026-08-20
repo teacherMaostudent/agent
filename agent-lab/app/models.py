@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def utc_now() -> datetime:
@@ -62,11 +62,15 @@ class EvaluationBinding(StrictModel):
 
 
 class ExperimentPlan(StrictModel):
-    """定义一次回放的不可变输入；只允许引用已发布 Agent，不接受草稿。"""
+    """定义 Agent 或 Skill 回放；两类目标都只能引用已发布工件。"""
 
     name: str = Field(min_length=1, max_length=200)
     tenant_id: str = Field(min_length=1, max_length=160)
-    agent_id: str = Field(min_length=2, max_length=160)
+    target_type: Literal["agent", "skill"] = "agent"
+    agent_id: str = Field(default="", max_length=160)
+    skill_id: str = Field(default="", max_length=160)
+    skill_version: str = Field(default="", max_length=100)
+    skill_capability_id: str = Field(default="", max_length=160)
     environment: str = Field(default="laboratory", min_length=2, max_length=64)
     cases: list[ReplayCase] = Field(min_length=1, max_length=200)
     evaluation: EvaluationBinding = Field(default_factory=EvaluationBinding)
@@ -74,6 +78,17 @@ class ExperimentPlan(StrictModel):
     max_steps: int = Field(default=12, ge=2, le=30)
     deadline_seconds: int = Field(default=120, ge=1, le=600)
     max_cost_usd: float = Field(default=2.0, gt=0, le=10_000)
+
+    @model_validator(mode="after")
+    def validate_target(self) -> ExperimentPlan:
+        """要求实验只选择一种目标，并为 Skill 固定版本和能力。"""
+        if self.target_type == "agent" and not self.agent_id.strip():
+            raise ValueError("agent experiment requires agent_id")
+        if self.target_type == "skill" and not all(
+            (self.skill_id.strip(), self.skill_version.strip(), self.skill_capability_id.strip())
+        ):
+            raise ValueError("skill experiment requires skill_id, skill_version and capability_id")
+        return self
 
 
 class SnapshotBinding(StrictModel):
@@ -84,6 +99,7 @@ class SnapshotBinding(StrictModel):
     release_id: str
     version_id: str
     snapshot_hash: str
+    target_type: Literal["agent", "skill"] = "agent"
 
 
 class CaseRun(StrictModel):

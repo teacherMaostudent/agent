@@ -116,7 +116,9 @@ class RuntimeSettings(BaseSettings):
         if not self.control_plane_base_url or not self.governance_base_url:
             unsafe.append("RUNTIME Control Plane and Governance endpoints are required")
         if self.session_archive_enabled and not self.session_archive_bucket:
-            unsafe.append("RUNTIME_SESSION_ARCHIVE_BUCKET is required when session archiving is enabled")
+            unsafe.append(
+                "RUNTIME_SESSION_ARCHIVE_BUCKET is required when session archiving is enabled"
+            )
         if unsafe:
             raise ValueError("Unsafe production configuration: " + "; ".join(unsafe))
         return self

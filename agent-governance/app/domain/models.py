@@ -76,6 +76,15 @@ class GovernanceEvent(StrictModel):
                 "risk",
                 "approval_granted",
             },
+            "tool.authorization.decided": {
+                "operation_id",
+                "step_id",
+                "plan_id",
+                "admission_id",
+                "decision",
+                "tool",
+                "risk",
+            },
             "llm.request.completed": {
                 "request_id",
                 "model",

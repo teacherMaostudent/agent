@@ -107,6 +107,44 @@ def test_snapshot_compiles_execution_lifecycle_and_reasoning_independently() -> 
     assert plan.execution_requirements.reasoning.value == "agentic"
 
 
+def test_snapshot_compiles_engine_and_durability_as_orthogonal_dimensions() -> None:
+    """LangGraph 可使用独立检查点而不被误建模成另一种 Agent Executor。"""
+    data = snapshot()
+    data["spec"]["execution"] = {
+        "engine": "langgraph",
+        "durability": "checkpointed",
+        "planning_strategy": "plan_execute",
+        "default_step_strategy": "deterministic",
+        "adaptive_step_strategy": "react",
+        "context_strategy": "managed_ledger",
+        "tool_presentation": "native",
+    }
+
+    plan = compile_snapshot(
+        data, tenant_id="tenant-a", agent_id="review-agent", fallback_model="fallback"
+    )
+
+    assert plan.executor_profile == "checkpointed-langgraph/v1"
+    assert plan.execution_requirements.normalized_engine().value == "langgraph"
+    assert plan.execution_requirements.normalized_durability().value == "checkpointed"
+
+
+def test_deep_agents_requires_an_explicit_engine_profile() -> None:
+    """旧 agentic 推理仍由 LangGraph 执行; 只有显式新引擎才能编译 Deep Agents Profile。"""
+    data = snapshot()
+    data["spec"]["execution"] = {
+        "engine": "deep_agents",
+        "durability": "ephemeral",
+    }
+
+    plan = compile_snapshot(
+        data, tenant_id="tenant-a", agent_id="review-agent", fallback_model="fallback"
+    )
+
+    assert plan.executor_profile == "deep-agents/v1"
+    assert plan.execution_requirements.normalized_engine().value == "deep_agents"
+
+
 def test_controlled_scan_binding_is_preserved_in_compiled_snapshot() -> None:
     data = snapshot()
     data["spec"]["tools"].append(
@@ -122,6 +160,50 @@ def test_controlled_scan_binding_is_preserved_in_compiled_snapshot() -> None:
         data, tenant_id="tenant-a", agent_id="review-agent", fallback_model="fallback"
     )
     assert any(item["tool_name"] == "controlled_scan" for item in plan.tools)
+
+
+def test_snapshot_freezes_exact_skill_version_and_digest() -> None:
+    """Skill 只能以版本和工件摘要被绑定，不能由 Runtime 临时选择最新定义。"""
+    data = snapshot()
+    data["spec"]["skills"] = [
+        {
+            "skill_id": "document-review",
+            "version": "1.2.0",
+            "artifact_digest": "a" * 64,
+            "required": True,
+            "max_invocations": 2,
+            "max_budget_fraction": 0.2,
+        }
+    ]
+
+    plan = compile_snapshot(
+        data, tenant_id="tenant-a", agent_id="review-agent", fallback_model="fallback"
+    )
+
+    assert plan.skills == data["spec"]["skills"]
+    assert "skill" in plan.required_capabilities
+
+
+def test_snapshot_rejects_non_pinned_or_duplicate_skill_binding() -> None:
+    """阻止 Skill 名称漂移与重复绑定，失败发生在模型调用和副作用之前。"""
+    data = snapshot()
+    data["spec"]["skills"] = [
+        {
+            "skill_id": "document-review",
+            "version": "1.2.0",
+            "artifact_digest": "a" * 64,
+        },
+        {
+            "skill_id": "document-review",
+            "version": "1.2.0",
+            "artifact_digest": "b" * 64,
+        },
+    ]
+
+    with pytest.raises(SnapshotCompileError, match="unique"):
+        compile_snapshot(
+            data, tenant_id="tenant-a", agent_id="review-agent", fallback_model="fallback"
+        )
 
 
 def test_snapshot_identity_and_tool_policy_drift_fail_closed() -> None:

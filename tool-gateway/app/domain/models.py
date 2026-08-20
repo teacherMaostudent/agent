@@ -221,6 +221,7 @@ class InvocationResponse(StrictModel):
     idempotent_replay: bool = False
     attempt_count: int = 0
     duration_ms: int = 0
+    authorization: dict[str, Any] | None = None
 
 
 class ToolExecutionState(StrictModel):
@@ -241,6 +242,10 @@ class InvocationContext(StrictModel):
     tool_execution_id: str = ""
     root_task_id: str = ""
     business_operation_id: str = ""
+    operation_id: str = ""
+    step_id: str = ""
+    plan_id: str = ""
+    plan_admission_id: str = ""
     trace_id: str = ""
     run_id: str = ""
     session_id: str = ""

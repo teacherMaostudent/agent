@@ -85,6 +85,53 @@ def test_replay_freezes_snapshot_runs_cases_and_delegates_gate(tmp_path: Path):
     }
 
 
+def test_skill_replay_resolves_exact_artifact_and_uses_governed_runtime(tmp_path: Path):
+    class SkillControlPlane(FakeControlPlane):
+        def resolve_skill(self, tenant_id, skill_id, version):
+            assert (tenant_id, skill_id, version) == (
+                "tenant-a",
+                "document-review",
+                "1.0.0",
+            )
+            return {
+                "version": "1.0.0",
+                "artifact_digest": "a" * 64,
+                "plan": {"skill_id": skill_id},
+            }
+
+    class SkillRuntime(FakeRuntime):
+        def run_skill(self, payload, tenant_id, request_id):
+            assert payload["artifact_digest"] == "a" * 64
+            assert payload["capability_id"] == "DOCUMENT_REVIEW"
+            return {"status": "SUCCEEDED", "output": {"answer": "reviewed"}}
+
+    service = AgentLabService(
+        ExperimentRepository(tmp_path / "skill-lab.db"),
+        SkillControlPlane(),
+        SkillRuntime(),
+        FakeGovernance(),
+        max_cases=10,
+    )
+    record = service.create(
+        ExperimentPlan(
+            name="skill-replay",
+            tenant_id="tenant-a",
+            target_type="skill",
+            skill_id="document-review",
+            skill_version="1.0.0",
+            skill_capability_id="DOCUMENT_REVIEW",
+            cases=[ReplayCase(case_id="case-1", task="review")],
+            evaluation=EvaluationBinding(),
+        )
+    )
+    completed = service.run("tenant-a", record.experiment_id)
+    assert completed.status == "COMPLETED"
+    assert completed.snapshot_bindings[0].snapshot_hash == "a" * 64
+    evidence = service.release_evidence("tenant-a", record.experiment_id)
+    assert evidence["targetType"] == "skill"
+    assert evidence["skillId"] == "document-review"
+
+
 def test_worker_retries_transport_failure_then_persists_dlq(tmp_path: Path):
     """Worker 必须通过租约任务退避重试，并在超过预算后将实验和任务同时收口为失败。"""
 

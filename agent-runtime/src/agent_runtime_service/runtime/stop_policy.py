@@ -79,7 +79,9 @@ class CancellationStopPolicy:
 
     def evaluate(self, state: dict[str, Any]) -> StopDecision:
         """按租户和 Run ID 查询取消标记，不能依据调用方自报的状态判断。"""
-        if self._checker and self._checker(str(state.get("tenant_id", "")), str(state.get("run_id", ""))):
+        if self._checker and self._checker(
+            str(state.get("tenant_id", "")), str(state.get("run_id", ""))
+        ):
             return StopDecision(StopReason.CANCELLED, "Run cancellation was requested.")
         return StopDecision(StopReason.CONTINUE)
 

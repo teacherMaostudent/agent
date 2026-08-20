@@ -23,11 +23,26 @@
 OIDC/mTLS、OPA、遥测、Schema Registry 和存储适配。应用服务不得互相 import 内部模块。
 Temporal、PostgreSQL、Kafka、对象存储、OpenSearch/向量库、OIDC Provider 与 OPA 是基础设施，不是业务服务。
 
+## 主控、拓扑和能力必须分层
+
+RootTask 顶层只有 Workflow-centric 和 Agent-centric 两种模式，且任意时刻只有
+一个 Owner。Workflow 用固定步骤、重试、补偿和 Signal 决定 What-Next；Agent 用
+Goal/State/Observation 动态决定 What-Next。Multi-Agent 只表示多个独立权限/责任主体，
+不是第三种顶层模式。
+
+`ProposedExecutionPlan` 冻结 Owner、Topology、ReasoningPolicy、CapabilityPolicy、Durability、
+Governance、Budget 和 VersionBindings。Planner 只生成能力需求，Capability Resolver 再依
+资格、健康、权限、成本、SLA、独立责任主体和发布回退链选择 Tool/Skill/
+RAG/Memory/Agent/Human/Workflow Provider。详见 [Skill 架构](skill-architecture.md)。
+Runtime Guard 随后生成 `AdmittedExecutionPlan`；Tool Gateway 仍对每个具体 operation 做
+最终授权，因此计划获准不会被解释成副作用已获批。完整链路见
+[Plan-Execute 与分层授权](plan-execute-authorization-architecture.md)。
+
 ## 两条生命周期
 
 ### 线上执行
 
-1. Runtime 验证调用方身份并从 Control Plane 解析 Agent 发布快照和已冻结的 `runtime-snapshot/v1` Artifact。
+1. Runtime 验证调用方身份并从 Control Plane 解析 Agent、Workflow 或 Skill 的精确工件。
 2. Control Plane 在发布事务内完成 Artifact 编译；Runtime 在生产模式只校验哈希并加载它。Artifact 将 Graph、
    Prompt、知识、工具、模型与上限编译为可执行计划及受限
    `workflow-policy/v1`；未知节点类型、非法迁移与能力漂移会 fail-closed。
@@ -70,8 +85,9 @@ Runtime 本机不执行模型代码。
 ### 发布与实验
 
 1. Control Plane 生成已版本化的 Agent 定义和 laboratory Release。
-2. Agent Lab 为每个用例解析同一 Release 快照，并固定会话绑定，拒绝快照漂移。
-3. Agent Lab 调 Runtime 回放，并把响应、引用和 Trace 交给 Governance Judge 与质量门禁。
+2. Agent Lab 为每个用例解析同一 Agent Snapshot 或 Active SkillVersion，并固定
+   version/digest，拒绝工件漂移。
+3. Agent Lab 调 Runtime 回放 Agent 或 Skill，并把响应、引用和 Trace 交给 Governance。
 4. Agent Lab 仅对“完成、快照冻结、Gate 通过”的实验生成内部 release evidence。
 5. 启用 `CONTROL_PLANE_AGENT_LAB_REQUIRED=true` 后，Control Plane 校验 evidence 的租户、Agent、版本、
    laboratory 环境与 Judge Run，再执行正式发布 CAS/Saga。

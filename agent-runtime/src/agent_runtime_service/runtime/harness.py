@@ -16,6 +16,7 @@ from platform_sdk.contracts.runtime_snapshot import (
     RuntimeSnapshotCompileError,
     load_runtime_snapshot_artifact,
 )
+from platform_sdk.contracts.skills import OrchestrationOwner
 
 from agent_runtime_service.agent.graph import AgentGraph
 from agent_runtime_service.agent.models import AgentRunResult, AgentState
@@ -124,8 +125,8 @@ class SimpleExecutor(ExecutorAdapter):
         raise RuntimeError("simple executor does not support approval resume")
 
 
-class DurableExecutor(ExecutorAdapter):
-    """长期可靠 Workflow 的入口执行器，正常请求只能经 Temporal 异步队列调度。"""
+class TemporalDurabilityAdapter(ExecutorAdapter):
+    """为任意执行内核增加 Temporal 持久恢复语义，本身不解释 Agent 步骤。"""
 
     def __init__(self, worker_executor: ExecutorAdapter) -> None:
         """保存 Worker 内联执行器；该依赖不会被序列化进 Temporal 载荷。"""
@@ -140,6 +141,10 @@ class DurableExecutor(ExecutorAdapter):
     def resume(self, thread_id: str, approval: ApprovalResume, *, max_steps: int) -> AgentRunResult:
         """仅由 Temporal Worker 调用底层检查点恢复，外部入口由 API 发送 Workflow Signal。"""
         return self._worker_executor.resume(thread_id, approval, max_steps=max_steps)
+
+
+class DurableExecutor(TemporalDurabilityAdapter):
+    """旧名称兼容入口；新装配代码应使用 ``TemporalDurabilityAdapter``。"""
 
 
 class CallableExecutor(ExecutorAdapter):
@@ -273,6 +278,8 @@ class AgentHarness:
         root_task_id: str = "",
         collaboration_snapshot_id: str = "",
         business_operation_id: str = "",
+        orchestration_owner: OrchestrationOwner = OrchestrationOwner.AGENT,
+        workflow_id: str = "",
     ) -> ExecutionContext:
         """创建不可变执行关联标识；额度策略由调用方计算，Harness 只封装上下文。"""
         return ExecutionContext.create(
@@ -294,6 +301,8 @@ class AgentHarness:
             root_task_id=root_task_id,
             collaboration_snapshot_id=collaboration_snapshot_id,
             business_operation_id=business_operation_id,
+            orchestration_owner=orchestration_owner,
+            workflow_id=workflow_id,
         )
 
     def resolve_executor(self, plan: CompiledAgentPlan) -> ExecutorAdapter:

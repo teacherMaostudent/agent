@@ -61,7 +61,9 @@ class RuntimeInterceptionPipeline:
     收紧或补充受限上下文；抛错即拒绝，确保策略基础设施故障不会放宽执行边界。
     """
 
-    def __init__(self, hooks: Mapping[RuntimeHookPhase, tuple[RuntimeHook, ...]] | None = None) -> None:
+    def __init__(
+        self, hooks: Mapping[RuntimeHookPhase, tuple[RuntimeHook, ...]] | None = None
+    ) -> None:
         """冻结启动期声明的 Hook，复制输入映射避免外部在运行中替换安全策略。"""
         self._hooks = {phase: tuple(callbacks) for phase, callbacks in (hooks or {}).items()}
 
@@ -80,10 +82,14 @@ class RuntimeInterceptionPipeline:
                 raise RuntimeHookRejected(f"runtime hook rejected {phase.value}") from exc
             if update is not None:
                 if not isinstance(update, dict):
-                    raise RuntimeHookRejected(f"runtime hook returned invalid payload for {phase.value}")
+                    raise RuntimeHookRejected(
+                        f"runtime hook returned invalid payload for {phase.value}"
+                    )
                 current = update
             if any(current.get(key) != value for key, value in protected.items()):
-                raise RuntimeHookRejected("runtime hook attempted to alter protected execution identity")
+                raise RuntimeHookRejected(
+                    "runtime hook attempted to alter protected execution identity"
+                )
         return current
 
 
@@ -97,9 +103,7 @@ class RuntimeEventBus:
         """复制订阅映射；不提供运行时注册，避免请求路径产生不可审计的插件行为。"""
         supplied = subscribers or {}
         self._subscribers = {
-            event_type: tuple(callbacks)
-            for event_type, callbacks in supplied.items()
-            if callbacks
+            event_type: tuple(callbacks) for event_type, callbacks in supplied.items() if callbacks
         }
         self._frozen = False
 

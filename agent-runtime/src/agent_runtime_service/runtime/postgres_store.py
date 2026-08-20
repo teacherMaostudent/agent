@@ -89,7 +89,9 @@ ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS payload_version TEXT
 
 
 class PostgresRuntimeStore(RuntimeStoreOperations):
-    def __init__(self, dsn: str, schema: str, schema_registry: SchemaRegistry | None = None) -> None:
+    def __init__(
+        self, dsn: str, schema: str, schema_registry: SchemaRegistry | None = None
+    ) -> None:
         """初始化生产 PostgreSQL Run/Outbox 存储并校验 schema 名，防止 SQL 标识符注入。"""
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", schema):
             raise ValueError("invalid PostgreSQL schema")

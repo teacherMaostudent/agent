@@ -1,5 +1,9 @@
+from datetime import UTC, datetime, timedelta
+
+import pytest
 from platform_sdk.contracts.context import ContextPackage
 from platform_sdk.contracts.models import Evidence
+from platform_sdk.contracts.skills import CapabilityProviderKind
 from platform_sdk.tools.registry import ToolRegistry
 
 from agent_runtime_service.agent.graph import AgentGraph
@@ -9,8 +13,13 @@ from agent_runtime_service.runtime.mailbox import ClaimedRunMailboxItem, RunMail
 from agent_runtime_service.runtime.models import (
     ApprovalResume,
     IntentResult,
+    ProposedExecutionPlan,
     SourcePlan,
     UserInputResume,
+)
+from agent_runtime_service.runtime.plan_admission import (
+    PlanAdmissionRejected,
+    PlanAdmissionService,
 )
 from agent_runtime_service.runtime.planner import RuntimePlanner
 from agent_runtime_service.runtime.runtime_context import RuntimeContext
@@ -117,6 +126,66 @@ def test_answer_without_evidence_is_blocked() -> None:
     assert result.answer == "Insufficient evidence to provide a reliable answer."
 
 
+def test_agent_declares_capability_while_runtime_selects_and_executes_skill_provider() -> None:
+    engine = SequenceDecisionEngine(
+        [
+            AgentDecision(
+                action=AgentAction.CAPABILITY,
+                capability_id="DOCUMENT_REVIEW",
+                capability_input={"task": "review"},
+            ),
+            AgentDecision(action=AgentAction.ANSWER, final_answer="Review completed."),
+        ]
+    )
+    graph = AgentGraph(
+        engine,
+        runtime_context(),
+        capability_handler_factory=lambda state: {
+            CapabilityProviderKind.SKILL: lambda provider, payload, context: {
+                "decision": "accepted",
+                "root_task_id": context.root_task_id,
+            }
+        },
+    )
+    state = initial_state()
+    state.update(
+        {
+            "run_id": "run-capability",
+            "root_task_id": "root-capability",
+            "session_id": "session-capability",
+            "trace_id": "trace-capability",
+            "agent_id": "review-agent",
+            "agent_version": "1.0.0",
+            "snapshot_id": "snapshot-capability",
+            "graph_version": "graph-v1",
+            "deadline_at": (datetime.now(UTC) + timedelta(minutes=1)).isoformat(),
+            "attempt_budget_remaining": 5,
+            "compiled_plan": {
+                "capability_providers": [
+                    {
+                        "provider_id": "document-review",
+                        "kind": "skill",
+                        "version": "1.0.0",
+                        "artifact_digest": "a" * 64,
+                        "capabilities": [{"capability_id": "DOCUMENT_REVIEW"}],
+                    }
+                ],
+                "capability_routing": [
+                    {
+                        "capability_id": "DOCUMENT_REVIEW",
+                        "provider_order": ["document-review"],
+                    }
+                ],
+            },
+        }
+    )
+    result = graph.run(state, "thread-capability")
+    capability_observation = next(
+        item for item in result.observations if item["type"] == "capability"
+    )
+    assert capability_observation["provider_id"] == "document-review"
+
+
 def test_mailbox_input_forces_context_reload_before_next_decision() -> None:
     """外部输入只能在安全点被领取，并经 Context 重装/重新规划后才交给模型决策。"""
 
@@ -138,7 +207,9 @@ def test_mailbox_input_forces_context_reload_before_next_decision() -> None:
 
     mailbox = Mailbox()
     graph = AgentGraph(
-        SequenceDecisionEngine([AgentDecision(action=AgentAction.ANSWER, final_answer="Safe answer")]),
+        SequenceDecisionEngine(
+            [AgentDecision(action=AgentAction.ANSWER, final_answer="Safe answer")]
+        ),
         runtime_context(),
         mailbox=mailbox,
     )
@@ -193,7 +264,9 @@ def test_waiting_input_resumes_same_graph_checkpoint_after_mailbox_lease() -> No
             return None
 
     graph = AgentGraph(
-        SequenceDecisionEngine([AgentDecision(action=AgentAction.ANSWER, final_answer="Safe answer")]),
+        SequenceDecisionEngine(
+            [AgentDecision(action=AgentAction.ANSWER, final_answer="Safe answer")]
+        ),
         runtime_context(),
         planner=RuntimePlanner(Analyzer()),
         mailbox=Mailbox(),
@@ -201,7 +274,9 @@ def test_waiting_input_resumes_same_graph_checkpoint_after_mailbox_lease() -> No
     assert graph.run(initial_state(), "thread-resume-input").status == "WAITING_INPUT"
 
     resumed = graph.resume(
-        "thread-resume-input", UserInputResume(message_id="mbx-1", lease_token="lease-1"), max_steps=5
+        "thread-resume-input",
+        UserInputResume(message_id="mbx-1", lease_token="lease-1"),
+        max_steps=5,
     )
 
     assert resumed.status == "COMPLETED"
@@ -209,6 +284,7 @@ def test_waiting_input_resumes_same_graph_checkpoint_after_mailbox_lease() -> No
 
 def test_parallel_expert_conflict_requires_and_accepts_frozen_candidate_resolution() -> None:
     """Quorum 不足会中断；恢复只能选择中断中列出的已发布专家，而非任意文本答案。"""
+
     def execute(delegation, task, state):
         """为两个专家返回有意冲突的结构化运行结果。"""
         del task, state
@@ -227,7 +303,9 @@ def test_parallel_expert_conflict_requires_and_accepts_frozen_candidate_resoluti
                     subagent_capability="RISK_REVIEW",
                     subagent_task="review risk",
                 ),
-                AgentDecision(action=AgentAction.ANSWER, final_answer="Resolved by the approved expert."),
+                AgentDecision(
+                    action=AgentAction.ANSWER, final_answer="Resolved by the approved expert."
+                ),
             ]
         ),
         runtime_context(),
@@ -268,3 +346,34 @@ def test_parallel_expert_conflict_requires_and_accepts_frozen_candidate_resoluti
     )
 
     assert resumed.status == "COMPLETED"
+
+
+def test_plan_admission_rejects_unsafe_published_side_effect() -> None:
+    """发布工具缺少幂等声明时，计划必须在进入执行引擎前失败。"""
+    graph = AgentGraph(
+        SequenceDecisionEngine([AgentDecision(action=AgentAction.ANSWER, final_answer="safe")]),
+        runtime_context(),
+    )
+    result = graph.run(initial_state(), "plan-admission-source")
+    proposed = ProposedExecutionPlan.model_validate(result.execution_plan)
+
+    with pytest.raises(PlanAdmissionRejected) as error:
+        PlanAdmissionService().admit(
+            proposed,
+            compiled_plan={
+                "contract_hash": "a" * 64,
+                "executor_profile": proposed.executor_profile,
+                "tools": [
+                    {
+                        "tool_name": "unsafe.write",
+                        "risk": "write_high_risk",
+                        "side_effect": True,
+                        "idempotent": False,
+                        "approval_required": False,
+                    }
+                ],
+            },
+            caller_permissions={"tool:write"},
+        )
+
+    assert "risk" in str(error.value)

@@ -23,6 +23,7 @@ class RuntimeCapability(StrEnum):
     SUBAGENT = "subagent"
     SANDBOX = "sandbox"
     CODE_RUNNER = "code_runner"
+    SKILL = "skill"
 
 
 CAPABILITY_CONTRACT_VERSION = "runtime-capability-contract/v1"
@@ -37,7 +38,9 @@ class CapabilityManifest(BaseModel):
 
     capability: RuntimeCapability
     provider_id: str = Field(min_length=3, max_length=160)
-    contract_version: str = Field(default=CAPABILITY_CONTRACT_VERSION, min_length=1, max_length=80)
+    contract_version: str = Field(
+        default=CAPABILITY_CONTRACT_VERSION, min_length=1, max_length=80
+    )
     provider_version: str = Field(default="v1", min_length=1, max_length=80)
     artifact_digest: str = Field(min_length=16, max_length=128)
     executor_profiles: tuple[str, ...] = ()
@@ -50,7 +53,9 @@ class CapabilityManifest(BaseModel):
     @classmethod
     def normalize_unique_values(cls, value: Sequence[str]) -> tuple[str, ...]:
         """统一目录值的顺序并拒绝空项，使 Manifest 摘要跨实例稳定。"""
-        normalized = tuple(sorted({str(item).strip() for item in value if str(item).strip()}))
+        normalized = tuple(
+            sorted({str(item).strip() for item in value if str(item).strip()})
+        )
         return normalized
 
     def canonical_payload(self) -> dict[str, Any]:
@@ -60,8 +65,13 @@ class CapabilityManifest(BaseModel):
 
 def capability_manifest_digest(manifests: Sequence[CapabilityManifest]) -> str:
     """计算能力清单的顺序无关摘要，防止目录版本相同但 Provider 已漂移。"""
-    payload = [item.canonical_payload() for item in sorted(manifests, key=lambda item: item.capability.value)]
-    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    payload = [
+        item.canonical_payload()
+        for item in sorted(manifests, key=lambda item: item.capability.value)
+    ]
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -88,8 +98,12 @@ def required_runtime_capabilities(spec: Mapping[str, Any]) -> list[str]:
         required.add(RuntimeCapability.TOOL.value)
     if spec.get("subagents"):
         required.add(RuntimeCapability.SUBAGENT.value)
+    if spec.get("skills"):
+        required.add(RuntimeCapability.SKILL.value)
     if profile in {"temporal-simple/v1", "temporal-agentic/v1", "temporal-workflow/v1"}:
         required.add(RuntimeCapability.WORKFLOW.value)
     if profile == "code-runner/v1":
-        required.update({RuntimeCapability.CODE_RUNNER.value, RuntimeCapability.SANDBOX.value})
+        required.update(
+            {RuntimeCapability.CODE_RUNNER.value, RuntimeCapability.SANDBOX.value}
+        )
     return sorted(required)

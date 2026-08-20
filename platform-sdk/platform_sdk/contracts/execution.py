@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from platform_sdk.contracts.skills import OrchestrationOwner
+
 
 class ExecutionContext(BaseModel):
     """Runtime-owned context propagated to every internal dependency."""
@@ -20,6 +22,10 @@ class ExecutionContext(BaseModel):
     root_task_id: str = ""
     collaboration_snapshot_id: str = ""
     business_operation_id: str = ""
+    # 这是 RootTask 的唯一顶层控制权；Skill 只是能力调用，不会改写该字段。
+    orchestration_owner: OrchestrationOwner = OrchestrationOwner.AGENT
+    workflow_id: str = ""
+    skill_execution_id: str = ""
     tenant_id: str
     user_id: str
     agent_id: str
@@ -52,6 +58,9 @@ class ExecutionContext(BaseModel):
         root_task_id: str = "",
         collaboration_snapshot_id: str = "",
         business_operation_id: str = "",
+        orchestration_owner: OrchestrationOwner = OrchestrationOwner.AGENT,
+        workflow_id: str = "",
+        skill_execution_id: str = "",
     ) -> ExecutionContext:
         """创建一次运行不可变的传播身份、截止时间和尝试预算。
 
@@ -71,6 +80,9 @@ class ExecutionContext(BaseModel):
             root_task_id=root_task_id or resolved_run_id,
             collaboration_snapshot_id=collaboration_snapshot_id,
             business_operation_id=business_operation_id,
+            orchestration_owner=orchestration_owner,
+            workflow_id=workflow_id,
+            skill_execution_id=skill_execution_id,
             tenant_id=tenant_id,
             user_id=user_id,
             agent_id=agent_id,
@@ -94,6 +106,9 @@ class ExecutionContext(BaseModel):
             "X-Root-Task-Id": self.root_task_id,
             "X-Collaboration-Snapshot-Id": self.collaboration_snapshot_id,
             "X-Business-Operation-Id": self.business_operation_id,
+            "X-Orchestration-Owner": self.orchestration_owner.value,
+            "X-Workflow-Id": self.workflow_id,
+            "X-Skill-Execution-Id": self.skill_execution_id,
             "X-Agent-Id": self.agent_id,
             "X-Agent-Version": self.agent_version,
             "X-Snapshot-Id": self.snapshot_id,

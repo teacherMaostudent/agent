@@ -25,6 +25,8 @@ class RuntimeEventType(StrEnum):
     RUN_STARTED = "runtime.run.started"
     RUN_STATE_CHANGED = "runtime.run.state_changed"
     RUN_WAITING_APPROVAL = "runtime.run.waiting_approval"
+    PLAN_ADMITTED = "runtime.plan.admitted"
+    PLAN_REJECTED = "runtime.plan.rejected"
     RUN_WAITING_INPUT = "runtime.run.waiting_input"
     RUN_COMPLETED = "runtime.run.completed"
     RUN_FAILED = "runtime.run.failed"
@@ -201,7 +203,10 @@ def derive_model_messages(events: Iterable[RuntimeLifecycleEvent]) -> list[dict[
         if event.model_message is None:
             continue
         messages.append(
-            (event.sequence, {"role": event.model_message.role, "content": event.model_message.content})
+            (
+                event.sequence,
+                {"role": event.model_message.role, "content": event.model_message.content},
+            )
         )
     return [message for _, message in messages]
 
@@ -227,7 +232,9 @@ def derive_session_projection(
         }:
             projection.active_turn_id = ""
             projection.active_step_id = ""
-            projection.status = "INTERRUPTED" if event.event_type == RuntimeEventType.TURN_INTERRUPTED else "ACTIVE"
+            projection.status = (
+                "INTERRUPTED" if event.event_type == RuntimeEventType.TURN_INTERRUPTED else "ACTIVE"
+            )
         elif event.event_type == RuntimeEventType.STEP_STARTED:
             projection.active_step_id = event.step_id
         elif event.event_type in {RuntimeEventType.STEP_COMPLETED, RuntimeEventType.STEP_FAILED}:

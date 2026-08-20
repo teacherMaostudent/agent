@@ -49,6 +49,8 @@ class SubAgentBinding(BaseModel):
     """父 Agent 可委派的目标、递归深度及资源上限；未声明目标不得调用。"""
 
     agent_id: str = Field(min_length=2, max_length=160)
+    version: str = Field(default="resolved-release", min_length=1, max_length=100)
+    artifact_digest: str = Field(default="", max_length=128)
     capabilities: list[str] = Field(default_factory=list, max_length=50)
     allowed_callers: list[str] = Field(default_factory=list, max_length=100)
     delegated_permissions: list[str] = Field(default_factory=list, max_length=200)

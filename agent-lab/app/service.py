@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -68,15 +69,25 @@ class AgentLabService:
         expected_identity: tuple[str, str, str] | None = None
         for case in record.plan.cases:
             session_id = f"lab-{record.experiment_id}-{case.case_id}"
-            resolution = self._control_plane.resolve(
-                tenant_id, record.plan.agent_id, record.plan.environment, session_id
-            )
-            snapshot = resolution.get("snapshot") or {}
-            identity = (
-                str(resolution.get("release_id", "")),
-                str(resolution.get("version_id", "")),
-                _snapshot_hash(snapshot),
-            )
+            if record.plan.target_type == "skill":
+                resolution = self._control_plane.resolve_skill(
+                    tenant_id, record.plan.skill_id, record.plan.skill_version
+                )
+                identity = (
+                    f"skill:{record.plan.skill_id}",
+                    str(resolution.get("version", "")),
+                    str(resolution.get("artifact_digest", "")),
+                )
+            else:
+                resolution = self._control_plane.resolve(
+                    tenant_id, record.plan.agent_id, record.plan.environment, session_id
+                )
+                snapshot = resolution.get("snapshot") or {}
+                identity = (
+                    str(resolution.get("release_id", "")),
+                    str(resolution.get("version_id", "")),
+                    _snapshot_hash(snapshot),
+                )
             if not all(identity):
                 raise ValueError(
                     "Control Plane returned an incomplete published snapshot resolution"
@@ -95,6 +106,7 @@ class AgentLabService:
                     release_id=identity[0],
                     version_id=identity[1],
                     snapshot_hash=identity[2],
+                    target_type=record.plan.target_type,
                 )
             )
         record.snapshot_bindings = bindings
@@ -122,8 +134,28 @@ class AgentLabService:
             binding = bindings[case.case_id]
             request_id = f"lab-run-{record.experiment_id}-{case.case_id}"
             try:
-                result = self._runtime.run(
-                    {
+                if record.plan.target_type == "skill":
+                    result = self._runtime.run_skill(
+                        {
+                            "skill_id": record.plan.skill_id,
+                            "version": record.plan.skill_version,
+                            "artifact_digest": binding.snapshot_hash,
+                            "capability_id": record.plan.skill_capability_id,
+                            "input": {
+                                "task": case.task,
+                                "document_id": case.document_id,
+                                "content": case.content,
+                                "metadata": case.metadata,
+                            },
+                            "max_cost_usd": record.plan.max_cost_usd,
+                            "deadline_seconds": record.plan.deadline_seconds,
+                        },
+                        tenant_id,
+                        request_id,
+                    )
+                else:
+                    result = self._runtime.run(
+                        {
                         "task": case.task,
                         "agent_id": record.plan.agent_id,
                         "environment": record.plan.environment,
@@ -137,11 +169,11 @@ class AgentLabService:
                         "max_steps": record.plan.max_steps,
                         "deadline_seconds": record.plan.deadline_seconds,
                         "max_cost_usd": record.plan.max_cost_usd,
-                    },
-                    tenant_id,
-                    binding.session_id,
-                    request_id,
-                )
+                        },
+                        tenant_id,
+                        binding.session_id,
+                        request_id,
+                    )
                 try:
                     ledger = (
                         self._runtime.session_events(tenant_id, binding.session_id)
@@ -159,7 +191,7 @@ class AgentLabService:
                         session_id=binding.session_id,
                         run_id=result.get("run_id"),
                         status=str(result.get("status", "UNKNOWN")),
-                        answer=str(result.get("answer", "")),
+                        answer=_candidate_answer(result, record.plan.target_type),
                         evidence_ids=_evidence_ids(result),
                         latency_ms=result.get("latency_ms"),
                         cost_usd=_cost(result),
@@ -282,10 +314,9 @@ class AgentLabService:
             raise ValueError("Agent Lab experiment is not completed with a passing quality gate")
         if not record.judge_run_id or not snapshot:
             raise ValueError("Agent Lab experiment lacks immutable snapshot or Judge evidence")
-        return {
+        evidence = {
             "experimentId": record.experiment_id,
             "tenantId": record.plan.tenant_id,
-            "agentId": record.plan.agent_id,
             "environment": record.plan.environment,
             "versionId": snapshot["version_id"],
             "releaseId": snapshot["release_id"],
@@ -293,6 +324,16 @@ class AgentLabService:
             "judgeRunId": record.judge_run_id,
             "qualityGate": record.quality_gate,
         }
+        if record.plan.target_type == "skill":
+            evidence.update(
+                {
+                    "targetType": "skill",
+                    "skillId": record.plan.skill_id,
+                }
+            )
+        else:
+            evidence["agentId"] = record.plan.agent_id
+        return evidence
 
 
 def _snapshot_hash(snapshot: dict) -> str:
@@ -311,6 +352,14 @@ def _evidence_ids(result: dict) -> list[str]:
         for item in evidence
         if isinstance(item, dict) and (item.get("id") or item.get("chunk_id"))
     ]
+
+
+def _candidate_answer(result: dict, target_type: str) -> str:
+    """将 Agent 回答或 Skill 结构化输出转为 Judge 的稳定候选文本。"""
+    if target_type == "skill":
+        output = result.get("output", {})
+        return json.dumps(output, ensure_ascii=False, sort_keys=True)
+    return str(result.get("answer", ""))
 
 
 def _cost(result: dict) -> float | None:

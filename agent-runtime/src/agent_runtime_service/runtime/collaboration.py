@@ -64,10 +64,14 @@ class CapabilityRouter:
         healthy = [item for item in candidates if item.agent_id not in unavailable_agents]
         if healthy:
             selected = min(healthy, key=lambda item: (item.authority_rank, item.agent_id))
-            return CapabilitySelection(requirement, selected, CapabilityAvailability.AVAILABLE, "provider_selected")
+            return CapabilitySelection(
+                requirement, selected, CapabilityAvailability.AVAILABLE, "provider_selected"
+            )
         if candidates:
             selected = min(candidates, key=lambda item: (item.authority_rank, item.agent_id))
-            return CapabilitySelection(requirement, selected, CapabilityAvailability.DEGRADED, "provider_unhealthy")
+            return CapabilitySelection(
+                requirement, selected, CapabilityAvailability.DEGRADED, "provider_unhealthy"
+            )
         raise CollaborationError(
             f"capability unavailable: {requirement.capability_id} for {caller_agent_id}"
         )
@@ -105,7 +109,9 @@ class CapabilityRouter:
             item.parallelism != expected_parallelism or item.conflict_strategy != expected_strategy
             for item in candidates
         ):
-            raise CollaborationError("capability providers declare inconsistent collaboration policy")
+            raise CollaborationError(
+                "capability providers declare inconsistent collaboration policy"
+            )
         healthy = [item for item in candidates if item.agent_id not in unavailable_agents]
         if len(healthy) < expected_parallelism:
             raise CollaborationError(
@@ -135,10 +141,16 @@ class ResultResolver:
         if strategy is ConflictStrategy.AUTHORITY:
             return min(results, key=lambda item: (item.authority_rank, -len(item.evidence_ids)))
         if strategy is ConflictStrategy.QUORUM:
-            counts = {decision: sum(item.decision == decision for item in results) for decision in decisions}
+            counts = {
+                decision: sum(item.decision == decision for item in results)
+                for decision in decisions
+            }
             winner, count = max(counts.items(), key=lambda item: item[1])
             if count > len(results) / 2:
-                return max((item for item in results if item.decision == winner), key=lambda item: item.confidence)
+                return max(
+                    (item for item in results if item.decision == winner),
+                    key=lambda item: item.confidence,
+                )
         # Judge/Human 不能伪装成本地模型裁决；Coordinator 返回 None 以触发已发布升级流程。
         return None
 

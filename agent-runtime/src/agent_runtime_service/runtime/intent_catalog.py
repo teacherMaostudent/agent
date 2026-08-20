@@ -82,9 +82,7 @@ class IntentCatalog:
                 or not all(isinstance(value, str) for value in examples + entities)
             ):
                 raise ValueError("compiled intent definition has invalid field types")
-            parsed.append(
-                IntentDefinition(name, domain, action, tuple(examples), tuple(entities))
-            )
+            parsed.append(IntentDefinition(name, domain, action, tuple(examples), tuple(entities)))
         return cls(version, tuple(parsed))
 
 
@@ -92,9 +90,21 @@ DEFAULT_INTENT_CATALOG = IntentCatalog(
     "platform-default/v1",
     (
         IntentDefinition("refund_application", "order", "refund", ("refund", "退款", "退货")),
-        IntentDefinition("compliance_review", "governance", "review", ("audit", "review", "审查", "审核", "合规")),
-        IntentDefinition("tool_operation", "operation", "mutate", ("create", "update", "delete", "execute", "创建", "更新", "执行")),
-        IntentDefinition("knowledge_query", "knowledge", "search", ("find", "search", "query", "查询", "检索", "查找")),
+        IntentDefinition(
+            "compliance_review", "governance", "review", ("audit", "review", "审查", "审核", "合规")
+        ),
+        IntentDefinition(
+            "tool_operation",
+            "operation",
+            "mutate",
+            ("create", "update", "delete", "execute", "创建", "更新", "执行"),
+        ),
+        IntentDefinition(
+            "knowledge_query",
+            "knowledge",
+            "search",
+            ("find", "search", "query", "查询", "检索", "查找"),
+        ),
     ),
 )
 
@@ -110,7 +120,9 @@ def resolve_catalog(compiled_plan: dict[str, object]) -> IntentCatalog:
     raw_catalog = compiled_plan.get("intent_catalog")
     if raw_catalog is None:
         if requested != DEFAULT_INTENT_CATALOG.version:
-            raise RuntimeError("published intent catalog is not deployed on this Runtime: " + requested)
+            raise RuntimeError(
+                "published intent catalog is not deployed on this Runtime: " + requested
+            )
         return DEFAULT_INTENT_CATALOG
     if not isinstance(raw_catalog, dict):
         raise RuntimeError("published intent catalog is malformed")

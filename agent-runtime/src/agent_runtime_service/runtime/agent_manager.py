@@ -120,17 +120,18 @@ class AgentManager:
             "output_schema_version": selection.binding.output_schema_version,
             "jurisdiction": selection.binding.jurisdiction,
         }
-        snapshot_id = "collab_" + hashlib.sha256(
-            json.dumps(frozen, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()[:24]
+        snapshot_id = (
+            "collab_"
+            + hashlib.sha256(
+                json.dumps(frozen, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()[:24]
+        )
         delegation, result = self._policy.dispatch(
             state,
             target_agent_id=selection.binding.agent_id,
             task=task,
             executor=self._executor,
-            delegation_transform=lambda item: replace(
-                item, collaboration_snapshot_id=snapshot_id
-            ),
+            delegation_transform=lambda item: replace(item, collaboration_snapshot_id=snapshot_id),
         )
         return selection, delegation, result
 
@@ -158,7 +159,9 @@ class AgentManager:
         if total_fraction > 1:
             raise CollaborationError("parallel capability providers exceed the parent budget")
 
-        def dispatch(selection: CapabilitySelection) -> tuple[CapabilitySelection, SubAgentDelegation, dict[str, Any]]:
+        def dispatch(
+            selection: CapabilitySelection,
+        ) -> tuple[CapabilitySelection, SubAgentDelegation, dict[str, Any]]:
             """为一个已选 Provider 冻结协作快照并运行，线程间不共享子执行状态。"""
             frozen = {
                 "root_task_id": str(state.get("root_task_id") or state.get("run_id", "")),
@@ -168,9 +171,12 @@ class AgentManager:
                 "output_schema_version": selection.binding.output_schema_version,
                 "jurisdiction": selection.binding.jurisdiction,
             }
-            snapshot_id = "collab_" + hashlib.sha256(
-                json.dumps(frozen, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()[:24]
+            snapshot_id = (
+                "collab_"
+                + hashlib.sha256(
+                    json.dumps(frozen, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()[:24]
+            )
             delegation, result = self._policy.dispatch(
                 state,
                 target_agent_id=selection.binding.agent_id,
@@ -182,7 +188,9 @@ class AgentManager:
             )
             return selection, delegation, result
 
-        with ThreadPoolExecutor(max_workers=len(selections), thread_name_prefix="agent-provider") as pool:
+        with ThreadPoolExecutor(
+            max_workers=len(selections), thread_name_prefix="agent-provider"
+        ) as pool:
             return list(pool.map(dispatch, selections))
 
     def normalize_result(

@@ -91,6 +91,7 @@ class ToolExecutionService:
                 raise ToolUpstreamError("downstream attempt budget is exhausted", retryable=False)
             self.registry.assert_visible(spec, context.tenant_id)
             self._authorize(spec, context)
+            self._validate_runtime_action_identity(spec, context)
             if self.policy_authorizer is not None:
                 await asyncio.to_thread(
                     self.policy_authorizer.authorize,
@@ -107,6 +108,13 @@ class ToolExecutionService:
                             "risk": spec.risk.value,
                         },
                         "action": "execute",
+                        "execution": {
+                            "operation_id": context.operation_id,
+                            "step_id": context.step_id,
+                            "plan_id": context.plan_id,
+                            "plan_admission_id": context.plan_admission_id,
+                            "snapshot_id": context.snapshot_id,
+                        },
                     },
                 )
             self._validate_json(spec.input_schema, payload.arguments, arguments=True)
@@ -178,6 +186,7 @@ class ToolExecutionService:
             status=InvocationStatus.SUCCEEDED,
             tool_name=spec.name,
             tool_version=spec.version,
+            authorization=self._authorization_facts(spec, context, decision="ALLOW"),
         )
         attempts = 0
         try:
@@ -266,6 +275,7 @@ class ToolExecutionService:
                 tool_name=spec.name,
                 tool_version=spec.version,
                 approval_id=approval.approval_id,
+                authorization=self._authorization_facts(spec, context, decision="REQUIRE_APPROVAL"),
             )
             self._audit(response, spec, context, payload.arguments)
             return response
@@ -286,6 +296,41 @@ class ToolExecutionService:
         # concurrent requests from executing under the same approval.
         self.repository.consume_approval(payload.approval_id)
         return None
+
+    @staticmethod
+    def _validate_runtime_action_identity(spec: ToolSpec, context: InvocationContext) -> None:
+        """生产 Runtime 的写操作必须绑定准入计划和单步 operation; 禁止漂移调用。"""
+        if spec.risk.value == "read_only" or not context.snapshot_id:
+            return
+        required = {
+            "operation_id": context.operation_id,
+            "step_id": context.step_id,
+            "plan_id": context.plan_id,
+            "plan_admission_id": context.plan_admission_id,
+        }
+        missing = sorted(name for name, value in required.items() if not value.strip())
+        if missing:
+            raise ToolPermissionError(
+                "runtime write action is missing admitted operation identity: " + ", ".join(missing)
+            )
+
+    @staticmethod
+    def _authorization_facts(
+        spec: ToolSpec,
+        context: InvocationContext,
+        *,
+        decision: str,
+    ) -> dict[str, Any]:
+        """生成动作级授权投影; 作为事件和响应共享的可审计事实。"""
+        return {
+            "operation_id": context.operation_id or context.tool_execution_id,
+            "step_id": context.step_id,
+            "plan_id": context.plan_id,
+            "admission_id": context.plan_admission_id,
+            "decision": decision,
+            "tool": f"{spec.name}:{spec.version}",
+            "risk": spec.risk.value,
+        }
 
     async def _execute_with_retry(
         self,
@@ -431,6 +476,10 @@ def _request_hash(
             "user_id": context.user_id,
             "tool": spec.name,
             "version": spec.version,
+            "operation_id": context.operation_id,
+            "step_id": context.step_id,
+            "plan_id": context.plan_id,
+            "plan_admission_id": context.plan_admission_id,
             "arguments": arguments,
         }
     )

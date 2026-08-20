@@ -20,7 +20,15 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from opentelemetry import trace
 from platform_sdk.contracts.context import ContextAssembleRequest
+from platform_sdk.contracts.execution import ExecutionContext
+from platform_sdk.contracts.orchestration import TaskPlan, TaskPlanStep
 from platform_sdk.contracts.rag import RagSearchRequest
+from platform_sdk.contracts.skills import (
+    CapabilityProviderDescriptor,
+    CapabilityProviderKind,
+    CapabilityResolutionRequest,
+    CapabilityRoutingPolicy,
+)
 from platform_sdk.contracts.subagents import CapabilityRequirement, ConflictStrategy
 from platform_sdk.contracts.workflow import evaluate_workflow_condition
 from platform_sdk.security import bound_untrusted
@@ -35,16 +43,22 @@ from agent_runtime_service.agent.models import (
 )
 from agent_runtime_service.runtime.agent_manager import AgentManager
 from agent_runtime_service.runtime.budget import BudgetGuard
+from agent_runtime_service.runtime.capability_resolver import BusinessCapabilityResolver
 from agent_runtime_service.runtime.collaboration import CollaborationError, ResultResolver
 from agent_runtime_service.runtime.event_bus import RuntimeHookPhase, RuntimeInterceptionPipeline
 from agent_runtime_service.runtime.mailbox import RunMailbox, RunMailboxInputType
 from agent_runtime_service.runtime.models import (
     ApprovalResume,
+    ProposedExecutionPlan,
     RouteType,
     RuntimeBudget,
     RuntimeCancelled,
     RuntimeLimitExceeded,
     UserInputResume,
+)
+from agent_runtime_service.runtime.plan_admission import (
+    PlanAdmissionRejected,
+    PlanAdmissionService,
 )
 from agent_runtime_service.runtime.planner import HeuristicSemanticAnalyzer, RuntimePlanner
 from agent_runtime_service.runtime.prompt_security import PromptSecurityGuard
@@ -70,6 +84,7 @@ from agent_runtime_service.runtime.tool_execution import (
     ToolExecutionEngine,
     ToolExecutionPolicy,
 )
+from agent_runtime_service.runtime.workflow_runtime import WorkflowSuspended
 
 
 class AgentGraph:
@@ -92,12 +107,16 @@ class AgentGraph:
         agent_manager: AgentManager | None = None,
         session_event_recorder: Callable[
             [AgentState, RuntimeEventType, dict[str, Any], ModelVisibleMessage | None], None
-        ] | None = None,
+        ]
+        | None = None,
         interception_pipeline: RuntimeInterceptionPipeline | None = None,
         stop_policy: StopPolicy | None = None,
         tool_execution_engine: ToolExecutionEngine | None = None,
         mailbox: RunMailbox | None = None,
         side_effect_barrier: SideEffectBarrier | None = None,
+        capability_handler_factory: Callable[[AgentState], dict[CapabilityProviderKind, Callable]]
+        | None = None,
+        plan_admission: PlanAdmissionService | None = None,
     ) -> None:
         """组装受控执行图。
 
@@ -137,6 +156,9 @@ class AgentGraph:
             cancellation_checker=cancellation_checker,
             inbox=mailbox,
         )
+        self.capability_handler_factory = capability_handler_factory
+        # Planner 只能提出计划；准入服务在执行图进入任何业务节点前生成独立凭证。
+        self.plan_admission = plan_admission or PlanAdmissionService()
         self.graph = self._build().compile(checkpointer=checkpointer or InMemorySaver())
 
     def _build(self):
@@ -151,6 +173,7 @@ class AgentGraph:
         graph.add_node("load_memory", self._load_memory)
         graph.add_node("analyze", self._analyze)
         graph.add_node("build_plan", self._build_plan)
+        graph.add_node("admit_plan", self._admit_plan)
         graph.add_node("planned_retrieval_guard", self._retrieval_guard)
         graph.add_node("planned_retrieve", self._planned_retrieve)
         graph.add_node("poll_mailbox", self._poll_mailbox)
@@ -159,14 +182,17 @@ class AgentGraph:
         graph.add_node("retrieve", self._retrieve)
         graph.add_node("tool_guard", self._tool_guard)
         graph.add_node("tool", self._tool)
+        graph.add_node("resolve_capability", self._resolve_capability)
+        graph.add_node("execute_capability", self._execute_capability)
         graph.add_node("clarify", self._clarify)
         graph.add_node("finalize", self._finalize)
         graph.add_node("safety", self._safety)
         graph.add_edge(START, "load_memory")
         graph.add_edge("load_memory", "analyze")
         graph.add_edge("analyze", "build_plan")
+        graph.add_edge("build_plan", "admit_plan")
         graph.add_conditional_edges(
-            "build_plan",
+            "admit_plan",
             self._plan_route,
             {
                 "clarify": "clarify",
@@ -186,11 +212,22 @@ class AgentGraph:
             {
                 "retrieve": "retrieval_guard",
                 "tool": "tool_guard",
+                "capability": "resolve_capability",
                 "answer": "finalize",
                 "limit": "finalize",
             },
         )
         graph.add_edge("retrieval_guard", "retrieve")
+        graph.add_conditional_edges(
+            "resolve_capability",
+            self._after_capability_resolution,
+            {
+                "retrieve": "retrieval_guard",
+                "tool": "tool_guard",
+                "execute": "execute_capability",
+            },
+        )
+        graph.add_edge("execute_capability", "poll_mailbox")
         graph.add_conditional_edges(
             "retrieve",
             self._after_retrieval,
@@ -301,7 +338,9 @@ class AgentGraph:
             self._settle_root_budget(
                 root_reservation_id,
                 actual_cost_usd=(
-                    actual_cost if actual_cost is not None else self.budget_guard.llm_call_reservation_usd
+                    actual_cost
+                    if actual_cost is not None
+                    else self.budget_guard.llm_call_reservation_usd
                 ),
                 actual_steps=0,
             )
@@ -378,7 +417,9 @@ class AgentGraph:
             if self.mailbox is None or not self.mailbox.acknowledge_mailbox_input(
                 str(state.get("mailbox_message_id", "")), str(state.get("mailbox_lease_token", ""))
             ):
-                raise RuntimeLimitExceeded("MAILBOX_LEASE_LOST", "Mailbox input lease could not be confirmed.")
+                raise RuntimeLimitExceeded(
+                    "MAILBOX_LEASE_LOST", "Mailbox input lease could not be confirmed."
+                )
             updates.update(
                 {
                     "task": next_task,
@@ -432,20 +473,89 @@ class AgentGraph:
         return "replan" if state.get("mailbox_replan") else "decide"
 
     def _build_plan(self, state: AgentState) -> dict:
-        """把分析结果编译为当前运行唯一可用的路由、SLA 与检索策略。"""
+        """提出路由、SLA 与检索计划；此阶段不授予任何执行或副作用权限。"""
         self._ensure_active(state)
         plan = self.planner.build_plan(state)
         workflow = state.get("compiled_plan", {}).get("workflow_policy", {})
+        capability_ids = plan.capability_policy.required
+        task_plan = TaskPlan(
+            task_plan_id=f"taskplan_{state.get('run_id', state.get('request_id', ''))}",
+            goal=state["task"],
+            steps=(
+                [
+                    TaskPlanStep(
+                        step_id=f"capability-{index + 1}",
+                        objective=f"完成发布计划要求的能力 {capability_id}",
+                        capability_id=capability_id,
+                        execution_strategy="DETERMINISTIC",
+                    )
+                    for index, capability_id in enumerate(capability_ids)
+                ]
+                or [
+                    TaskPlanStep(
+                        step_id="resolve-request",
+                        objective=state["task"],
+                        execution_strategy="REACT",
+                    )
+                ]
+            ),
+            revision=int(state.get("task_plan", {}).get("revision", 0)) + 1,
+        )
         return {
+            "proposed_execution_plan": plan.model_dump(mode="json"),
+            # 保留旧字段供准入节点和迁移期 Trace 读取；下一节点会用准入计划覆盖它。
             "execution_plan": plan.model_dump(mode="json"),
+            "task_plan": task_plan.model_dump(mode="json"),
             # Cursor is a published Graph node, not a model-selected string.
             # Every later action advances it through the compiled adjacency map.
             "workflow_cursor": workflow.get("entrypoint", ""),
             "execution_trace": self._trace(
                 state,
                 "build_plan",
-                {"route": plan.route.route.value, "complexity": plan.complexity.score},
+                {
+                    "plan_stage": "PROPOSED",
+                    "plan_id": plan.plan_id,
+                    "route": plan.route.route.value,
+                    "complexity": plan.complexity.score,
+                },
             ),
+        }
+
+    def _admit_plan(self, state: AgentState) -> dict:
+        """在进入执行引擎前执行计划级硬检查，并保存独立准入凭证。"""
+        self._ensure_active(state)
+        proposed = ProposedExecutionPlan.model_validate(
+            state.get("proposed_execution_plan") or state.get("execution_plan")
+        )
+        try:
+            admitted = self.plan_admission.admit(
+                proposed,
+                compiled_plan=state.get("compiled_plan", {}),
+                caller_permissions=state.get("permissions", []),
+            )
+        except PlanAdmissionRejected as exc:
+            self._record_session_event(
+                state,
+                RuntimeEventType.PLAN_REJECTED,
+                exc.decision.model_dump(mode="json"),
+            )
+            raise
+        admission = {
+            "admission_id": admitted.admission_id,
+            "plan_id": admitted.plan_id,
+            "policy_version": admitted.admission_policy_version,
+            "checks": [item.model_dump(mode="json") for item in admitted.admission_checks],
+            "allowed_tool_scope": admitted.allowed_tool_scope,
+        }
+        self._record_session_event(
+            state,
+            RuntimeEventType.PLAN_ADMITTED,
+            admission,
+        )
+        return {
+            "execution_plan": admitted.model_dump(mode="json"),
+            "plan_admission": admission,
+            "execution_trace": self._trace(state, "plan_admission", admission),
         }
 
     @staticmethod
@@ -461,7 +571,9 @@ class AgentGraph:
         if entry_role == "decision":
             return "agent"
         if workflow and not workflow.get("local_development_only"):
-            raise RuntimeLimitExceeded("WORKFLOW_ENTRY_INVALID", "Published workflow entry is invalid.")
+            raise RuntimeLimitExceeded(
+                "WORKFLOW_ENTRY_INVALID", "Published workflow entry is invalid."
+            )
         route = state["execution_plan"]["route"]["route"]
         if route == RouteType.CLARIFY:
             return "clarify"
@@ -513,7 +625,9 @@ class AgentGraph:
                         "evidence": state.get("evidence", []),
                     }
                 ),
-                "tool_catalog_version": str(state.get("compiled_plan", {}).get("tool_catalog_version", "")),
+                "tool_catalog_version": str(
+                    state.get("compiled_plan", {}).get("tool_catalog_version", "")
+                ),
                 "visible_tool_schema_hash": self._epoch_hash(
                     state.get("compiled_plan", {}).get("tools", [])
                 ),
@@ -559,7 +673,10 @@ class AgentGraph:
         )
         self.interception_pipeline.apply(
             RuntimeHookPhase.PRE_MODEL_REQUEST,
-            self._hook_payload(state, {"logical_model": str(state.get("compiled_plan", {}).get("logical_model", ""))}),
+            self._hook_payload(
+                state,
+                {"logical_model": str(state.get("compiled_plan", {}).get("logical_model", ""))},
+            ),
         )
         try:
             with trace.get_tracer(__name__).start_as_current_span("agent.decide"):
@@ -584,7 +701,11 @@ class AgentGraph:
                 "assistant", decision.model_dump_json(), source="runtime.model.decision"
             ),
         )
-        next_node = self._workflow_next_node(state, decision.action)
+        next_node = (
+            str(state.get("workflow_cursor", ""))
+            if decision.action == AgentAction.CAPABILITY
+            else self._workflow_next_node(state, decision.action)
+        )
         if getattr(self.decision_engine, "uses_llm", False):
             cost_reader = getattr(self.decision_engine, "last_cost_usd", None)
             actual_cost = cost_reader() if cost_reader else None
@@ -596,7 +717,9 @@ class AgentGraph:
             self._settle_root_budget(
                 root_reservation_id,
                 actual_cost_usd=(
-                    actual_cost if actual_cost is not None else self.budget_guard.llm_call_reservation_usd
+                    actual_cost
+                    if actual_cost is not None
+                    else self.budget_guard.llm_call_reservation_usd
                 ),
                 actual_steps=1,
             )
@@ -628,8 +751,174 @@ class AgentGraph:
             AgentAction.RETRIEVE: "retrieve",
             AgentAction.TOOL: "tool",
             AgentAction.SUBAGENT: "tool",
+            AgentAction.CAPABILITY: "capability",
             AgentAction.ANSWER: "answer",
         }[action]
+
+    def _resolve_capability(self, state: AgentState) -> dict:
+        """只从发布快照选择 Provider，模型无法指定实现或回退顺序。"""
+        self._ensure_active(state)
+        decision = AgentDecision.model_validate(state["decision"])
+        compiled = state.get("compiled_plan", {})
+        providers = [
+            CapabilityProviderDescriptor.model_validate(item)
+            for item in compiled.get("capability_providers", [])
+        ]
+        policies = {
+            item.capability_id: item
+            for item in (
+                CapabilityRoutingPolicy.model_validate(value)
+                for value in compiled.get("capability_routing", [])
+            )
+        }
+        resolution_request = CapabilityResolutionRequest(
+            capability_id=decision.capability_id,
+            caller_permissions=frozenset(state.get("permissions", [])),
+            max_cost_usd=self._budget(state).remaining_cost_usd,
+            max_latency_ms=self._budget(state).remaining_ms,
+            require_independent_authority=decision.require_independent_authority,
+        )
+        resolver = BusinessCapabilityResolver(providers)
+        policy = policies.get(resolution_request.capability_id)
+        provider = (
+            resolver.resolve_with_policy(resolution_request, policy)
+            if policy is not None
+            else resolver.resolve(resolution_request)
+        )
+        update: dict[str, Any] = {
+            "resolved_capability_provider": provider.model_dump(mode="json"),
+            "workflow_cursor": self._workflow_next_capability_node(state, provider.kind),
+            "execution_trace": self._trace(
+                state,
+                "resolve_capability",
+                {
+                    "capability_id": resolution_request.capability_id,
+                    "provider_id": provider.provider_id,
+                    "provider_kind": provider.kind.value,
+                },
+            ),
+        }
+        if provider.kind == CapabilityProviderKind.TOOL:
+            update["decision"] = decision.model_copy(
+                update={
+                    "action": AgentAction.TOOL,
+                    "tool_name": provider.provider_id,
+                    "tool_arguments": decision.capability_input,
+                }
+            ).model_dump(mode="json")
+        elif provider.kind == CapabilityProviderKind.RAG:
+            update["decision"] = decision.model_copy(
+                update={
+                    "action": AgentAction.RETRIEVE,
+                    "query": str(
+                        decision.capability_input.get("query")
+                        or decision.capability_input.get("task")
+                        or state["task"]
+                    ),
+                }
+            ).model_dump(mode="json")
+        elif provider.kind == CapabilityProviderKind.AGENT:
+            update["decision"] = decision.model_copy(
+                update={
+                    "action": AgentAction.SUBAGENT,
+                    "subagent_id": provider.provider_id,
+                    "subagent_capability": resolution_request.capability_id,
+                    "subagent_task": str(decision.capability_input.get("task") or state["task"]),
+                }
+            ).model_dump(mode="json")
+        return update
+
+    @staticmethod
+    def _after_capability_resolution(state: AgentState) -> str:
+        """将 Tool/RAG/Agent 送回原安全节点，其他 Provider 使用受限处理器。"""
+        kind = CapabilityProviderKind(state["resolved_capability_provider"]["kind"])
+        if kind in {CapabilityProviderKind.TOOL, CapabilityProviderKind.AGENT}:
+            return "tool"
+        if kind == CapabilityProviderKind.RAG:
+            return "retrieve"
+        return "execute"
+
+    def _execute_capability(self, state: AgentState) -> dict:
+        """执行 Skill/Human/Workflow，结果仅以不可信观察返回 Agent。"""
+        if self.capability_handler_factory is None:
+            raise RuntimeLimitExceeded(
+                "CAPABILITY_HANDLER_UNAVAILABLE", "Capability handlers are not deployed."
+            )
+        decision = AgentDecision.model_validate(state["decision"])
+        provider = CapabilityProviderDescriptor.model_validate(
+            state["resolved_capability_provider"]
+        )
+        handler = self.capability_handler_factory(state).get(provider.kind)
+        if handler is None:
+            raise RuntimeLimitExceeded(
+                "CAPABILITY_PROVIDER_UNAVAILABLE",
+                f"Provider kind is not deployed: {provider.kind.value}",
+            )
+        context = self._capability_execution_context(state)
+        try:
+            output = handler(provider, decision.capability_input, context)
+        except WorkflowSuspended as exc:
+            signal = interrupt(
+                {
+                    "type": "capability_signal",
+                    "provider_id": provider.provider_id,
+                    "reason": str(exc),
+                    **exc.payload,
+                }
+            )
+            output = handler(
+                provider,
+                {**decision.capability_input, "signal": signal},
+                context,
+            )
+        observation = {
+            "type": "capability",
+            "capability_id": decision.capability_id,
+            "provider_id": provider.provider_id,
+            "provider_kind": provider.kind.value,
+            "output": bound_untrusted(output, 8_000),
+        }
+        return {
+            "observations": [*state.get("observations", []), observation],
+            "resolved_capability_provider": {},
+            "workflow_cursor": self._workflow_after_side_effect(state, "tool"),
+            "execution_trace": self._trace(
+                state,
+                "execute_capability",
+                {
+                    "capability_id": decision.capability_id,
+                    "provider_id": provider.provider_id,
+                },
+            ),
+        }
+
+    @staticmethod
+    def _capability_execution_context(state: AgentState) -> ExecutionContext:
+        """从 Run 状态重建统一上下文，Skill 不需要 AgentSession 内部对象。"""
+        return ExecutionContext(
+            request_id=str(state["request_id"]),
+            trace_id=str(state.get("trace_id", state["request_id"])),
+            run_id=str(state["run_id"]),
+            parent_run_id=str(state.get("metadata", {}).get("_parent_run_id", "")),
+            session_id=str(state.get("session_id", "")),
+            parent_session_id=str(state.get("metadata", {}).get("_parent_session_id", "")),
+            root_task_id=str(state.get("root_task_id", state["run_id"])),
+            collaboration_snapshot_id=str(state.get("collaboration_snapshot_id", "")),
+            business_operation_id=str(state.get("business_operation_id", "")),
+            orchestration_owner=str(state.get("orchestration_owner", "agent")),
+            workflow_id=str(state.get("workflow_id", "")),
+            tenant_id=str(state["tenant_id"]),
+            user_id=str(state["user_id"]),
+            agent_id=str(state["agent_id"]),
+            agent_version=str(state["agent_version"]),
+            snapshot_id=str(state["snapshot_id"]),
+            graph_version=str(state.get("graph_version", "")),
+            model_policy_version=str(
+                state.get("agent_snapshot", {}).get("model_policy_version", "")
+            ),
+            deadline_at=datetime.fromisoformat(str(state["deadline_at"])),
+            attempt_budget_remaining=int(state.get("attempt_budget_remaining", 0)),
+        )
 
     def _retrieve(self, state: AgentState) -> dict:
         """执行模型明确请求的下一轮检索，查询仅取已校验的决策字段。"""
@@ -826,9 +1115,19 @@ class AgentGraph:
             budget = self.budget_guard.reserve_tool(self._budget(state))
             self._reserve_and_settle_root_tool_budget(state, decision, budget)
             return {"budget": budget.model_dump(mode="json"), "tool_deferred": False}
+        if state.get("compiled_plan", {}).get("contract_hash"):
+            allowed = set(state.get("plan_admission", {}).get("allowed_tool_scope", []))
+            if decision.tool_name not in allowed:
+                raise RuntimeLimitExceeded(
+                    "TOOL_OUTSIDE_ADMITTED_SCOPE",
+                    f"Tool '{decision.tool_name}' is outside the admitted plan scope.",
+                )
         policy = self._tool_execution_policy(state, decision.tool_name)
         execution_id = deterministic_tool_execution_id(
-            str(state.get("run_id", "")), self._step_id(state), decision.tool_name, decision.tool_arguments
+            str(state.get("run_id", "")),
+            self._step_id(state),
+            decision.tool_name,
+            decision.tool_arguments,
         )
         try:
             outcome = self.side_effect_barrier.before_dispatch(
@@ -840,7 +1139,11 @@ class AgentGraph:
             self._record_session_event(
                 state,
                 RuntimeEventType.TOOL_DISPATCH_DEFERRED,
-                {"tool_name": decision.tool_name, "tool_execution_id": execution_id, "reason": outcome.value},
+                {
+                    "tool_name": decision.tool_name,
+                    "tool_execution_id": execution_id,
+                    "reason": outcome.value,
+                },
             )
             return {
                 "tool_deferred": True,
@@ -922,7 +1225,9 @@ class AgentGraph:
         try:
             self.interception_pipeline.apply(
                 RuntimeHookPhase.PRE_TOOL_EXECUTE,
-                self._hook_payload(state, {"tool_name": decision.tool_name, "tool_version": published_version}),
+                self._hook_payload(
+                    state, {"tool_name": decision.tool_name, "tool_version": published_version}
+                ),
             )
             self._record_session_event(
                 state,
@@ -1088,7 +1393,9 @@ class AgentGraph:
         )
         self.interception_pipeline.apply(
             RuntimeHookPhase.POST_TOOL_RESULT,
-            self._hook_payload(state, {"tool_name": decision.tool_name, "success": bool(observation["success"])}),
+            self._hook_payload(
+                state, {"tool_name": decision.tool_name, "success": bool(observation["success"])}
+            ),
         )
         self._record_session_event(
             state,
@@ -1109,12 +1416,17 @@ class AgentGraph:
         """执行已发布子 Agent 委派；目标 Agent 仍经自身 Release/快照运行。"""
         self._ensure_active(state)
         if self.agent_manager is None:
-            raise RuntimeLimitExceeded("SUBAGENT_UNAVAILABLE", "Subagent execution is not deployed.")
+            raise RuntimeLimitExceeded(
+                "SUBAGENT_UNAVAILABLE", "Subagent execution is not deployed."
+            )
         try:
             self._record_session_event(
                 state,
                 RuntimeEventType.SUBAGENT_DELEGATED,
-                {"target_agent_id": decision.subagent_id, "capability": decision.subagent_capability},
+                {
+                    "target_agent_id": decision.subagent_id,
+                    "capability": decision.subagent_capability,
+                },
                 model_visible_message(
                     "tool", decision.subagent_task, source="runtime.subagent.task", max_chars=4_000
                 ),
@@ -1137,7 +1449,9 @@ class AgentGraph:
         invocations = dict(state.get("subagent_invocations", {}))
         structured_results = []
         for selection, delegation, result in delegated:
-            invocations[delegation.target_agent_id] = invocations.get(delegation.target_agent_id, 0) + 1
+            invocations[delegation.target_agent_id] = (
+                invocations.get(delegation.target_agent_id, 0) + 1
+            )
             structured_results.append(
                 self.agent_manager.normalize_result(
                     result, selection=selection, agent_id=delegation.target_agent_id
@@ -1196,12 +1510,16 @@ class AgentGraph:
             "type": "subagent",
             "agent_id": delegation.target_agent_id,
             "capability": decision.subagent_capability,
-            "provider_selection": selection.reason if selection else "legacy_explicit_agent_binding",
+            "provider_selection": selection.reason
+            if selection
+            else "legacy_explicit_agent_binding",
             "success": result.get("status") == "COMPLETED",
             "agent_result": resolved.model_dump(mode="json"),
             "agent_results": [item.model_dump(mode="json") for item in structured_results],
             "conflict_strategy": strategy.value,
-            "result": bound_untrusted(result, int(state.get("metadata", {}).get("tool_result_max_chars", 12_000))),
+            "result": bound_untrusted(
+                result, int(state.get("metadata", {}).get("tool_result_max_chars", 12_000))
+            ),
         }
         self._record_session_event(
             state,
@@ -1228,7 +1546,9 @@ class AgentGraph:
             "observations": [*state.get("observations", []), observation],
             "budget": budget.model_dump(mode="json"),
             "workflow_cursor": self._workflow_after_side_effect(state, "tool"),
-            "execution_trace": self._trace(state, "subagent", {"agent_id": delegation.target_agent_id}),
+            "execution_trace": self._trace(
+                state, "subagent", {"agent_id": delegation.target_agent_id}
+            ),
         }
 
     @staticmethod
@@ -1257,7 +1577,9 @@ class AgentGraph:
             return "decide"
         if roles.get(cursor) == "clarify":
             return "clarify"
-        raise RuntimeLimitExceeded("WORKFLOW_CURSOR_INVALID", "Retrieval successor is not executable.")
+        raise RuntimeLimitExceeded(
+            "WORKFLOW_CURSOR_INVALID", "Retrieval successor is not executable."
+        )
 
     @staticmethod
     def _tool_context(
@@ -1281,6 +1603,10 @@ class AgentGraph:
             tool_execution_id=tool_execution_id,
             root_task_id=str(state.get("root_task_id", "")),
             business_operation_id=str(state.get("business_operation_id", "")),
+            operation_id=tool_execution_id,
+            step_id=AgentGraph._step_id(state, pending=True),
+            plan_id=str(state.get("execution_plan", {}).get("plan_id", "")),
+            plan_admission_id=str(state.get("plan_admission", {}).get("admission_id", "")),
             idempotency_key=tool_execution_id,
             trace_id=state.get("trace_id", ""),
             run_id=state.get("run_id", ""),
@@ -1311,9 +1637,7 @@ class AgentGraph:
     def _tool_execution_policy(state: AgentState, tool_name: str) -> ToolExecutionPolicy:
         """由冻结工具绑定解析副作用策略，模型不能覆盖调度、审批或资源键。"""
         bindings = state.get("compiled_plan", {}).get("tools", [])
-        binding = next(
-            (item for item in bindings if str(item.get("tool_name")) == tool_name), {}
-        )
+        binding = next((item for item in bindings if str(item.get("tool_name")) == tool_name), {})
         return ToolExecutionPolicy.from_published_binding(
             binding,
             tenant_id=str(state.get("tenant_id", "")),
@@ -1420,7 +1744,11 @@ class AgentGraph:
         interrupt_items = [item.value for item in result.get("__interrupt__", [])]
         if interrupt_items:
             user_input = next(
-                (item for item in interrupt_items if isinstance(item, dict) and item.get("type") == "user_input"),
+                (
+                    item
+                    for item in interrupt_items
+                    if isinstance(item, dict) and item.get("type") == "user_input"
+                ),
                 None,
             )
             if user_input is not None:
@@ -1429,9 +1757,12 @@ class AgentGraph:
                     answer=str(user_input.get("message", "Please provide additional input.")),
                     steps=result.get("step_count", 0),
                     termination_reason="USER_INPUT_REQUIRED",
-                    evidence=result.get("evidence", []), observations=result.get("observations", []),
-                    execution_plan=result.get("execution_plan", {}), budget=result.get("budget", {}),
-                    execution_trace=result.get("execution_trace", []), interrupts=interrupt_items,
+                    evidence=result.get("evidence", []),
+                    observations=result.get("observations", []),
+                    execution_plan=result.get("execution_plan", {}),
+                    budget=result.get("budget", {}),
+                    execution_trace=result.get("execution_trace", []),
+                    interrupts=interrupt_items,
                 )
             return AgentRunResult(
                 status="WAITING_APPROVAL",
@@ -1547,7 +1878,11 @@ class AgentGraph:
             AgentAction.SUBAGENT: "tool",
             AgentAction.ANSWER: "answer",
         }[action]
-        if role == "answer" and action == AgentAction.ANSWER and cursor in workflow.get("terminals", []):
+        if (
+            role == "answer"
+            and action == AgentAction.ANSWER
+            and cursor in workflow.get("terminals", [])
+        ):
             return cursor
         if role != "decision":
             raise RuntimeLimitExceeded(
@@ -1565,6 +1900,36 @@ class AgentGraph:
             raise RuntimeLimitExceeded(
                 "WORKFLOW_ACTION_FORBIDDEN",
                 f"Published workflow does not allow action {action.value} from '{cursor}'.",
+            )
+        return matches[0]
+
+    @staticmethod
+    def _workflow_next_capability_node(
+        state: AgentState, provider_kind: CapabilityProviderKind
+    ) -> str:
+        """在 Resolver 确定 Provider 类型后才推进发布 Graph，避免模型预选路径。"""
+        workflow = state.get("compiled_plan", {}).get("workflow_policy", {})
+        if not workflow or workflow.get("local_development_only"):
+            return state.get("workflow_cursor", "")
+        cursor = str(state.get("workflow_cursor") or workflow.get("entrypoint") or "")
+        roles = workflow.get("node_roles", {})
+        if roles.get(cursor) != "decision":
+            raise RuntimeLimitExceeded(
+                "WORKFLOW_DECISION_FORBIDDEN",
+                f"Published workflow node '{cursor}' cannot resolve a capability.",
+            )
+        requested_role = "retrieval" if provider_kind == CapabilityProviderKind.RAG else "tool"
+        facts = AgentGraph._workflow_facts(state, action=AgentAction.CAPABILITY)
+        matches = [
+            item["to"]
+            for item in workflow.get("adjacency", {}).get(cursor, [])
+            if roles.get(item["to"]) == requested_role
+            and evaluate_workflow_condition(item.get("condition"), facts)
+        ]
+        if len(matches) != 1:
+            raise RuntimeLimitExceeded(
+                "WORKFLOW_ACTION_FORBIDDEN",
+                f"Published workflow does not allow capability provider {provider_kind.value}.",
             )
         return matches[0]
 
@@ -1655,9 +2020,12 @@ class AgentGraph:
         if not tenant_id or not root_task_id or not run_id:
             # 纯内存 Graph 仍可用于本地测试；生产 API 必定填充这三项关联 ID。
             return ""
-        reservation_id = "rbr_" + hashlib.sha256(
-            f"{tenant_id}:{root_task_id}:{run_id}:{phase}".encode()
-        ).hexdigest()[:32]
+        reservation_id = (
+            "rbr_"
+            + hashlib.sha256(f"{tenant_id}:{root_task_id}:{run_id}:{phase}".encode()).hexdigest()[
+                :32
+            ]
+        )
         ledger.reserve_root_budget(
             tenant_id,
             root_task_id,

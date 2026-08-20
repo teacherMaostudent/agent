@@ -1,8 +1,11 @@
 # Agent Lab
 
-Agent Lab 是独立的**离线 Agent 回放编排服务**。它不训练模型、不修改 Agent 草稿、不承载线上请求，也不决定质量门禁规则。
+Agent Lab 是独立的**离线 Agent/Skill 回放编排服务**。它不训练模型、不修改草稿、
+不承载线上请求，也不决定质量门禁规则。
 
-它的职责是：固定一次由 Control Plane 解析得到的已发布快照；为每个回放用例建立稳定 Session 绑定；调用 Agent Runtime；把候选答案、证据和脱敏 Session Ledger 摘要提交给 Governance；保存结果、失败用例和基线差异。
+它的职责是：冻结 Agent Snapshot 或 Active SkillVersion；为每个用例绑定精确
+version/digest；调用 Runtime 的 Agent 或 Skill 公开契约；把候选输出、证据和脱敏 Ledger
+提交 Governance；保存结果、失败用例和基线差异。
 
 ```text
 Agent Lab

@@ -19,6 +19,14 @@ from platform_sdk.contracts.runtime_snapshot import (
     RuntimeSnapshotCompileError,
     compile_runtime_snapshot,
 )
+from platform_sdk.contracts.skills import (
+    CapabilityProviderKind,
+    SkillCard,
+    SkillGovernanceProfile,
+    compile_skill_plan,
+    validate_skill_catalog,
+)
+from platform_sdk.contracts.workflow import compile_workflow_plan
 
 from app.application.exceptions import (
     ConflictError,
@@ -42,9 +50,26 @@ from app.domain.models import (
     ReleasePromote,
     ReleaseStatus,
     RuntimeResolution,
+    SkillCreate,
+    SkillDefinition,
+    SkillDraftUpdate,
+    SkillRuntimeResolution,
+    SkillStatus,
+    SkillStatusUpdate,
+    SkillVersion,
+    SkillVersionPublish,
     TenantPolicy,
     TenantPolicyUpdate,
+    ToolBinding,
     ValidationReport,
+    WorkflowCreate,
+    WorkflowDefinition,
+    WorkflowDraftUpdate,
+    WorkflowRelease,
+    WorkflowReleaseCreate,
+    WorkflowRuntimeResolution,
+    WorkflowVersion,
+    WorkflowVersionPublish,
     utc_now,
 )
 from app.domain.validation import validate_agent_spec
@@ -135,6 +160,481 @@ class ControlPlaneService:
         List records within the caller tenant without changing release state.
         """
         return await self._repository.list_agents(identity.tenant_id)
+
+    async def create_workflow(
+        self, identity: Identity, request: WorkflowCreate, trace_id: str
+    ) -> WorkflowDefinition:
+        """创建独立 Workflow Draft，不借用 Agent Draft 生命周期。"""
+        if request.spec.workflow_id != request.workflow_id:
+            raise PolicyViolationError("Workflow request ID must equal spec.workflow_id.")
+        now = utc_now()
+        item = WorkflowDefinition(
+            tenant_id=identity.tenant_id,
+            workflow_id=request.workflow_id,
+            revision=1,
+            draft=request.spec,
+            created_by=identity.user_id,
+            updated_by=identity.user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        event = self._event(
+            "WorkflowCreated",
+            trace_id,
+            identity.tenant_id,
+            "workflow",
+            item.workflow_id,
+            {"workflow_id": item.workflow_id, "revision": 1},
+        )
+        try:
+            await self._repository.create_workflow(item, event)
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError(f"Workflow '{request.workflow_id}' already exists.") from exc
+        return item
+
+    async def get_workflow(self, identity: Identity, workflow_id: str) -> WorkflowDefinition:
+        """读取当前租户的可变 Workflow Draft。"""
+        item = await self._repository.get_workflow(identity.tenant_id, workflow_id)
+        if item is None:
+            raise NotFoundError(f"Workflow '{workflow_id}' was not found.")
+        return item
+
+    async def update_workflow_draft(
+        self, identity: Identity, workflow_id: str, request: WorkflowDraftUpdate, trace_id: str
+    ) -> WorkflowDefinition:
+        """使用 CAS 更新 Workflow Draft；冻结版本不受影响。"""
+        current = await self.get_workflow(identity, workflow_id)
+        if request.spec.workflow_id != workflow_id:
+            raise PolicyViolationError("Workflow Draft identity cannot be changed.")
+        if current.revision != request.expected_revision:
+            raise ConflictError("Workflow Draft revision is stale.")
+        updated = current.model_copy(
+            update={
+                "revision": current.revision + 1,
+                "draft": request.spec,
+                "updated_by": identity.user_id,
+                "updated_at": utc_now(),
+            }
+        )
+        event = self._event(
+            "WorkflowDraftUpdated",
+            trace_id,
+            identity.tenant_id,
+            "workflow",
+            workflow_id,
+            {"workflow_id": workflow_id, "revision": updated.revision},
+        )
+        if not await self._repository.update_workflow(updated, request.expected_revision, event):
+            raise ConflictError("Workflow Draft was changed concurrently.")
+        return updated
+
+    async def publish_workflow_version(
+        self, identity: Identity, workflow_id: str, request: WorkflowVersionPublish, trace_id: str
+    ) -> WorkflowVersion:
+        """冻结 Workflow Draft 为不可变零 Agent 执行计划。"""
+        draft = await self.get_workflow(identity, workflow_id)
+        await self._validate_workflow_providers(identity, draft.draft)
+        plan, digest = compile_workflow_plan(draft.draft, request.semantic_version)
+        now = utc_now()
+        item = WorkflowVersion(
+            tenant_id=identity.tenant_id,
+            version_id=f"wv_{uuid4().hex}",
+            workflow_id=workflow_id,
+            semantic_version=request.semantic_version,
+            source_revision=draft.revision,
+            artifact_digest=digest,
+            plan=plan,
+            published_by=identity.user_id,
+            published_at=now,
+        )
+        event = self._event(
+            "WorkflowVersionPublished",
+            trace_id,
+            identity.tenant_id,
+            "workflow_version",
+            item.version_id,
+            {"workflow_id": workflow_id, "version_id": item.version_id, "artifact_digest": digest},
+        )
+        try:
+            await self._repository.create_workflow_version(item, event)
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError("Workflow semantic version already exists.") from exc
+        return item
+
+    async def _validate_workflow_providers(self, identity: Identity, spec) -> None:
+        """发布前验证 Workflow 的 Tool/Skill Provider 确实存在且 Skill 已 Active。"""
+        tool_bindings = [
+            {"tool_name": item.provider_id, "version": item.version}
+            for item in spec.capability_providers
+            if item.kind == CapabilityProviderKind.TOOL
+        ]
+        if self._tool_catalog_validator is not None and tool_bindings:
+            try:
+                self._tool_catalog_validator.validate_bindings(tool_bindings)
+            except ValueError as exc:
+                raise PolicyViolationError(str(exc)) from exc
+        skill_plans = []
+        for provider in spec.capability_providers:
+            if provider.kind != CapabilityProviderKind.SKILL:
+                continue
+            skill = await self._repository.get_skill_version_by_semantic(
+                identity.tenant_id, provider.provider_id, provider.version
+            )
+            if (
+                skill is None
+                or skill.status != SkillStatus.ACTIVE
+                or not provider.artifact_digest
+                or provider.artifact_digest != skill.artifact_digest
+            ):
+                raise PolicyViolationError(
+                    "Workflow Skill provider must reference an exact Active artifact: "
+                    f"{provider.provider_id}:{provider.version}."
+                )
+            skill_plans.append(skill.plan)
+        try:
+            validate_skill_catalog(skill_plans)
+        except ValueError as exc:
+            raise PolicyViolationError(f"Workflow Skill composition is invalid: {exc}") from exc
+
+    async def create_workflow_release(
+        self, identity: Identity, workflow_id: str, request: WorkflowReleaseCreate, trace_id: str
+    ) -> WorkflowRelease:
+        """激活冻结 WorkflowVersion；同环境旧版本在同事务退役。"""
+        version = await self._repository.get_workflow_version(
+            identity.tenant_id, workflow_id, request.version_id
+        )
+        if version is None:
+            raise NotFoundError(f"Workflow version '{request.version_id}' was not found.")
+        item = WorkflowRelease(
+            tenant_id=identity.tenant_id,
+            release_id=f"wrel_{uuid4().hex}",
+            workflow_id=workflow_id,
+            version_id=version.version_id,
+            environment=request.environment,
+            created_by=identity.user_id,
+            created_at=utc_now(),
+        )
+        event = self._event(
+            "WorkflowReleaseActivated",
+            trace_id,
+            identity.tenant_id,
+            "workflow_release",
+            item.release_id,
+            {
+                "workflow_id": workflow_id,
+                "version_id": version.version_id,
+                "environment": request.environment,
+                "artifact_digest": version.artifact_digest,
+            },
+        )
+        await self._repository.create_workflow_release(item, event)
+        return item
+
+    async def resolve_workflow(
+        self, identity: Identity, workflow_id: str, environment: str
+    ) -> WorkflowRuntimeResolution:
+        """向 Runtime 返回同一事务快照中的 Active Release 与冻结计划。"""
+        resolved = await self._repository.resolve_workflow_release(
+            identity.tenant_id, workflow_id, environment
+        )
+        if resolved is None:
+            raise NotFoundError(f"No active Workflow release for '{workflow_id}:{environment}'.")
+        release, version = resolved
+        return WorkflowRuntimeResolution(
+            tenant_id=identity.tenant_id,
+            workflow_id=workflow_id,
+            environment=environment,
+            release_id=release.release_id,
+            version_id=version.version_id,
+            plan=version.plan,
+            artifact_digest=version.artifact_digest,
+        )
+
+    async def create_skill(
+        self, identity: Identity, request: SkillCreate, trace_id: str
+    ) -> SkillDefinition:
+        """创建可编辑 Skill 草稿，并以 Outbox 事件保留其租户级创建事实。"""
+        now = utc_now()
+        skill = SkillDefinition(
+            tenant_id=identity.tenant_id,
+            skill_id=request.skill_id,
+            revision=1,
+            draft=request.spec,
+            created_by=identity.user_id,
+            updated_by=identity.user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        event = self._event(
+            "SkillCreated",
+            trace_id,
+            identity.tenant_id,
+            "skill",
+            skill.skill_id,
+            {"skill_id": skill.skill_id, "revision": skill.revision},
+        )
+        try:
+            await self._repository.create_skill(skill, event)
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError(f"Skill '{request.skill_id}' already exists.") from exc
+        return skill
+
+    async def get_skill(self, identity: Identity, skill_id: str) -> SkillDefinition:
+        """读取当前租户的 Skill 草稿；发布执行从不使用此可变对象。"""
+        skill = await self._repository.get_skill(identity.tenant_id, skill_id)
+        if not skill:
+            raise NotFoundError(f"Skill '{skill_id}' was not found.")
+        return skill
+
+    async def update_skill_draft(
+        self, identity: Identity, skill_id: str, request: SkillDraftUpdate, trace_id: str
+    ) -> SkillDefinition:
+        """基于修订号 CAS 更新 Skill 草稿，避免并发编辑丢失。"""
+        current = await self.get_skill(identity, skill_id)
+        if current.revision != request.expected_revision:
+            raise ConflictError(
+                "Skill draft revision is stale.",
+                expected_revision=request.expected_revision,
+                current_revision=current.revision,
+            )
+        if request.spec.skill_id != skill_id:
+            raise DraftValidationError(
+                ValidationReport(
+                    valid=False,
+                    issues=[
+                        {
+                            "severity": "error",
+                            "code": "skill.identity_mismatch",
+                            "path": "skill_id",
+                            "message": "Skill draft ID must equal the target Skill ID.",
+                        }
+                    ],
+                )
+            )
+        updated = current.model_copy(
+            update={
+                "revision": current.revision + 1,
+                "draft": request.spec,
+                "updated_by": identity.user_id,
+                "updated_at": utc_now(),
+            }
+        )
+        event = self._event(
+            "SkillDraftUpdated",
+            trace_id,
+            identity.tenant_id,
+            "skill",
+            skill_id,
+            {
+                "skill_id": skill_id,
+                "previous_revision": current.revision,
+                "revision": updated.revision,
+            },
+        )
+        if not await self._repository.update_skill(updated, request.expected_revision, event):
+            raise ConflictError("Skill draft was changed concurrently.")
+        return updated
+
+    async def publish_skill_version(
+        self, identity: Identity, skill_id: str, request: SkillVersionPublish, trace_id: str
+    ) -> SkillVersion:
+        """编译 Skill 草稿为不可变计划；没有运行期动态下载或重新解释。"""
+        skill = await self.get_skill(identity, skill_id)
+        if self._tool_catalog_validator is not None and skill.draft.tools:
+            try:
+                catalog_items = self._tool_catalog_validator.resolve_catalog_items(
+                    [item.model_dump(mode="json") for item in skill.draft.tools]
+                )
+                self._validate_skill_tool_risk(
+                    skill.draft.resolved_governance_profile(), catalog_items
+                )
+            except ValueError as exc:
+                raise PolicyViolationError(str(exc)) from exc
+        plan = compile_skill_plan(skill.draft, version=request.semantic_version)
+        now = utc_now()
+        version = SkillVersion(
+            tenant_id=identity.tenant_id,
+            version_id=f"sv_{uuid4().hex}",
+            skill_id=skill_id,
+            semantic_version=request.semantic_version,
+            source_revision=skill.revision,
+            artifact_digest=plan.artifact_digest,
+            plan=plan,
+            change_summary=request.change_summary,
+            published_by=identity.user_id,
+            published_at=now,
+            updated_at=now,
+        )
+        event = self._event(
+            "SkillVersionPublished",
+            trace_id,
+            identity.tenant_id,
+            "skill_version",
+            version.version_id,
+            {
+                "skill_id": skill_id,
+                "version_id": version.version_id,
+                "semantic_version": version.semantic_version,
+                "artifact_digest": version.artifact_digest,
+            },
+        )
+        try:
+            await self._repository.create_skill_version(version, event)
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError(
+                f"Skill semantic version already exists: {skill_id}:{request.semantic_version}."
+            ) from exc
+        return version
+
+    @staticmethod
+    def _validate_skill_tool_risk(
+        profile: SkillGovernanceProfile, catalog_items: list[dict[str, Any]]
+    ) -> None:
+        """用 Tool Catalog 的真实风险校验 Skill Profile，防止 Skill 自报低风险。"""
+        if not catalog_items:
+            return
+        write_items = [item for item in catalog_items if str(item.get("risk")) != "read_only"]
+        high_items = [
+            item
+            for item in catalog_items
+            if str(item.get("risk")) in {"write_high_risk", "human_approval_required"}
+        ]
+        if profile == SkillGovernanceProfile.READ_ONLY and write_items:
+            raise ValueError("READ_ONLY skill cannot bind a write tool")
+        if profile == SkillGovernanceProfile.REVERSIBLE_WRITE and high_items:
+            raise ValueError("REVERSIBLE_WRITE skill cannot hide a high-risk tool")
+        if high_items and profile not in {
+            SkillGovernanceProfile.HIGH_RISK_WRITE,
+            SkillGovernanceProfile.HUMAN_APPROVAL_REQUIRED,
+        }:
+            raise ValueError("high-risk tool requires a high-risk Skill governance profile")
+        if profile == SkillGovernanceProfile.HUMAN_APPROVAL_REQUIRED and any(
+            not bool(item.get("approval_required")) for item in write_items
+        ):
+            raise ValueError("human-approval Skill contains a write tool without approval")
+
+    async def update_skill_status(
+        self,
+        identity: Identity,
+        skill_id: str,
+        version_id: str,
+        request: SkillStatusUpdate,
+        trace_id: str,
+    ) -> SkillVersion:
+        """执行受限 Skill 生命周期迁移；隔离/退役优先于后续 Agent 调用。"""
+        version = await self._repository.get_skill_version(identity.tenant_id, skill_id, version_id)
+        if version is None:
+            raise NotFoundError(
+                f"Skill version '{version_id}' was not found for Skill '{skill_id}'."
+            )
+        allowed = {
+            SkillStatus.VALIDATING: {
+                SkillStatus.CANDIDATE,
+                SkillStatus.QUARANTINED,
+                SkillStatus.RETIRED,
+            },
+            SkillStatus.CANDIDATE: {
+                SkillStatus.CANARY,
+                SkillStatus.RETIRED,
+                SkillStatus.QUARANTINED,
+            },
+            SkillStatus.CANARY: {
+                SkillStatus.ACTIVE,
+                SkillStatus.CANDIDATE,
+                SkillStatus.QUARANTINED,
+                SkillStatus.RETIRED,
+            },
+            SkillStatus.ACTIVE: {
+                SkillStatus.DEPRECATED,
+                SkillStatus.DEGRADED,
+                SkillStatus.QUARANTINED,
+                SkillStatus.RETIRED,
+            },
+            SkillStatus.DEGRADED: {
+                SkillStatus.ACTIVE,
+                SkillStatus.QUARANTINED,
+                SkillStatus.RETIRED,
+            },
+            SkillStatus.DEPRECATED: {SkillStatus.RETIRED, SkillStatus.QUARANTINED},
+            SkillStatus.QUARANTINED: {SkillStatus.RETIRED},
+            SkillStatus.RETIRED: set(),
+        }
+        if request.status not in allowed[version.status]:
+            raise InvalidStateError(
+                "Skill status transition is not allowed: "
+                f"{version.status.value}->{request.status.value}."
+            )
+        if request.status in {
+            SkillStatus.CANDIDATE,
+            SkillStatus.CANARY,
+            SkillStatus.ACTIVE,
+        }:
+            if not request.quality_gate_run_id:
+                raise PolicyViolationError(
+                    "A passing Governance quality-gate run is required for Skill qualification."
+                )
+            if self._governance is None:
+                raise InvalidStateError("Governance quality-gate client is unavailable.")
+            gate = await self._governance.quality_gate(
+                identity.tenant_id, request.quality_gate_run_id
+            )
+            if not gate.get("passed"):
+                raise PolicyViolationError("Governance quality gate rejected Skill activation.")
+        updated = version.model_copy(update={"status": request.status, "updated_at": utc_now()})
+        event = self._event(
+            "SkillVersionStatusChanged",
+            trace_id,
+            identity.tenant_id,
+            "skill_version",
+            version_id,
+            {
+                "skill_id": skill_id,
+                "version_id": version_id,
+                "previous_status": version.status.value,
+                "status": request.status.value,
+                "quality_gate_id": request.quality_gate_run_id,
+            },
+        )
+        await self._repository.update_skill_status(updated, event)
+        return updated
+
+    async def resolve_skill(
+        self, identity: Identity, skill_id: str, version: str
+    ) -> SkillRuntimeResolution:
+        """只向工作负载返回 Active 且摘要固定的 SkillVersion。"""
+        item = await self._repository.get_skill_version_by_semantic(
+            identity.tenant_id, skill_id, version
+        )
+        if item is None or item.status != SkillStatus.ACTIVE:
+            raise NotFoundError(f"Active Skill '{skill_id}:{version}' was not found.")
+        return SkillRuntimeResolution(
+            tenant_id=identity.tenant_id,
+            skill_id=skill_id,
+            version=version,
+            artifact_digest=item.artifact_digest,
+            plan=item.plan,
+        )
+
+    async def list_skill_cards(
+        self, identity: Identity, capability_id: str = ""
+    ) -> list[SkillCard]:
+        """只披露 Active Skill 的摘要和能力，Prompt/工具/知识绑定在选中前不可见。"""
+        capability = capability_id.strip().upper()
+        cards: list[SkillCard] = []
+        for item in await self._repository.list_active_skill_versions(identity.tenant_id):
+            provides = [value.capability_id for value in item.plan.provides]
+            if capability and capability not in provides:
+                continue
+            cards.append(
+                SkillCard(
+                    skill_id=item.skill_id,
+                    version=item.semantic_version,
+                    description=item.plan.description,
+                    provides=provides,
+                    risk=item.plan.risk,
+                )
+            )
+        return cards
 
     async def update_draft(
         self,
@@ -231,10 +731,38 @@ class ControlPlaneService:
                         ],
                     )
                 ) from exc
+        frozen_spec = agent.draft
+        if self._tool_catalog_validator is not None:
+            try:
+                resolved_tools = self._tool_catalog_validator.resolve_bindings(
+                    [item.model_dump(mode="json") for item in agent.draft.tools]
+                )
+                frozen_spec = agent.draft.model_copy(
+                    update={"tools": [ToolBinding.model_validate(item) for item in resolved_tools]}
+                )
+            except ValueError as exc:
+                raise DraftValidationError(
+                    ValidationReport(
+                        valid=False,
+                        issues=[
+                            {
+                                "severity": "error",
+                                "code": "tools.catalog_contract_invalid",
+                                "path": "tools",
+                                "message": str(exc),
+                            }
+                        ],
+                    )
+                ) from exc
+            frozen_report = validate_agent_spec(frozen_spec, policy)
+            if not frozen_report.valid:
+                raise DraftValidationError(frozen_report)
+        await self._validate_skill_bindings(identity, agent.draft)
+        await self._validate_agent_workflow_providers(identity, agent.draft)
 
         now = utc_now()
         version_id = f"av_{uuid4().hex}"
-        component_hashes = _component_hashes(agent.draft.model_dump(mode="json"))
+        component_hashes = _component_hashes(frozen_spec.model_dump(mode="json"))
         snapshot = PublishedSnapshot(
             tenant_id=identity.tenant_id,
             agent_id=agent_id,
@@ -244,7 +772,7 @@ class ControlPlaneService:
             knowledge_version=f"kb:{component_hashes['knowledge'][:12]}",
             tool_set_version=f"tools:{component_hashes['tools'][:12]}",
             model_policy_version=f"{agent.draft.model_policy.policy_id}:{agent.revision}",
-            spec=agent.draft,
+            spec=frozen_spec,
             published_at=now,
         )
         # 发布事务冻结 Runtime 可执行产物; 请求运行时不得再解释可变草稿或重新编译。
@@ -258,12 +786,14 @@ class ControlPlaneService:
             raise DraftValidationError(
                 ValidationReport(
                     valid=False,
-                    issues=[{
-                        "severity": "error",
-                        "code": "runtime_snapshot.compile_failed",
-                        "path": "runtime_executor",
-                        "message": str(exc),
-                    }],
+                    issues=[
+                        {
+                            "severity": "error",
+                            "code": "runtime_snapshot.compile_failed",
+                            "path": "runtime_executor",
+                            "message": str(exc),
+                        }
+                    ],
                 )
             ) from exc
         snapshot = snapshot.model_copy(
@@ -304,6 +834,94 @@ class ControlPlaneService:
                 f"for agent '{agent_id}'."
             ) from exc
         return version
+
+    async def _validate_agent_workflow_providers(self, identity: Identity, spec) -> None:
+        """验证 Agent 可调用 Workflow 的版本和摘要，防止动态 latest 漂移。"""
+        for provider in spec.capability_providers:
+            if provider.kind != CapabilityProviderKind.WORKFLOW:
+                continue
+            workflow = await self._repository.get_workflow_version_by_semantic(
+                identity.tenant_id, provider.provider_id, provider.version
+            )
+            if (
+                workflow is None
+                or not provider.artifact_digest
+                or workflow.artifact_digest != provider.artifact_digest
+            ):
+                raise PolicyViolationError(
+                    "Agent Workflow provider must reference an exact published artifact: "
+                    f"{provider.provider_id}:{provider.version}."
+                )
+
+    async def _validate_skill_bindings(self, identity: Identity, draft) -> None:
+        """确认 Agent 绑定的每个 SkillVersion 存在、已准入且摘要完全匹配。"""
+        skill_plans = []
+        for binding in draft.skills:
+            version = await self._repository.get_skill_version_by_semantic(
+                identity.tenant_id, binding.skill_id, binding.version
+            )
+            if version is None:
+                raise DraftValidationError(
+                    ValidationReport(
+                        valid=False,
+                        issues=[
+                            {
+                                "severity": "error",
+                                "code": "skills.catalog_missing",
+                                "path": "skills",
+                                "message": "Skill does not exist: "
+                                f"{binding.skill_id}:{binding.version}.",
+                            }
+                        ],
+                    )
+                )
+            if version.status.value != "active":
+                raise DraftValidationError(
+                    ValidationReport(
+                        valid=False,
+                        issues=[
+                            {
+                                "severity": "error",
+                                "code": "skills.not_active",
+                                "path": "skills",
+                                "message": "Skill is not active: "
+                                f"{binding.skill_id}:{binding.version}.",
+                            }
+                        ],
+                    )
+                )
+            if version.artifact_digest != binding.artifact_digest:
+                raise DraftValidationError(
+                    ValidationReport(
+                        valid=False,
+                        issues=[
+                            {
+                                "severity": "error",
+                                "code": "skills.digest_mismatch",
+                                "path": "skills",
+                                "message": "Skill artifact digest does not match: "
+                                f"{binding.skill_id}:{binding.version}.",
+                            }
+                        ],
+                    )
+                )
+            skill_plans.append(version.plan)
+        try:
+            validate_skill_catalog(skill_plans)
+        except ValueError as exc:
+            raise DraftValidationError(
+                ValidationReport(
+                    valid=False,
+                    issues=[
+                        {
+                            "severity": "error",
+                            "code": "skills.composition_invalid",
+                            "path": "skills",
+                            "message": str(exc),
+                        }
+                    ],
+                )
+            ) from exc
 
     async def list_versions(self, identity: Identity, agent_id: str) -> list[AgentVersion]:
         """确认 Agent 属于调用方租户后列出其冻结版本，不触发任何状态变化。"""

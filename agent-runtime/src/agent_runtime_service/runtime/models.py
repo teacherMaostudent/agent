@@ -4,6 +4,19 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from platform_sdk.contracts.execution_profile import (
+    ExecutionRequirements as SharedExecutionRequirements,
+)
+from platform_sdk.contracts.orchestration import (
+    BudgetPolicy,
+    CapabilityPolicy,
+    DurabilityPolicy,
+    GovernancePolicy,
+    PlanAdmissionCheck,
+    ReasoningPolicy,
+    VersionBindings,
+)
+from platform_sdk.contracts.skills import ExecutionTopology, OrchestrationOwner
 from pydantic import BaseModel, Field
 
 
@@ -39,11 +52,11 @@ class ReasoningMode(StrEnum):
     GRAPH = "graph"
 
 
-class ExecutionRequirements(BaseModel):
-    """发布快照声明的双轴执行需求。
+class ExecutionRequirements(SharedExecutionRequirements):
+    """共享执行契约的 Runtime 窄类型投影。
 
-    生命周期和推理模式故意拆开：同一个受控 Graph 可以同步短执行，也可以由
-    Durable Workflow 可靠驱动。Profile 只是 Runtime 集群为这一组合提供的部署别名。
+    字段、正交维度校验和兼容规则只由 platform-sdk 定义；Runtime 仅把旧生命周期与
+    reasoning 字符串收窄成枚举，供现有状态机保持类型安全。
     """
 
     lifecycle: ExecutionLifecycle = ExecutionLifecycle.REQUEST_SCOPED
@@ -97,7 +110,17 @@ class RouteDecision(BaseModel):
 
 
 class ExecutionPlan(BaseModel):
+    """平台 Planner 提议的运行约束，不代表任何业务动作已经获准。"""
+
     plan_id: str
+    orchestration_owner: OrchestrationOwner = OrchestrationOwner.AGENT
+    topology: ExecutionTopology = ExecutionTopology.SINGLE_AGENT
+    reasoning_policy: ReasoningPolicy = Field(default_factory=ReasoningPolicy)
+    capability_policy: CapabilityPolicy = Field(default_factory=CapabilityPolicy)
+    durability_policy: DurabilityPolicy = Field(default_factory=DurabilityPolicy)
+    governance_policy: GovernancePolicy = Field(default_factory=GovernancePolicy)
+    budget_policy: BudgetPolicy = Field(default_factory=BudgetPolicy)
+    version_bindings: VersionBindings = Field(default_factory=VersionBindings)
     intent: IntentResult
     entities: list[EntityResult]
     source_plan: SourcePlan
@@ -119,6 +142,19 @@ class ExecutionPlan(BaseModel):
     policy_fingerprint: str
     plan_hash: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+ProposedExecutionPlan = ExecutionPlan
+
+
+class AdmittedExecutionPlan(ExecutionPlan):
+    """通过计划级准入的执行计划；步骤副作用仍必须单独授权。"""
+
+    plan_stage: str = Field(default="ADMITTED", pattern="^ADMITTED$")
+    admission_id: str = Field(min_length=1, max_length=200)
+    admission_policy_version: str = Field(min_length=1, max_length=200)
+    admission_checks: list[PlanAdmissionCheck] = Field(min_length=1)
+    allowed_tool_scope: list[str] = Field(default_factory=list)
 
 
 class RuntimeBudget(BaseModel):

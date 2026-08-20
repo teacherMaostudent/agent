@@ -8,8 +8,11 @@ from temporalio.worker import Worker
 from agent_runtime_service.runtime.container import AgentRuntimeContainer
 from agent_runtime_service.runtime.temporal_queue import (
     AgentRunWorkflow,
+    ZeroAgentBusinessWorkflow,
     bind_runtime_executor,
+    bind_workflow_executor,
     execute_agent_run,
+    execute_business_workflow,
     resume_agent_run,
 )
 from agent_runtime_service.runtime.temporal_routing import TemporalTargetRouter
@@ -23,6 +26,7 @@ async def run_worker() -> None:
     """
     container = AgentRuntimeContainer(build_async_queue=False)
     bind_runtime_executor(container._execute_submission)
+    bind_workflow_executor(container._execute_workflow_submission)
     # Worker 不创建 API 侧队列; 直接从同一部署配置推导区域目标与 Task Queue。
     router = TemporalTargetRouter(
         container.settings.temporal_target,
@@ -38,8 +42,8 @@ async def run_worker() -> None:
             container.settings.temporal_runtime_task_queue,
             container.settings.temporal_worker_region,
         ),
-        workflows=[AgentRunWorkflow],
-        activities=[execute_agent_run, resume_agent_run],
+        workflows=[AgentRunWorkflow, ZeroAgentBusinessWorkflow],
+        activities=[execute_agent_run, resume_agent_run, execute_business_workflow],
     )
     try:
         await worker.run()

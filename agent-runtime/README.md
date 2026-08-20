@@ -14,6 +14,10 @@ Agent Lab 可用同一公开 Runtime API 回放已冻结快照；Runtime 仍只�
 - 将高风险工具调用转换为审批中断，审批恢复后继续同一运行；
 - 将运行完成事件写入本地事务 Outbox，由治理链路异步投递；
 - 在启用 Temporal 时作为 Worker 消费跨区域任务队列。
+- 执行 `owner=WORKFLOW, topology=NONE` 的零 Agent Workflow，支持步骤重试、
+  反向补偿、Human Signal 和 `ZeroAgentBusinessWorkflow` Temporal 恢复；
+- 将 Planner 的 `CAPABILITY` 需求交给冻结 Capability Resolver，不让模型选择
+  Tool/Skill/Agent/Human/RAG/Memory/Workflow Provider。
 
 ## Planner、Workflow 与 Harness 的标准边界
 
@@ -22,18 +26,25 @@ Runtime 将“可配置”限制在可审计的声明式边界内，而不是让
 1. **Snapshot Compiler** 将发布 Graph 编译为 `workflow-policy/v1`。它只接受
    `decision`、`retrieval`、`tool`、`answer`、`clarify` 五类受控节点，并校验入口、终点、
    可达性和每一条迁移；未知节点类型、工具作为入口、无效后继均 fail-closed。
-2. **Planner** 根据本次请求生成 `ExecutionPlan`：意图、实体、来源、复杂度、SLA、成本、路由和
+2. **Planner** 根据本次请求生成 `ProposedExecutionPlan`：意图、实体、来源、复杂度、SLA、成本、路由和
    检索档位。它不能新增快照未绑定的模型、知识源、权限或工具，也不能直接执行副作用。
-3. **LangGraph** 是固定的可靠状态机与检查点实现。它在模型决策、检索和工具之后都验证
-   Workflow Policy 的 cursor；模型只能建议 `RETRIEVE`、`TOOL` 或 `ANSWER`，不能改图。
-4. **Capability Runtime** 在启动期冻结 Context、LLM、Retrieval、Tool、Workflow、Session、
+3. **Plan Admission** 在进入执行引擎前校验 Schema、Executor、能力、工具范围、风险、预算和
+   截止时间，生成 `AdmittedExecutionPlan`；该凭证不代表具体副作用已经获批。
+4. **LangGraph** 是 Agent Owner 内的状态机与检查点实现。模型可建议
+   `RETRIEVE/TOOL/SUBAGENT/CAPABILITY/ANSWER`，但 `CAPABILITY` 不带 Provider ID；
+   Resolver 选择后 Tool/RAG/Agent 仍回到原安全节点。
+5. **Capability Runtime** 在启动期冻结 Context、LLM、Retrieval、Tool、Workflow、Session、
    SubAgent 以及可选 Sandbox/Code Runner Provider。容器把这些 Provider 进一步投影为强类型
    `RuntimeContext`，Graph/Executor 不能读取通用对象目录、环境变量或其他服务内部实现。每项能力都有 `CapabilityManifest`（Provider、
    契约版本、工件摘要、隔离级别和执行器兼容范围）；Harness 在选择执行器前校验名称与 Profile
    兼容性。未部署或摘要漂移的能力均拒绝，不能在请求中临时注册插件或静默降级。
-5. **Harness** 是 API 与 Worker 唯一的执行门面，统一 `run/resume` 契约，并按快照中的
+6. **Harness** 是 API 与 Worker 唯一的执行门面，统一 `run/resume` 契约，并按快照中的
    `runtime_executor` Profile 选择本集群已部署的执行器。生产未知 Profile 一律拒绝；默认图
    仅在未启用 `RUNTIME_SNAPSHOT_REQUIRED` 的本地兼容模式可用。
+7. **SkillRuntime** 只负责精确工件、Schema、组合、权限交集、预算切分和
+   结果验证，不创建 SkillSession 或开放 Goal。
+8. **WorkflowRuntime** 固定 What-Next，可在不创建 Agent 的情况下调用任何已准入
+   Capability；长任务通过 Temporal 提交，不占用 HTTP 请求。
 
 Runtime 提供内部 `GET /api/v1/agent/capabilities`，返回已部署的 `runtime_executor` Profiles、
 能力目录版本、Manifest 摘要与 Provider 声明。Control Plane 在生产发布前用它证明目标实例确实具备
@@ -45,6 +56,13 @@ Provider 漂移。该接口必须使用服务身份、mTLS 与网络策略保护
 `Harness` 仍严格保持七项生命周期门面；真正的执行内核由其下方的 `ExecutionProviderRegistry`、
 `AgentRunState` 与 `StopPolicy` 组成。Registry 只在容器启动时装配，不允许请求期加载 Agent
 代码或动态注册执行器；`GET /api/v1/agent/capabilities` 还会公布每个 Profile 的模式与是否支持恢复。
+
+执行配置按正交维度冻结：Planning=`PLAN_EXECUTE`，Step=`DETERMINISTIC/REACT`，
+Engine=`SIMPLE/LANGGRAPH/DEEP_AGENTS`，Durability=`EPHEMERAL/CHECKPOINTED/TEMPORAL`，
+Context=`MANAGED_LEDGER`。`TemporalDurabilityAdapter` 可包装兼容 Engine；旧
+`DurableExecutor` 仅保留为迁移别名。默认集群尚未注册 `deep-agents/v1`；旧
+`agentic/v1` 仍是 LangGraph Agent Loop，发布 Deep Agents 快照会因目标集群无该
+Profile 而失败关闭。
 
 | 执行模式 | Profile | 适用边界 |
 | --- | --- | --- |

@@ -26,12 +26,19 @@ from agent_runtime_service.runtime.temporal_routing import TemporalTargetRouter
 # the local Runtime executor at startup rather than serialising Python callables
 # into a Temporal payload.
 _executor: Callable[[dict[str, Any]], dict] | None = None
+_workflow_executor: Callable[[dict[str, Any]], dict] | None = None
 
 
 def bind_runtime_executor(executor: Callable[[dict[str, Any]], dict]) -> None:
     """在 Worker 启动时绑定本地执行入口；函数本身不会跨 Temporal 序列化。"""
     global _executor
     _executor = executor
+
+
+def bind_workflow_executor(executor: Callable[[dict[str, Any]], dict]) -> None:
+    """在 Worker 启动时绑定零 Agent Workflow 执行入口。"""
+    global _workflow_executor
+    _workflow_executor = executor
 
 
 @activity.defn(name="execute_agent_run")
@@ -48,6 +55,14 @@ async def resume_agent_run(submission: dict[str, Any]) -> dict:
     if _executor is None:
         raise RuntimeError("runtime activity executor is not bound")
     return await asyncio.to_thread(_executor, {**submission, "operation": "resume"})
+
+
+@activity.defn(name="execute_business_workflow")
+async def execute_business_workflow(submission: dict[str, Any]) -> dict:
+    """在 Runtime Worker 中执行或恢复冻结 WorkflowVersion。"""
+    if _workflow_executor is None:
+        raise RuntimeError("business workflow activity executor is not bound")
+    return await asyncio.to_thread(_workflow_executor, submission)
 
 
 @workflow.defn(name="AgentRunWorkflow")
@@ -99,6 +114,56 @@ class AgentRunWorkflow:
                 ),
             )
         return result
+
+
+@workflow.defn(name="ZeroAgentBusinessWorkflow")
+class ZeroAgentBusinessWorkflow:
+    """持久调度零 Agent Workflow，人工信号不占用 Web/Worker 线程。"""
+
+    def __init__(self) -> None:
+        """初始化待消费信号，Temporal History 保存其次序。"""
+        self._signal: dict[str, Any] | None = None
+
+    @workflow.signal
+    def resume(self, signal: dict[str, Any]) -> None:
+        """接收一次结构化人工/外部信号。"""
+        if self._signal is not None:
+            raise ValueError("workflow signal was already received")
+        self._signal = signal
+
+    @workflow.run
+    async def run(self, submission: dict[str, Any]) -> dict:
+        """每个 Activity 只推进一个发布步骤，等待信号后从检查点恢复。"""
+        current = dict(submission)
+        while True:
+            checkpoint = current.get("checkpoint") or {}
+            step_index = int(checkpoint.get("next_step_index", 0))
+            steps = current.get("release_resolution", {}).get("plan", {}).get("steps", [])
+            timeout_seconds = 3600
+            if step_index < len(steps):
+                timeout_seconds = int(steps[step_index].get("timeout_seconds", 3600))
+            result = await workflow.execute_activity(
+                "execute_business_workflow",
+                current,
+                start_to_close_timeout=timedelta(seconds=timeout_seconds),
+                retry_policy=RetryPolicy(
+                    initial_interval=timedelta(seconds=2),
+                    backoff_coefficient=2,
+                    maximum_interval=timedelta(minutes=2),
+                    maximum_attempts=5,
+                    non_retryable_error_types=["ValueError", "WorkflowExecutionError"],
+                ),
+            )
+            if result.get("status") != "WAITING_SIGNAL":
+                if result.get("status") == "RUNNING":
+                    # 检查点进入 Temporal History 后再调度下一步，已完成
+                    # Provider 不会因 Worker 重启而被整链重放。
+                    current = {**current, "checkpoint": result, "signal": None}
+                    continue
+                return result
+            await workflow.wait_condition(lambda: self._signal is not None)
+            signal, self._signal = self._signal, None
+            current = {**current, "checkpoint": result, "signal": signal}
 
 
 class TemporalRunQueue:
@@ -162,6 +227,73 @@ class TemporalRunQueue:
             "cancel_requested": False,
         }
 
+    def submit_workflow(self, submission: dict[str, Any]) -> dict[str, Any]:
+        """以租户/Workflow Run 键幂等提交零 Agent 长流程。"""
+        run_id = submission.setdefault("run_id", f"workflow_{uuid4().hex}")
+        workflow_id = self._business_workflow_id(submission["tenant_id"], run_id)
+        region = submission.get("data_region")
+        last_error: Exception | None = None
+        for target in self.router.candidates(region):
+            try:
+                self._call(
+                    self._clients[target].start_workflow(
+                        ZeroAgentBusinessWorkflow.run,
+                        submission,
+                        id=workflow_id,
+                        task_queue=self.router.task_queue_for(self.task_queue, region),
+                    )
+                )
+                break
+            except WorkflowAlreadyStartedError:
+                break
+            except (TemporalError, TimeoutError) as exc:
+                last_error = exc
+        else:
+            raise RuntimeError("all Temporal region targets are unavailable") from last_error
+        return {"run_id": run_id, "status": "QUEUED", "result": {}}
+
+    def resume_workflow(
+        self, tenant_id: str, run_id: str, signal: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """向持久零 Agent Workflow 发送一次信号。"""
+        for client in self._clients.values():
+            handle = client.get_workflow_handle(self._business_workflow_id(tenant_id, run_id))
+            try:
+                self._call(handle.signal(ZeroAgentBusinessWorkflow.resume, signal))
+                return {"run_id": run_id, "status": "RUNNING", "result": {}}
+            except (TemporalError, TimeoutError):
+                continue
+        return None
+
+    def get_workflow(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+        """查询零 Agent Workflow 的 Temporal 真实状态和终态结果。"""
+        for client in self._clients.values():
+            handle = client.get_workflow_handle(self._business_workflow_id(tenant_id, run_id))
+            try:
+                description = self._call(handle.describe())
+            except (TemporalError, TimeoutError):
+                continue
+            result: dict[str, Any] = {}
+            if description.status == WorkflowExecutionStatus.COMPLETED:
+                result = self._call(handle.result())
+            return {
+                "run_id": run_id,
+                "status": _status(description.status),
+                "result": result,
+            }
+        return None
+
+    def cancel_workflow(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+        """取消零 Agent Workflow，由 Temporal 将取消事实写入持久历史。"""
+        for client in self._clients.values():
+            handle = client.get_workflow_handle(self._business_workflow_id(tenant_id, run_id))
+            try:
+                self._call(handle.cancel())
+                return {"run_id": run_id, "status": "CANCELLED", "result": {}}
+            except (TemporalError, TimeoutError):
+                continue
+        return None
+
     def get(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
         """跨候选集群查询运行状态；结果读取失败保留失败信息而不伪造完成。"""
         handle = None
@@ -206,7 +338,9 @@ class TemporalRunQueue:
             return None
         return self.get(tenant_id, run_id)
 
-    def resume(self, tenant_id: str, run_id: str, control_input: dict[str, Any]) -> dict[str, Any] | None:
+    def resume(
+        self, tenant_id: str, run_id: str, control_input: dict[str, Any]
+    ) -> dict[str, Any] | None:
         """向存活 Workflow 发送一次版本化 Inbox 控制信号，拒绝找不到的跨租户运行。"""
         for client in self._clients.values():
             handle = client.get_workflow_handle(self._workflow_id(tenant_id, run_id))
@@ -231,6 +365,11 @@ class TemporalRunQueue:
     def _workflow_id(tenant_id: str, run_id: str) -> str:
         """用租户和运行 ID 构造全局幂等工作流键，禁止跨租户碰撞。"""
         return f"agent-run/{tenant_id}/{run_id}"
+
+    @staticmethod
+    def _business_workflow_id(tenant_id: str, run_id: str) -> str:
+        """为零 Agent Workflow 使用独立命名空间，避免与 Agent Run 碰撞。"""
+        return f"business-workflow/{tenant_id}/{run_id}"
 
 
 def _status(status: WorkflowExecutionStatus) -> str:

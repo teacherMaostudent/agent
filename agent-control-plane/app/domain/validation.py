@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import deque
 
+from platform_sdk.contracts.skills import CapabilityProviderKind
 from platform_sdk.contracts.workflow import WorkflowConditionError, compile_workflow_condition
 
 from app.domain.models import (
@@ -206,6 +207,78 @@ def validate_agent_spec(spec: AgentDraftSpec, policy: TenantPolicy) -> Validatio
                 "A published Agent may bind each subagent only once.",
             )
         )
+
+    skill_keys = [(item.skill_id, item.version) for item in spec.skills]
+    if len(skill_keys) != len(set(skill_keys)):
+        issues.append(
+            _error(
+                "skills.duplicate",
+                "skills",
+                "A published Agent may bind each Skill version only once.",
+            )
+        )
+
+    provider_ids = [item.provider_id for item in spec.capability_providers]
+    if len(provider_ids) != len(set(provider_ids)):
+        issues.append(
+            _error(
+                "capabilities.duplicate_provider",
+                "capability_providers",
+                "Capability provider_id values must be unique.",
+            )
+        )
+    known_providers = set(provider_ids)
+    skill_bindings = {(item.skill_id, item.version, item.artifact_digest) for item in spec.skills}
+    tool_bindings = {(item.tool_name, item.version) for item in spec.tools}
+    subagent_bindings = {(item.agent_id, item.version) for item in spec.subagents}
+    for index, provider in enumerate(spec.capability_providers):
+        valid_binding = True
+        if provider.kind == CapabilityProviderKind.SKILL:
+            valid_binding = (
+                provider.provider_id,
+                provider.version,
+                provider.artifact_digest,
+            ) in skill_bindings
+        elif provider.kind == CapabilityProviderKind.TOOL:
+            valid_binding = (provider.provider_id, provider.version) in tool_bindings
+        elif provider.kind == CapabilityProviderKind.AGENT:
+            valid_binding = (provider.provider_id, provider.version) in subagent_bindings
+        elif provider.kind == CapabilityProviderKind.RAG:
+            valid_binding = any(
+                item.knowledge_base == provider.provider_id
+                and item.version == provider.version
+                and item.index_version == provider.rag_index_version
+                and item.embedding_contract_id == provider.embedding_contract_id
+                for item in spec.knowledge
+            )
+        if not valid_binding:
+            issues.append(
+                _error(
+                    "capabilities.provider_binding_missing",
+                    f"capability_providers[{index}]",
+                    "Provider must reference an exact Skill, Tool, Agent, or RAG binding.",
+                )
+            )
+    routing_capabilities: set[str] = set()
+    for index, policy_item in enumerate(spec.capability_routing):
+        if policy_item.capability_id in routing_capabilities:
+            issues.append(
+                _error(
+                    "capabilities.duplicate_routing",
+                    f"capability_routing[{index}]",
+                    "Each capability may declare only one fallback order.",
+                )
+            )
+        routing_capabilities.add(policy_item.capability_id)
+        unknown = set(policy_item.provider_order) - known_providers
+        if unknown:
+            issues.append(
+                _error(
+                    "capabilities.unknown_provider",
+                    f"capability_routing[{index}]",
+                    f"Fallback order references unknown providers: {', '.join(sorted(unknown))}.",
+                )
+            )
 
     route_names = [route.route_name for route in spec.model_policy.routes]
     route_set = set(route_names)

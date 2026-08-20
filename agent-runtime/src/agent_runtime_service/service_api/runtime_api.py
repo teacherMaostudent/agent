@@ -8,6 +8,7 @@ from fastapi import APIRouter, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from platform_sdk.contracts.capabilities import RuntimeCapability
 from platform_sdk.contracts.context import ConversationMessage
+from platform_sdk.contracts.execution import ExecutionContext
 from platform_sdk.contracts.runtime_api import (
     AgentFollowupRequest,
     AgentResumeRequest,
@@ -15,9 +16,20 @@ from platform_sdk.contracts.runtime_api import (
     AgentRunRequest,
     SessionCompactionRequest,
     SessionForkRequest,
+    SkillRunRequest,
+    WorkflowResumeRequest,
+    WorkflowRunRequest,
 )
+from platform_sdk.contracts.skills import (
+    CompiledSkillPlan,
+    OrchestrationOwner,
+    SkillBinding,
+)
+from platform_sdk.contracts.workflow import CompiledWorkflowPlan
 
 from agent_runtime_service.runtime.capabilities import CapabilityUnavailable
+from agent_runtime_service.runtime.capability_dispatcher import GovernedCapabilityDispatcher
+from agent_runtime_service.runtime.capability_handlers import RuntimeCapabilityHandlers
 from agent_runtime_service.runtime.mailbox import ClaimedRunMailboxItem, RunMailboxInputType
 from agent_runtime_service.runtime.models import (
     ApprovalResume,
@@ -27,7 +39,17 @@ from agent_runtime_service.runtime.models import (
 )
 from agent_runtime_service.runtime.run_state import AgentRunEvent, InvalidRunTransition
 from agent_runtime_service.runtime.session_events import RuntimeEventType, model_visible_message
+from agent_runtime_service.runtime.skill_runtime import (
+    GovernedSkillRuntime,
+    InMemorySkillCatalog,
+    SkillExecutionRequest,
+)
 from agent_runtime_service.runtime.snapshot_compiler import CompiledAgentPlan, SnapshotCompileError
+from agent_runtime_service.runtime.workflow_runtime import (
+    WorkflowExecutionError,
+    WorkflowExecutionResult,
+    ZeroAgentWorkflowRuntime,
+)
 
 router = APIRouter(prefix="/agent", tags=["agent-runtime"])
 
@@ -63,6 +85,254 @@ def runtime_capabilities(request: Request) -> dict:
             item.model_dump(mode="json") for item in container.capabilities.manifests
         ],
     }
+
+
+@router.post("/skills/run")
+def run_skill(
+    payload: SkillRunRequest,
+    request: Request,
+    x_tenant_id: str = Header(alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="agent-user", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+    x_request_id: str = Header(default="", alias="X-Request-Id"),
+    x_trace_id: str = Header(default="", alias="X-Trace-Id"),
+) -> dict:
+    """解析并执行 Active SkillVersion；调用方不能提交完整计划。"""
+    container = request.app.state.container
+    tenant_id, user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if container.control_plane is None:
+        raise HTTPException(status_code=503, detail="Control Plane is required for Skill execution")
+    trace_id = x_trace_id or f"trace_{uuid4().hex}"
+    resolution = container.control_plane.resolve_skill(
+        tenant_id, payload.skill_id, payload.version, trace_id
+    )
+    plan = CompiledSkillPlan.model_validate(resolution.get("plan"))
+    if resolution.get("artifact_digest") != payload.artifact_digest:
+        raise HTTPException(status_code=409, detail="Skill artifact digest drift")
+    binding = SkillBinding(
+        skill_id=payload.skill_id,
+        version=payload.version,
+        artifact_digest=payload.artifact_digest,
+        max_budget_fraction=1.0,
+    )
+    skill_execution_id = f"skill_{uuid4().hex}"
+    context = ExecutionContext.create(
+        request_id=x_request_id or f"req_{uuid4().hex}",
+        trace_id=trace_id,
+        session_id="",
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_id="",
+        agent_version="",
+        snapshot_id=payload.artifact_digest,
+        deadline_seconds=payload.deadline_seconds,
+        attempt_budget=20,
+        orchestration_owner=OrchestrationOwner.WORKFLOW,
+        workflow_id="direct-skill-invocation",
+        skill_execution_id=skill_execution_id,
+    )
+    budget = RuntimeBudget(
+        deadline_at=context.deadline_at,
+        max_steps=1,
+        max_llm_calls=1,
+        max_tool_calls=len(plan.tools),
+        max_retrieval_rounds=len(plan.knowledge),
+        max_cost_usd=payload.max_cost_usd,
+    )
+    result = GovernedSkillRuntime(InMemorySkillCatalog([plan]), container.skill_executor).execute(
+        SkillExecutionRequest(
+            invocation_id=skill_execution_id,
+            binding=binding,
+            capability_id=payload.capability_id,
+            input=payload.input,
+            context=context,
+            caller_permissions=frozenset(permissions),
+            agent_permissions=frozenset(permissions),
+            plan_id=f"direct-skill-plan:{skill_execution_id}",
+            plan_admission_id=f"direct-skill-admission:{payload.artifact_digest}",
+            step_id=skill_execution_id,
+        ),
+        budget,
+    )
+    return result.model_dump(mode="json")
+
+
+@router.post("/workflows/run")
+def run_workflow(
+    payload: WorkflowRunRequest,
+    request: Request,
+    x_tenant_id: str = Header(alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="workflow-user", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+    x_request_id: str = Header(default="", alias="X-Request-Id"),
+    x_trace_id: str = Header(default="", alias="X-Trace-Id"),
+    _temporal_worker_execution: bool = False,
+    _release_resolution: dict | None = None,
+    _run_id: str = "",
+    _checkpoint: dict | None = None,
+    _signal: dict | None = None,
+) -> dict:
+    """执行 Active 零 Agent Workflow；不创建 Agent Session 或调用 Planner。"""
+    container = request.app.state.container
+    tenant_id, user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if container.control_plane is None and _release_resolution is None:
+        raise HTTPException(
+            status_code=503, detail="Control Plane is required for Workflow execution"
+        )
+    trace_id = x_trace_id or f"trace_{uuid4().hex}"
+    resolution = _release_resolution or container.control_plane.resolve_workflow(
+        tenant_id, payload.workflow_id, payload.environment, trace_id
+    )
+    plan = CompiledWorkflowPlan.model_validate(resolution.get("plan"))
+    digest = str(resolution.get("artifact_digest", ""))
+    if plan.durable and not _temporal_worker_execution:
+        queue = container.async_runs
+        if queue is None or not hasattr(queue, "submit_workflow"):
+            raise HTTPException(
+                status_code=503,
+                detail="Durable Workflow requires a Temporal workflow queue",
+            )
+        return queue.submit_workflow(
+            {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "permissions": ",".join(sorted(permissions)),
+                "request_id": x_request_id or f"req_{uuid4().hex}",
+                "trace_id": trace_id,
+                "payload": payload.model_dump(mode="json"),
+                "release_resolution": resolution,
+            }
+        )
+    context = ExecutionContext.create(
+        request_id=x_request_id or f"req_{uuid4().hex}",
+        trace_id=trace_id,
+        session_id="",
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_id="",
+        agent_version="",
+        snapshot_id=digest,
+        deadline_seconds=payload.deadline_seconds,
+        attempt_budget=sum(item.max_attempts for item in plan.steps),
+        orchestration_owner=OrchestrationOwner.WORKFLOW,
+        workflow_id=plan.workflow_id,
+        run_id=_run_id or None,
+    )
+    budget = RuntimeBudget(
+        deadline_at=context.deadline_at,
+        max_steps=len(plan.steps),
+        max_llm_calls=len(plan.steps),
+        max_tool_calls=len(plan.steps),
+        max_retrieval_rounds=len(plan.steps),
+        max_cost_usd=payload.max_cost_usd,
+        max_attempts=context.attempt_budget_remaining,
+    )
+    handlers = RuntimeCapabilityHandlers(
+        container,
+        permissions=frozenset(permissions),
+        budget=budget,
+        agent_runner=lambda provider, step_payload, execution_context: (
+            container._run_agent_capability(
+                provider,
+                step_payload,
+                execution_context,
+                permissions=frozenset(permissions),
+                budget=budget,
+            )
+        ),
+    )
+    dispatcher = GovernedCapabilityDispatcher(
+        plan.capability_providers,
+        plan.capability_routing,
+        handlers.handlers(),
+    )
+    try:
+        result = ZeroAgentWorkflowRuntime(dispatcher.dispatch_output).run(
+            plan,
+            payload.input,
+            context,
+            checkpoint=(
+                WorkflowExecutionResult.model_validate(_checkpoint) if _checkpoint else None
+            ),
+            signal=_signal,
+            # Durable 路径每次 Activity 只推进一步，让 Temporal History
+            # 成为步骤边界的恢复事实；同步短流程仍可一次执行完。
+            max_steps=1 if _temporal_worker_execution else None,
+        )
+    except (WorkflowExecutionError, RuntimeError, ValueError) as exc:
+        if _temporal_worker_execution:
+            # 保留原异常类型，使 Temporal 的 non_retryable_error_types 能
+            # 区分业务失败与 Worker 崩溃，避免 HTTPException 造成整步重试。
+            raise
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        **result.model_dump(mode="json"),
+        "run_id": context.run_id,
+        "root_task_id": context.root_task_id,
+        "artifact_digest": digest,
+        "orchestration_owner": context.orchestration_owner.value,
+        "topology": "none",
+    }
+
+
+@router.post("/workflows/runs/{run_id}/resume")
+def resume_workflow(
+    run_id: str,
+    payload: WorkflowResumeRequest,
+    request: Request,
+    x_tenant_id: str = Header(alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="workflow-user", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict:
+    """经 OIDC 重新验证后向 Temporal Workflow 发送一次恢复信号。"""
+    tenant_id, _, _ = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
+    queue = request.app.state.container.async_runs
+    if queue is None or not hasattr(queue, "resume_workflow"):
+        raise HTTPException(status_code=503, detail="Temporal workflow queue is unavailable")
+    result = queue.resume_workflow(tenant_id, run_id, payload.signal)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    return result
+
+
+@router.get("/workflows/runs/{run_id}")
+def get_workflow_run(
+    run_id: str,
+    request: Request,
+    x_tenant_id: str = Header(alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="workflow-user", alias="X-User-Id"),
+) -> dict:
+    """按租户查询 Temporal 中的零 Agent Workflow 运行。"""
+    tenant_id, _, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    queue = request.app.state.container.async_runs
+    if queue is None or not hasattr(queue, "get_workflow"):
+        raise HTTPException(status_code=503, detail="Temporal workflow queue is unavailable")
+    result = queue.get_workflow(tenant_id, run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    return result
+
+
+@router.post("/workflows/runs/{run_id}/cancel")
+def cancel_workflow_run(
+    run_id: str,
+    request: Request,
+    x_tenant_id: str = Header(alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="workflow-user", alias="X-User-Id"),
+) -> dict:
+    """通过 Temporal 取消整个 Workflow RootTask，不仅中断当前 HTTP。"""
+    tenant_id, _, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    queue = request.app.state.container.async_runs
+    if queue is None or not hasattr(queue, "cancel_workflow"):
+        raise HTTPException(status_code=503, detail="Temporal workflow queue is unavailable")
+    result = queue.cancel_workflow(tenant_id, run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    return result
 
 
 def _capability(container, capability: RuntimeCapability):
@@ -117,6 +387,8 @@ def run_agent(
     x_run_id: str | None = Header(default=None, alias="X-Run-Id"),
     _temporal_worker_execution: bool = False,
     _release_resolution: dict | None = None,
+    _orchestration_owner: OrchestrationOwner = OrchestrationOwner.AGENT,
+    _workflow_id: str = "",
 ) -> dict:
     """同步执行一个受发布快照约束的 Agent Run。
 
@@ -190,6 +462,8 @@ def run_agent(
         root_task_id=str(payload.metadata.get("_root_task_id", "")),
         collaboration_snapshot_id=str(payload.metadata.get("_collaboration_snapshot_id", "")),
         business_operation_id=str(payload.metadata.get("_business_operation_id", "")),
+        orchestration_owner=_orchestration_owner,
+        workflow_id=_workflow_id,
     )
     # Run 是一次执行尝试；Turn 是该 Session 内的一次用户交互。稳定派生 ID 使
     # Temporal Activity 重放不会凭空创建第二个 Turn。
@@ -241,7 +515,9 @@ def run_agent(
                 metadata={"source": "runtime-api"},
             )
         except InvalidRunTransition as exc:
-            raise HTTPException(status_code=409, detail={"code": "invalid_run_state", "message": str(exc)}) from exc
+            raise HTTPException(
+                status_code=409, detail={"code": "invalid_run_state", "message": str(exc)}
+            ) from exc
         if state_event is not None:
             container.publish_session_event(state_event)
     if run_already_started:
@@ -250,7 +526,9 @@ def run_agent(
         except RuntimeError as exc:
             # 对不确定副作用 fail-closed；Temporal Activity 会按既有策略稍后恢复，
             # 同步调用方得到明确的“等待对账”而不是偷偷重复调用业务系统。
-            raise HTTPException(status_code=409, detail={"code": "tool_recovery_pending", "message": str(exc)}) from exc
+            raise HTTPException(
+                status_code=409, detail={"code": "tool_recovery_pending", "message": str(exc)}
+            ) from exc
     try:
         if not run_already_started:
             user_event = container.run_store.append_session_event(
@@ -333,6 +611,8 @@ def run_agent(
                 "root_task_id": execution.root_task_id or execution.run_id,
                 "collaboration_snapshot_id": execution.collaboration_snapshot_id,
                 "business_operation_id": execution.business_operation_id,
+                "orchestration_owner": execution.orchestration_owner.value,
+                "workflow_id": execution.workflow_id,
                 "trace_id": execution.trace_id,
                 "agent_id": execution.agent_id,
                 "agent_version": execution.agent_version,
@@ -527,7 +807,9 @@ def resume_run(
         raise HTTPException(status_code=404, detail="run not found")
     expected_status = "WAITING_INPUT" if _user_input is not None else "WAITING_APPROVAL"
     if run.status != expected_status:
-        raise HTTPException(status_code=409, detail=f"run is not waiting for {expected_status.lower()}")
+        raise HTTPException(
+            status_code=409, detail=f"run is not waiting for {expected_status.lower()}"
+        )
     if run.cancel_requested:
         raise HTTPException(status_code=409, detail="run was cancelled")
     # Judge 策略的候选选择只能由 Governance 工作负载提交；Runtime 不同步调用
@@ -571,7 +853,9 @@ def resume_run(
         except (LookupError, InvalidRunTransition, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if claimed_control is None or claimed_control.message_id != message_id:
-            raise HTTPException(status_code=409, detail="approval inbox input is unavailable for resume")
+            raise HTTPException(
+                status_code=409, detail="approval inbox input is unavailable for resume"
+            )
     effective_payload = (
         AgentResumeRequest.model_validate(claimed_control.control_input)
         if claimed_control is not None
@@ -580,11 +864,11 @@ def resume_run(
     budget = run.result.get("budget", {})
     max_steps = int(budget.get("max_steps", container.settings.agent_max_steps))
     try:
-        compiled_plan = CompiledAgentPlan.model_validate(
-            run.result.get("_compiled_plan")
-        )
+        compiled_plan = CompiledAgentPlan.model_validate(run.result.get("_compiled_plan"))
     except Exception as exc:
-        raise HTTPException(status_code=409, detail="persisted execution plan is unavailable") from exc
+        raise HTTPException(
+            status_code=409, detail="persisted execution plan is unavailable"
+        ) from exc
     if _is_durable_plan(compiled_plan) and not _temporal_worker_execution:
         queue = _capability(container, RuntimeCapability.WORKFLOW)
         if not hasattr(queue, "resume"):
@@ -621,7 +905,10 @@ def resume_run(
     # 只有实际执行恢复的进程才能推进状态机；外层 Durable API 仅投递 Signal，
     # 否则 Worker 会看到已经 RUNNING 的 Run 并拒绝自身恢复。
     input_metadata = (
-        {"mailbox_message_id": _user_input.message_id, "input_type": RunMailboxInputType.STEERING.value}
+        {
+            "mailbox_message_id": _user_input.message_id,
+            "input_type": RunMailboxInputType.STEERING.value,
+        }
         if _user_input is not None
         else {
             "mailbox_message_id": claimed_control.message_id if claimed_control else "",
@@ -643,11 +930,15 @@ def resume_run(
         _, state_event = container.run_store.transition_state(
             x_tenant_id,
             run_id,
-            AgentRunEvent.STEERING_RECEIVED if _user_input is not None else AgentRunEvent.APPROVAL_RECEIVED,
+            AgentRunEvent.STEERING_RECEIVED
+            if _user_input is not None
+            else AgentRunEvent.APPROVAL_RECEIVED,
             metadata=input_metadata,
         )
     except InvalidRunTransition as exc:
-        raise HTTPException(status_code=409, detail={"code": "invalid_run_state", "message": str(exc)}) from exc
+        raise HTTPException(
+            status_code=409, detail={"code": "invalid_run_state", "message": str(exc)}
+        ) from exc
     if state_event is not None:
         container.publish_session_event(state_event)
     result = container.agent_harness.resume(
@@ -721,7 +1012,9 @@ def resume_run(
     if claimed_control is not None and not container.run_store.acknowledge_mailbox_input(
         claimed_control.message_id, claimed_control.lease_token
     ):
-        raise HTTPException(status_code=409, detail="approval inbox lease was lost before acknowledgement")
+        raise HTTPException(
+            status_code=409, detail="approval inbox lease was lost before acknowledgement"
+        )
     return body
 
 
@@ -805,9 +1098,9 @@ def get_run(
     x_tenant_id, _, _ = _trusted_identity(request, x_tenant_id, "anonymous", "")
     run = request.app.state.container.run_store.get(x_tenant_id, run_id)
     if run is None:
-        queued = _capability(
-            request.app.state.container, RuntimeCapability.WORKFLOW
-        ).get(x_tenant_id, run_id)
+        queued = _capability(request.app.state.container, RuntimeCapability.WORKFLOW).get(
+            x_tenant_id, run_id
+        )
         if queued is None:
             raise HTTPException(status_code=404, detail="run not found")
         return queued
@@ -911,7 +1204,9 @@ def enqueue_run_input(
             request,
             x_tenant_id=x_tenant_id,
             x_user_id=x_user_id,
-            _user_input=UserInputResume(message_id=claimed.message_id, lease_token=claimed.lease_token),
+            _user_input=UserInputResume(
+                message_id=claimed.message_id, lease_token=claimed.lease_token
+            ),
         )
     return {"run_id": run_id, "message_id": message_id, "status": "QUEUED"}
 

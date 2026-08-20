@@ -204,6 +204,52 @@ def test_write_requires_idempotency_key(gateway_factory, trusted_headers) -> Non
     assert response.json()["error"]["code"] == "idempotency_key_required"
 
 
+def test_runtime_write_requires_admitted_step_identity(gateway_factory, trusted_headers) -> None:
+    """带发布快照的写动作必须绑定准入计划和具体 operation; 避免把计划准入当作动作授权。"""
+    client = gateway_factory(
+        [
+            (
+                tool_spec(
+                    "admitted_write",
+                    permission="tool:write",
+                    risk=ToolRisk.WRITE_LOW_RISK,
+                ),
+                lambda args, context: {"ok": True},
+            )
+        ]
+    )
+    base = {
+        **trusted_headers,
+        "X-Snapshot-Id": "snapshot-1",
+        "X-Idempotency-Key": "admitted-write-0001",
+    }
+    rejected = client.post(
+        "/api/v1/tools/admitted_write/invoke",
+        headers=base,
+        json={"arguments": {"value": "ok"}},
+    )
+    admitted = client.post(
+        "/api/v1/tools/admitted_write/invoke",
+        headers={
+            **base,
+            "X-Operation-Id": "operation-1",
+            "X-Step-Id": "step-1",
+            "X-Plan-Id": "plan-1",
+            "X-Plan-Admission-Id": "admission-1",
+        },
+        json={"arguments": {"value": "ok"}},
+    )
+
+    assert rejected.status_code == 403
+    assert admitted.status_code == 200
+    assert admitted.json()["authorization"]["decision"] == "ALLOW"
+    events = client.app.state.container.repository.pending_events()
+    assert {item["event_type"] for item in events} == {
+        "tool.authorization.decided",
+        "tool.execution.completed",
+    }
+
+
 def test_execution_context_is_preserved_and_emits_durable_event(
     gateway_factory, trusted_headers
 ) -> None:

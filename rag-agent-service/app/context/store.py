@@ -67,7 +67,9 @@ class ConversationStore:
         key = str(candidate.metadata.get("idempotency_key", "")).strip()
         return bool(
             key
-            and any(str(item.metadata.get("idempotency_key", "")).strip() == key for item in messages)
+            and any(
+                str(item.metadata.get("idempotency_key", "")).strip() == key for item in messages
+            )
         )
 
     def delete(self, session_id: str) -> bool:

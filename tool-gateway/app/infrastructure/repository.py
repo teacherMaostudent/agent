@@ -185,15 +185,11 @@ class SqliteRepository:
             )
         return InvocationResponse.model_validate_json(row["response_json"])
 
-    def idempotency_state(
-        self, tenant_id: str, tool_name: str, key: str
-    ) -> ToolExecutionState:
+    def idempotency_state(self, tenant_id: str, tool_name: str, key: str) -> ToolExecutionState:
         """读取工具幂等记录的恢复状态; 查询不会创建、释放或执行任何工具。"""
         now = _now().isoformat()
         with self._lock:
-            self.connection.execute(
-                "DELETE FROM idempotency_records WHERE expires_at <= ?", (now,)
-            )
+            self.connection.execute("DELETE FROM idempotency_records WHERE expires_at <= ?", (now,))
             row = self.connection.execute(
                 """
                 SELECT status, response_json FROM idempotency_records

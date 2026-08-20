@@ -37,6 +37,10 @@ class ToolContext:
     tool_execution_id: str = ""
     root_task_id: str = ""
     business_operation_id: str = ""
+    operation_id: str = ""
+    step_id: str = ""
+    plan_id: str = ""
+    plan_admission_id: str = ""
     idempotency_key: str = ""
     trace_id: str = ""
     run_id: str = ""
@@ -123,7 +127,9 @@ class ToolRegistry:
             if item.required_permissions.issubset(permissions)
         ]
 
-    def execute(self, name: str, arguments: dict[str, Any], context: ToolContext) -> Any:
+    def execute(
+        self, name: str, arguments: dict[str, Any], context: ToolContext
+    ) -> Any:
         """在本地执行工具并强制参数、权限、超时与审计边界。
 
         超时后不等待协作式任务完成，避免请求线程被卡住；生产副作用工具仍须在
@@ -141,10 +147,14 @@ class ToolRegistry:
                 validated = definition.args_model.model_validate(arguments)
             except ValidationError as exc:
                 raise ToolRegistryError(f"invalid arguments for {name}: {exc}") from exc
-            with trace.get_tracer(__name__).start_as_current_span(f"tool.{name}") as span:
+            with trace.get_tracer(__name__).start_as_current_span(
+                f"tool.{name}"
+            ) as span:
                 span.set_attribute("tool.name", name)
                 span.set_attribute("tenant.id", context.tenant_id)
-                pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"tool-{name}")
+                pool = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix=f"tool-{name}"
+                )
                 future = pool.submit(definition.handler, validated, context)
                 try:
                     return future.result(timeout=definition.timeout_seconds)

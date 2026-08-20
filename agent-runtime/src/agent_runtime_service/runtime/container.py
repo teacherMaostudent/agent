@@ -17,6 +17,8 @@ from platform_sdk.clients.rag import HttpRagQueryClient
 from platform_sdk.clients.tool_gateway import ToolGatewayClient
 from platform_sdk.contracts.capabilities import RuntimeCapability
 from platform_sdk.contracts.execution import ExecutionContext
+from platform_sdk.contracts.skills import CapabilityProviderDescriptor
+from platform_sdk.contracts.workflow import CompiledWorkflowPlan
 from platform_sdk.tools.registry import ToolContext
 
 from agent_runtime_service.agent.decision_engine import GatewayDecisionEngine, OfflineDecisionEngine
@@ -26,6 +28,8 @@ from agent_runtime_service.runtime.agent_manager import AgentManager
 from agent_runtime_service.runtime.async_jobs import AsyncRunQueue
 from agent_runtime_service.runtime.budget import BudgetGuard
 from agent_runtime_service.runtime.capabilities import CapabilityRegistry, CapabilityUnavailable
+from agent_runtime_service.runtime.capability_dispatcher import GovernedCapabilityDispatcher
+from agent_runtime_service.runtime.capability_handlers import RuntimeCapabilityHandlers
 from agent_runtime_service.runtime.catalog import ExecutorCatalog
 from agent_runtime_service.runtime.code_runner import ControlledCodeRunner, SandboxPolicy
 from agent_runtime_service.runtime.event_bus import (
@@ -35,15 +39,16 @@ from agent_runtime_service.runtime.event_bus import (
 )
 from agent_runtime_service.runtime.harness import (
     AgentHarness,
-    DurableExecutor,
     GraphExecutor,
     SimpleExecutor,
+    TemporalDurabilityAdapter,
 )
 from agent_runtime_service.runtime.integration import (
     ControlPlaneClient,
     GovernanceOutboxPublisher,
     RuntimeStore,
 )
+from agent_runtime_service.runtime.models import RuntimeBudget
 from agent_runtime_service.runtime.planner import (
     GatewaySemanticAnalyzer,
     HeuristicSemanticAnalyzer,
@@ -54,6 +59,7 @@ from agent_runtime_service.runtime.run_state import AgentRunEvent, InvalidRunTra
 from agent_runtime_service.runtime.runtime_context import RuntimeContext
 from agent_runtime_service.runtime.session_archive import SessionArchiveService
 from agent_runtime_service.runtime.session_events import ModelVisibleMessage, RuntimeEventType
+from agent_runtime_service.runtime.skill_runtime import GatewaySkillExecutor
 from agent_runtime_service.runtime.stop_policy import (
     BudgetStopPolicy,
     CancellationStopPolicy,
@@ -61,6 +67,7 @@ from agent_runtime_service.runtime.stop_policy import (
 )
 from agent_runtime_service.runtime.subagents import SubAgentDelegation, SubAgentManager
 from agent_runtime_service.runtime.temporal_queue import TemporalRunQueue
+from agent_runtime_service.runtime.workflow_runtime import ZeroAgentWorkflowRuntime
 
 
 class AgentRuntimeContainer:
@@ -195,17 +202,14 @@ class AgentRuntimeContainer:
             workflow=self.async_runs,
             agents=agent_manager,
         )
+        self.skill_executor = GatewaySkillExecutor(self.runtime_context)
         decision_engine = (
-            GatewayDecisionEngine(
-                self.runtime_context.require_llm(), self.settings.agent_model
-            )
+            GatewayDecisionEngine(self.runtime_context.require_llm(), self.settings.agent_model)
             if self.settings.llm_enabled
             else OfflineDecisionEngine()
         )
         semantic_analyzer = (
-            GatewaySemanticAnalyzer(
-                self.runtime_context.require_llm(), self.settings.agent_model
-            )
+            GatewaySemanticAnalyzer(self.runtime_context.require_llm(), self.settings.agent_model)
             if self.settings.llm_enabled
             else HeuristicSemanticAnalyzer()
         )
@@ -230,17 +234,18 @@ class AgentRuntimeContainer:
                 )
             ),
             mailbox=self.run_store,
+            capability_handler_factory=self._capability_handlers,
         )
         # 执行器目录只在启动期装配; 请求路径不能注册或替换业务执行器。
         graph_executor = GraphExecutor(graph)
         executor_profiles = {
-                "simple/v1": SimpleExecutor(),
-                "agentic/v1": graph_executor,
-                "declarative-langgraph/v1": graph_executor,
-                "temporal-simple/v1": DurableExecutor(SimpleExecutor()),
-                "temporal-agentic/v1": DurableExecutor(graph_executor),
-                "temporal-workflow/v1": DurableExecutor(graph_executor),
-            }
+            "simple/v1": SimpleExecutor(),
+            "agentic/v1": graph_executor,
+            "declarative-langgraph/v1": graph_executor,
+            "temporal-simple/v1": TemporalDurabilityAdapter(SimpleExecutor()),
+            "temporal-agentic/v1": TemporalDurabilityAdapter(graph_executor),
+            "temporal-workflow/v1": TemporalDurabilityAdapter(graph_executor),
+        }
         if self.settings.code_runner_enabled:
             # Code Runner still uses the bounded Graph; its Snapshot grants only the remote sandbox tool.
             executor_profiles["code-runner/v1"] = graph_executor
@@ -287,6 +292,195 @@ class AgentRuntimeContainer:
             self._checkpoint_context.__exit__(None, None, None)
         if self._checkpoint_connection is not None:
             self._checkpoint_connection.close()
+
+    def _capability_handlers(self, state: dict[str, Any]) -> dict:
+        """为 Agent 当前步骤创建缩小权限/预算的 Provider 处理器。"""
+        budget = RuntimeBudget.model_validate(state["budget"])
+        permissions = frozenset(str(item) for item in state.get("permissions", []))
+        return RuntimeCapabilityHandlers(
+            self,
+            permissions=permissions,
+            budget=budget,
+            plan_id=str(state.get("execution_plan", {}).get("plan_id", "")),
+            plan_admission_id=str(state.get("plan_admission", {}).get("admission_id", "")),
+            step_id=f"step-{int(state.get('step_count', 0)) + 1}",
+            workflow_runner=lambda provider, payload, context: self._run_embedded_workflow(
+                provider,
+                payload,
+                context,
+                permissions=permissions,
+                budget=budget,
+                depth=0,
+            ),
+        ).handlers()
+
+    def _run_embedded_workflow(
+        self,
+        provider: CapabilityProviderDescriptor,
+        payload: dict[str, Any],
+        context: ExecutionContext,
+        *,
+        permissions: frozenset[str],
+        budget: RuntimeBudget,
+        depth: int,
+    ) -> dict[str, Any]:
+        """在 Agent 所有的 RootTask 内执行有界 Workflow，Owner 仍为 AGENT。"""
+        if depth >= 4:
+            raise RuntimeError("embedded workflow composition exceeds depth limit")
+        if self.control_plane is None:
+            raise RuntimeError("Control Plane is required for Workflow capability")
+        resolution = self.control_plane.resolve_workflow(
+            context.tenant_id,
+            provider.provider_id,
+            str(payload.get("environment", "production")),
+            context.trace_id,
+        )
+        plan = CompiledWorkflowPlan.model_validate(resolution.get("plan"))
+        digest = str(resolution.get("artifact_digest", ""))
+        if plan.version != provider.version or (
+            provider.artifact_digest and provider.artifact_digest != digest
+        ):
+            raise RuntimeError("Workflow provider version or artifact digest drift")
+        if str(payload.get("launch_mode", "same_root")) == "independent":
+            return self._launch_independent_workflow(
+                plan,
+                resolution,
+                payload,
+                context,
+                permissions=permissions,
+                budget=budget,
+            )
+        nested_handlers = RuntimeCapabilityHandlers(
+            self,
+            permissions=permissions,
+            budget=budget,
+            workflow_runner=lambda child, child_payload, child_context: self._run_embedded_workflow(
+                child,
+                child_payload,
+                child_context,
+                permissions=permissions,
+                budget=budget,
+                depth=depth + 1,
+            ),
+        )
+        dispatcher = GovernedCapabilityDispatcher(
+            plan.capability_providers,
+            plan.capability_routing,
+            nested_handlers.handlers(),
+        )
+        result = ZeroAgentWorkflowRuntime(dispatcher.dispatch_output).run(
+            plan,
+            dict(payload.get("input") or payload),
+            context.model_copy(update={"workflow_id": plan.workflow_id}),
+            embedded=True,
+        )
+        return result.model_dump(mode="json")
+
+    def _launch_independent_workflow(
+        self,
+        plan: CompiledWorkflowPlan,
+        resolution: dict[str, Any],
+        payload: dict[str, Any],
+        context: ExecutionContext,
+        *,
+        permissions: frozenset[str],
+        budget: RuntimeBudget,
+    ) -> dict[str, Any]:
+        """启动拥有新 RootTask 的 Workflow，原 Agent 只获得运行引用。"""
+        from types import SimpleNamespace
+
+        from platform_sdk.contracts.runtime_api import WorkflowRunRequest
+
+        from agent_runtime_service.service_api.runtime_api import run_workflow
+
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(container=self)),
+            scope={"auth.claims": {"worker": "agent-runtime"}},
+        )
+        return run_workflow(
+            WorkflowRunRequest(
+                workflow_id=plan.workflow_id,
+                environment=str(payload.get("environment", "production")),
+                input=dict(payload.get("input") or payload),
+                deadline_seconds=max(1, int(context.remaining_seconds())),
+                max_cost_usd=budget.remaining_cost_usd,
+            ),
+            request,
+            x_tenant_id=context.tenant_id,
+            x_user_id=context.user_id,
+            x_permissions=",".join(sorted(permissions)),
+            x_request_id=f"{context.request_id}-workflow",
+            x_trace_id=context.trace_id,
+            _release_resolution=resolution,
+        )
+
+    def _run_agent_capability(
+        self,
+        provider: CapabilityProviderDescriptor,
+        payload: dict[str, Any],
+        context: ExecutionContext,
+        *,
+        permissions: frozenset[str],
+        budget: RuntimeBudget,
+    ) -> dict[str, Any]:
+        """Workflow 调用独立 Agent 运行，子 Agent 重新解析自己的 Release。"""
+        from types import SimpleNamespace
+
+        from platform_sdk.contracts.runtime_api import AgentRunRequest
+
+        from agent_runtime_service.service_api.runtime_api import run_agent
+
+        if self.control_plane is None:
+            raise RuntimeError("Control Plane is required for Agent capability")
+        session_id = f"workflow-agent-{uuid4().hex}"
+        resolution = self.control_plane.resolve(
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            agent_id=provider.provider_id,
+            environment=str(payload.get("environment", "production")),
+            session_id=session_id,
+            trace_id=context.trace_id,
+        )
+        snapshot = dict(resolution.get("snapshot") or {})
+        semantic = str(snapshot.get("agent_version", "")).split(":")[-1]
+        digest = str((snapshot.get("runtime_artifact") or {}).get("snapshot_hash", ""))
+        if semantic != provider.version or (
+            provider.artifact_digest and digest != provider.artifact_digest
+        ):
+            raise RuntimeError("Agent provider version or artifact digest drift")
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(container=self)),
+            scope={"auth.claims": {"worker": "agent-runtime"}},
+        )
+        task = payload.get("task")
+        if task is None and isinstance(payload.get("input"), dict):
+            task = payload["input"].get("task")
+        task_text = str(task or "").strip()
+        if not task_text:
+            raise ValueError("Agent capability requires a non-empty task")
+        return run_agent(
+            AgentRunRequest(
+                task=task_text,
+                agent_id=provider.provider_id,
+                environment=str(payload.get("environment", "production")),
+                session_id=session_id,
+                metadata={
+                    "_parent_run_id": context.run_id,
+                    "_root_task_id": context.root_task_id,
+                },
+                max_steps=min(30, budget.max_steps),
+                max_cost_usd=budget.remaining_cost_usd,
+            ),
+            request,
+            x_tenant_id=context.tenant_id,
+            x_user_id=context.user_id,
+            x_permissions=",".join(sorted(permissions)),
+            x_request_id=f"{context.request_id}-agent",
+            x_trace_id=context.trace_id,
+            _release_resolution=resolution,
+            _orchestration_owner=context.orchestration_owner,
+            _workflow_id=context.workflow_id,
+        )
 
     def _is_cancelled(self, tenant_id: str, run_id: str) -> bool:
         """读取持久化协作取消标记，供 Graph 在外部调用前中止。"""
@@ -407,6 +601,8 @@ class AgentRuntimeContainer:
             attempt_budget_remaining=int(state.get("attempt_budget_remaining", 0)),
             parent_run_id=str(state.get("metadata", {}).get("_parent_run_id", "")),
             parent_session_id=str(state.get("metadata", {}).get("_parent_session_id", "")),
+            orchestration_owner=str(state.get("orchestration_owner", "agent")),
+            workflow_id=str(state.get("workflow_id", "")),
         )
         event = self.run_store.append_session_event(
             context,
@@ -436,11 +632,16 @@ class AgentRuntimeContainer:
                 context.tenant_id,
                 context.run_id,
                 trigger,
-                metadata={"source_event_id": event.event_id, "source_event_type": event.event_type.value},
+                metadata={
+                    "source_event_id": event.event_id,
+                    "source_event_type": event.event_type.value,
+                },
             )
         except InvalidRunTransition as exc:
             # 不能吞掉状态漂移；否则副作用完成但 Run 生命周期会变得不可解释。
-            raise RuntimeError(f"run state transition rejected after {event.event_type.value}") from exc
+            raise RuntimeError(
+                f"run state transition rejected after {event.event_type.value}"
+            ) from exc
         if state_event is not None:
             self.publish_session_event(state_event)
 
@@ -485,7 +686,9 @@ class AgentRuntimeContainer:
                 x_user_id=str(control_input.get("decided_by") or submission["user_id"]),
                 _temporal_worker_execution=True,
                 _user_input=(
-                    UserInputResume.model_validate(user_input) if isinstance(user_input, dict) else None
+                    UserInputResume.model_validate(user_input)
+                    if isinstance(user_input, dict)
+                    else None
                 ),
                 _claimed_control=(
                     ClaimedRunMailboxItem(
@@ -509,6 +712,33 @@ class AgentRuntimeContainer:
             x_run_id=submission["run_id"],
             _temporal_worker_execution=True,
             _release_resolution=submission.get("release_resolution"),
+        )
+
+    def _execute_workflow_submission(self, submission: dict) -> dict:
+        """让 Temporal Activity 复用唯一 Workflow API 执行逻辑和契约验证。"""
+        from types import SimpleNamespace
+
+        from platform_sdk.contracts.runtime_api import WorkflowRunRequest
+
+        from agent_runtime_service.service_api.runtime_api import run_workflow
+
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(container=self)),
+            scope={"auth.claims": {"worker": "agent-runtime"}},
+        )
+        return run_workflow(
+            WorkflowRunRequest.model_validate(submission["payload"]),
+            request,
+            x_tenant_id=submission["tenant_id"],
+            x_user_id=submission["user_id"],
+            x_permissions=submission["permissions"],
+            x_request_id=submission["request_id"],
+            x_trace_id=submission["trace_id"],
+            _temporal_worker_execution=True,
+            _release_resolution=submission.get("release_resolution"),
+            _run_id=submission["run_id"],
+            _checkpoint=submission.get("checkpoint"),
+            _signal=submission.get("signal"),
         )
 
     def _invoke_subagent(

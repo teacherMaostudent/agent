@@ -105,7 +105,9 @@ class HttpContextClient:
         execution_headers: dict[str, str] | None = None,
     ) -> ContextPackage:
         """调用上下文组装 API，并透传 Runtime 生成的受控执行头。"""
-        with trace.get_tracer(__name__).start_as_current_span("runtime.context_assemble"):
+        with trace.get_tracer(__name__).start_as_current_span(
+            "runtime.context_assemble"
+        ):
             response = self.client.post(
                 f"{self.base_url}/api/v1/context/assemble",
                 json=request.model_dump(mode="json"),

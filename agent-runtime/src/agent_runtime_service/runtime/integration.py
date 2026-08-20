@@ -123,9 +123,51 @@ class ControlPlaneClient:
         response.raise_for_status()
         return response.json()
 
+    def resolve_skill(
+        self, tenant_id: str, skill_id: str, version: str, trace_id: str
+    ) -> dict[str, Any]:
+        """解析 Active SkillVersion，摘要漂移由 Runtime 再次校验。"""
+        headers = {"X-Tenant-Id": tenant_id, "X-User-Id": "agent-runtime", "X-Trace-Id": trace_id}
+        if self.runtime_key:
+            headers["X-Runtime-Key"] = self.runtime_key
+        if self.workload_identity is not None:
+            headers.update(self.workload_identity.authorization_header())
+        response = httpx.get(
+            f"{self.base_url}/internal/v1/skills/{skill_id}/versions/{version}/resolve",
+            headers=headers,
+            timeout=self.timeout,
+            **self.mtls,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def resolve_workflow(
+        self, tenant_id: str, workflow_id: str, environment: str, trace_id: str
+    ) -> dict[str, Any]:
+        """解析目标环境的 Active WorkflowVersion，Runtime 不读取 Draft。"""
+        headers = {
+            "X-Tenant-Id": tenant_id,
+            "X-User-Id": "agent-runtime",
+            "X-Trace-Id": trace_id,
+        }
+        if self.runtime_key:
+            headers["X-Runtime-Key"] = self.runtime_key
+        if self.workload_identity is not None:
+            headers.update(self.workload_identity.authorization_header())
+        response = httpx.get(
+            f"{self.base_url}/internal/v1/workflows/{workflow_id}/resolve",
+            params={"environment": environment},
+            headers=headers,
+            timeout=self.timeout,
+            **self.mtls,
+        )
+        response.raise_for_status()
+        return response.json()
+
 
 class RuntimeStoreOperations:
     """与持久化方言无关的 Run、Outbox 与 Session Ledger 操作。"""
+
     """Small durable Run + transactional-outbox store; PostgreSQL is the production adapter."""
 
     def __init__(self, path: Path, schema_registry: SchemaRegistry | None = None) -> None:
@@ -227,15 +269,35 @@ class RuntimeStoreOperations:
             )
             session_columns = {
                 row["name"]
-                for row in self._connection.execute("PRAGMA table_info(runtime_session_events)").fetchall()
+                for row in self._connection.execute(
+                    "PRAGMA table_info(runtime_session_events)"
+                ).fetchall()
             }
             for statement, column in [
-                ("ALTER TABLE runtime_session_events ADD COLUMN parent_run_id TEXT NOT NULL DEFAULT ''", "parent_run_id"),
-                ("ALTER TABLE runtime_session_events ADD COLUMN turn_id TEXT NOT NULL DEFAULT ''", "turn_id"),
-                ("ALTER TABLE runtime_session_events ADD COLUMN step_id TEXT NOT NULL DEFAULT ''", "step_id"),
-                ("ALTER TABLE runtime_session_events ADD COLUMN epoch_id TEXT NOT NULL DEFAULT ''", "epoch_id"),
-                ("ALTER TABLE runtime_session_events ADD COLUMN attempt_id TEXT NOT NULL DEFAULT ''", "attempt_id"),
-                ("ALTER TABLE runtime_session_events ADD COLUMN payload_version TEXT NOT NULL DEFAULT 'session-event/v1'", "payload_version"),
+                (
+                    "ALTER TABLE runtime_session_events ADD COLUMN parent_run_id TEXT NOT NULL DEFAULT ''",
+                    "parent_run_id",
+                ),
+                (
+                    "ALTER TABLE runtime_session_events ADD COLUMN turn_id TEXT NOT NULL DEFAULT ''",
+                    "turn_id",
+                ),
+                (
+                    "ALTER TABLE runtime_session_events ADD COLUMN step_id TEXT NOT NULL DEFAULT ''",
+                    "step_id",
+                ),
+                (
+                    "ALTER TABLE runtime_session_events ADD COLUMN epoch_id TEXT NOT NULL DEFAULT ''",
+                    "epoch_id",
+                ),
+                (
+                    "ALTER TABLE runtime_session_events ADD COLUMN attempt_id TEXT NOT NULL DEFAULT ''",
+                    "attempt_id",
+                ),
+                (
+                    "ALTER TABLE runtime_session_events ADD COLUMN payload_version TEXT NOT NULL DEFAULT 'session-event/v1'",
+                    "payload_version",
+                ),
             ]:
                 if column not in session_columns:
                     self._connection.execute(statement)
@@ -258,7 +320,9 @@ class RuntimeStoreOperations:
                     self._connection.execute(statement)
             mailbox_columns = {
                 row["name"]
-                for row in self._connection.execute("PRAGMA table_info(runtime_run_mailbox)").fetchall()
+                for row in self._connection.execute(
+                    "PRAGMA table_info(runtime_run_mailbox)"
+                ).fetchall()
             }
             if "priority" not in mailbox_columns:
                 self._connection.execute(
@@ -300,9 +364,12 @@ class RuntimeStoreOperations:
                         "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
                         (tenant_id, root_task_id, max_cost_usd, max_steps, now, now),
                     )
-                elif float(row["max_cost_usd"]) != max_cost_usd or int(row["max_steps"]) != max_steps:
+                elif (
+                    float(row["max_cost_usd"]) != max_cost_usd or int(row["max_steps"]) != max_steps
+                ):
                     raise RuntimeLimitExceeded(
-                        "ROOT_BUDGET_MISMATCH", "The root task budget is immutable once execution starts."
+                        "ROOT_BUDGET_MISMATCH",
+                        "The root task budget is immutable once execution starts.",
                     )
                 self._connection.commit()
             except Exception:
@@ -338,13 +405,14 @@ class RuntimeStoreOperations:
                     (tenant_id, root_task_id),
                 ).fetchone()
                 if budget is None:
-                    raise RuntimeLimitExceeded("ROOT_BUDGET_NOT_FOUND", "The root task budget was not initialized.")
-                if (
-                    float(budget["spent_cost_usd"]) + float(budget["reserved_cost_usd"]) + cost_usd
-                    > float(budget["max_cost_usd"])
-                    or int(budget["consumed_steps"]) + int(budget["reserved_steps"]) + steps
-                    > int(budget["max_steps"])
-                ):
+                    raise RuntimeLimitExceeded(
+                        "ROOT_BUDGET_NOT_FOUND", "The root task budget was not initialized."
+                    )
+                if float(budget["spent_cost_usd"]) + float(
+                    budget["reserved_cost_usd"]
+                ) + cost_usd > float(budget["max_cost_usd"]) or int(budget["consumed_steps"]) + int(
+                    budget["reserved_steps"]
+                ) + steps > int(budget["max_steps"]):
                     raise RuntimeLimitExceeded(
                         "ROOT_BUDGET_EXCEEDED", "The shared root task budget is exhausted."
                     )
@@ -365,7 +433,9 @@ class RuntimeStoreOperations:
                 self._connection.rollback()
                 raise
 
-    def settle_root_budget(self, reservation_id: str, *, actual_cost_usd: float, actual_steps: int) -> None:
+    def settle_root_budget(
+        self, reservation_id: str, *, actual_cost_usd: float, actual_steps: int
+    ) -> None:
         """结算已预留额度并释放未使用部分；实际值超预留时拒绝以免账本失真。"""
         if actual_cost_usd < 0 or actual_steps < 0:
             raise ValueError("invalid root budget settlement")
@@ -387,7 +457,9 @@ class RuntimeStoreOperations:
                     (reservation["tenant_id"], reservation["root_task_id"]),
                 ).fetchone()
                 if budget is None:
-                    raise RuntimeLimitExceeded("ROOT_BUDGET_NOT_FOUND", "The root task budget was not initialized.")
+                    raise RuntimeLimitExceeded(
+                        "ROOT_BUDGET_NOT_FOUND", "The root task budget was not initialized."
+                    )
                 projected_cost = (
                     float(budget["spent_cost_usd"])
                     + float(budget["reserved_cost_usd"])
@@ -400,9 +472,12 @@ class RuntimeStoreOperations:
                     - int(reservation["reserved_steps"])
                     + actual_steps
                 )
-                if projected_cost > float(budget["max_cost_usd"]) or projected_steps > int(budget["max_steps"]):
+                if projected_cost > float(budget["max_cost_usd"]) or projected_steps > int(
+                    budget["max_steps"]
+                ):
                     raise RuntimeLimitExceeded(
-                        "ROOT_BUDGET_SETTLEMENT_EXCEEDED", "Actual usage exceeded the shared root task budget."
+                        "ROOT_BUDGET_SETTLEMENT_EXCEEDED",
+                        "Actual usage exceeded the shared root task budget.",
                     )
                 self._connection.execute(
                     "UPDATE runtime_root_budget_reservations SET settled_cost_usd = ?, settled_steps = ?, "
@@ -457,28 +532,28 @@ class RuntimeStoreOperations:
             try:
                 self._ensure_session_header_locked(context)
                 self._connection.execute(
-                """
+                    """
                 INSERT INTO runtime_runs (
                     run_id, tenant_id, user_id, agent_id, snapshot_id, request_id, status, runtime_state,
                     context_json, result_json, error_code, cancel_requested, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    run.run_id,
-                    run.tenant_id,
-                    run.user_id,
-                    run.agent_id,
-                    run.snapshot_id,
-                    context.request_id,
-                    run.status,
-                    run.runtime_state,
-                    run.context.model_dump_json(),
-                    "{}",
-                    "",
-                    0,
-                    now.isoformat(),
-                    now.isoformat(),
-                ),
+                    (
+                        run.run_id,
+                        run.tenant_id,
+                        run.user_id,
+                        run.agent_id,
+                        run.snapshot_id,
+                        context.request_id,
+                        run.status,
+                        run.runtime_state,
+                        run.context.model_dump_json(),
+                        "{}",
+                        "",
+                        0,
+                        now.isoformat(),
+                        now.isoformat(),
+                    ),
                 )
                 event = self._append_session_event_locked(
                     context,
@@ -607,9 +682,7 @@ class RuntimeStoreOperations:
                 raise
         return message_id
 
-    def claim_mailbox_input(
-        self, tenant_id: str, run_id: str
-    ) -> ClaimedRunMailboxItem | None:
+    def claim_mailbox_input(self, tenant_id: str, run_id: str) -> ClaimedRunMailboxItem | None:
         """用短租约串行领取一条输入；崩溃未确认的项会在租约到期后重新可领。"""
         now = datetime.now(UTC)
         lease_token = f"lease_{uuid4().hex}"
@@ -733,7 +806,12 @@ class RuntimeStoreOperations:
                         _governance_event_for_state_change(run.context, lifecycle_event), now
                     )
                     self._refresh_projection_locked(tenant_id, run.context.session_id)
-                    run = run.model_copy(update={"runtime_state": transition.current.value, "updated_at": datetime.fromisoformat(now)})
+                    run = run.model_copy(
+                        update={
+                            "runtime_state": transition.current.value,
+                            "updated_at": datetime.fromisoformat(now),
+                        }
+                    )
                 self._connection.commit()
             except Exception:
                 self._connection.rollback()
@@ -765,7 +843,10 @@ class RuntimeStoreOperations:
                 if previous_run is None:
                     self._connection.commit()
                     return None, None
-                if previous_run.cancel_requested or AgentRunState(previous_run.runtime_state).terminal:
+                if (
+                    previous_run.cancel_requested
+                    or AgentRunState(previous_run.runtime_state).terminal
+                ):
                     # 取消 API 必须幂等：重复调用只返回既有事实，不能因终态校验抛错。
                     self._connection.commit()
                     return previous_run, None
@@ -802,7 +883,10 @@ class RuntimeStoreOperations:
                     )
                     self._refresh_projection_locked(tenant_id, previous_run.context.session_id)
                     run = previous_run.model_copy(
-                        update={"runtime_state": AgentRunState.CANCELLED.value, "cancel_requested": True}
+                        update={
+                            "runtime_state": AgentRunState.CANCELLED.value,
+                            "cancel_requested": True,
+                        }
                     )
                 else:
                     run = self._from_row(
@@ -824,15 +908,15 @@ class RuntimeStoreOperations:
             try:
                 runtime_state = self._next_state_for_status_locked(run_id, status)
                 self._connection.execute(
-                "UPDATE runtime_runs SET status = ?, runtime_state = ?, result_json = ?, error_code = ?, updated_at = ? WHERE run_id = ?",
-                (
-                    status,
-                    runtime_state,
-                    json.dumps(result, ensure_ascii=False),
-                    error_code,
-                    datetime.now(UTC).isoformat(),
-                    run_id,
-                ),
+                    "UPDATE runtime_runs SET status = ?, runtime_state = ?, result_json = ?, error_code = ?, updated_at = ? WHERE run_id = ?",
+                    (
+                        status,
+                        runtime_state,
+                        json.dumps(result, ensure_ascii=False),
+                        error_code,
+                        datetime.now(UTC).isoformat(),
+                        run_id,
+                    ),
                 )
                 context = self._context_for_run_locked(run_id)
                 if context is not None:
@@ -885,7 +969,11 @@ class RuntimeStoreOperations:
                 self._enqueue_governance_locked(event, now)
                 context = self._context_for_run_locked(run_id)
                 state_event = None
-                if context is not None and previous_state is not None and previous_state != runtime_state:
+                if (
+                    context is not None
+                    and previous_state is not None
+                    and previous_state != runtime_state
+                ):
                     # 终态/中断态同样是状态迁移：保留专门的事实供跨 Run 审计关联，
                     # 而完成事件继续供 Governance 触发结果评测，二者职责不重叠。
                     state_event = self._append_session_event_locked(
@@ -1001,9 +1089,7 @@ class RuntimeStoreOperations:
             )
         local_events = self._all_session_events(tenant_id, session_id)
         if max_local_sequence is not None:
-            local_events = [
-                event for event in local_events if event.sequence <= max_local_sequence
-            ]
+            local_events = [event for event in local_events if event.sequence <= max_local_sequence]
         return [*inherited, *derive_model_messages(local_events)]
 
     def _all_session_events(self, tenant_id: str, session_id: str) -> list[RuntimeLifecycleEvent]:
@@ -1079,10 +1165,14 @@ class RuntimeStoreOperations:
                     self._connection.commit()
                     return existing
                 self._insert_session_header_locked(header)
-                self._append_header_event_locked(header, RuntimeEventType.SESSION_FORKED, {
-                    "parent_session_id": source_session_id,
-                    "seed_sequence": sequence,
-                })
+                self._append_header_event_locked(
+                    header,
+                    RuntimeEventType.SESSION_FORKED,
+                    {
+                        "parent_session_id": source_session_id,
+                        "seed_sequence": sequence,
+                    },
+                )
                 self._refresh_projection_locked(tenant_id, new_session_id)
                 self._connection.commit()
             except Exception:
@@ -1529,9 +1619,7 @@ class RuntimeStoreOperations:
             step_id=RuntimeStore._row_value(row, "step_id", ""),
             epoch_id=RuntimeStore._row_value(row, "epoch_id", ""),
             attempt_id=RuntimeStore._row_value(row, "attempt_id", ""),
-            payload_version=RuntimeStore._row_value(
-                row, "payload_version", "session-event/v1"
-            ),
+            payload_version=RuntimeStore._row_value(row, "payload_version", "session-event/v1"),
             status=row["status"],
             error_code=row["error_code"],
             metadata=RuntimeStore._event_payload(row["metadata_json"])[0],
@@ -1566,7 +1654,9 @@ class RuntimeStoreOperations:
             agent_id=row["agent_id"],
             snapshot_id=row["snapshot_id"],
             status=row["status"],
-            runtime_state=RuntimeStore._row_value(row, "runtime_state", AgentRunState.CREATED.value),
+            runtime_state=RuntimeStore._row_value(
+                row, "runtime_state", AgentRunState.CREATED.value
+            ),
             context=ExecutionContext.model_validate_json(row["context_json"]),
             result=json.loads(row["result_json"]),
             error_code=row["error_code"],
@@ -1678,9 +1768,15 @@ class GovernanceOutboxPublisher:
                 "execution_plan_id": plan.get("plan_id") if isinstance(plan, dict) else None,
                 "execution_plan_hash": plan.get("plan_hash") if isinstance(plan, dict) else None,
                 "planner_version": plan.get("planner_version") if isinstance(plan, dict) else None,
-                "analyzer_version": plan.get("analyzer_version") if isinstance(plan, dict) else None,
-                "input_fingerprint": plan.get("input_fingerprint") if isinstance(plan, dict) else None,
-                "policy_fingerprint": plan.get("policy_fingerprint") if isinstance(plan, dict) else None,
+                "analyzer_version": plan.get("analyzer_version")
+                if isinstance(plan, dict)
+                else None,
+                "input_fingerprint": plan.get("input_fingerprint")
+                if isinstance(plan, dict)
+                else None,
+                "policy_fingerprint": plan.get("policy_fingerprint")
+                if isinstance(plan, dict)
+                else None,
                 "cost_usd": budget.get("spent_cost_usd", 0),
                 "latency_ms": result.get("latency_ms", 0),
             },

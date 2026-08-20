@@ -47,9 +47,7 @@ class SemanticAnalysis(Protocol):
 
     uses_llm: bool
 
-    def analyze(
-        self, state: dict[str, Any]
-    ) -> tuple[IntentResult, list[EntityResult], SourcePlan]:
+    def analyze(self, state: dict[str, Any]) -> tuple[IntentResult, list[EntityResult], SourcePlan]:
         """从运行状态提取意图、实体和允许的数据源，不生成最终执行动作。"""
         ...
 
@@ -250,6 +248,42 @@ class RuntimePlanner:
             }
         )
         plan_payload = {
+            "orchestration_owner": "agent",
+            "topology": _execution_topology(compiled),
+            "reasoning_policy": compiled.get("reasoning_policy", {}),
+            "capability_policy": {
+                "required": sorted(
+                    {
+                        str(item.get("capability_id", "")).strip().upper()
+                        for item in compiled.get("capability_routing", [])
+                        if str(item.get("capability_id", "")).strip()
+                    }
+                ),
+                "optional": [],
+            },
+            "durability_policy": {
+                "durable": str(compiled.get("execution_requirements", {}).get("lifecycle", ""))
+                == "durable_workflow",
+                "retry_policy_id": "runtime-default/v1",
+            },
+            "governance_policy": {
+                "policy_version": str(
+                    compiled.get("governance_policy_version", "governance-default/v1")
+                ),
+                "qualification_required": True,
+                "audit_required": True,
+            },
+            "budget_policy": {
+                "max_cost_usd": budget.max_cost_usd,
+                "max_latency_ms": max(1, budget.remaining_ms),
+                "max_steps": budget.max_steps,
+            },
+            "version_bindings": {
+                "snapshot_id": str(state.get("snapshot_id", "")),
+                "graph_version": str(snapshot.get("graph_version", "")),
+                "model_policy_version": str(snapshot.get("model_policy_version", "")),
+                "capability_catalog_version": str(compiled.get("capability_catalog_version", "")),
+            },
             "intent": intent.model_dump(mode="json"),
             "entities": [item.model_dump(mode="json") for item in entities],
             "source_plan": sources.model_dump(mode="json"),
@@ -267,7 +301,9 @@ class RuntimePlanner:
             "execution_requirements": ExecutionRequirements.model_validate(
                 compiled.get("execution_requirements", {})
             ).model_dump(mode="json"),
-            "intent_catalog_version": str(compiled.get("intent_catalog_version", "platform-default/v1")),
+            "intent_catalog_version": str(
+                compiled.get("intent_catalog_version", "platform-default/v1")
+            ),
             "retrieval_policy": effective_policy.model_dump(mode="json"),
             "planner_version": "runtime-planner/v2",
             "analyzer_version": analyzer_version,
@@ -283,13 +319,33 @@ class RuntimePlanner:
 
 def _fingerprint(value: dict[str, Any]) -> str:
     """计算可复现 SHA-256 摘要，审计只保存输入特征而不重复保存用户原文。"""
-    canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    canonical = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def _execution_mode(executor_profile: str) -> ExecutionMode:
     """将发布 Profile 映射为可解释运行模式，避免 Planner 依赖具体执行器实例。"""
     return ExecutionMode(legacy_execution_mode(executor_profile))
+
+
+def _execution_topology(compiled: dict[str, Any]) -> str:
+    """从冻结委派与 Provider 契约投影真实 Agent 组织拓扑。
+
+    独立责任主体意味多 Agent；普通局部委派只是 SubAgent。该决定不从
+    模型输出推断，因此审计重放会得到相同结果。
+    """
+    agent_providers = [
+        item
+        for item in compiled.get("capability_providers", [])
+        if str(item.get("kind", "")).lower() == "agent"
+    ]
+    if any(bool(item.get("requires_independent_authority")) for item in agent_providers):
+        return "multi_agent"
+    if compiled.get("subagents") or agent_providers:
+        return "sub_agent"
+    return "single_agent"
 
 
 def _complexity(

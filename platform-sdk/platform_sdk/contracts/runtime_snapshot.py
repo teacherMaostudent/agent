@@ -17,6 +17,12 @@ from platform_sdk.contracts.execution_profile import (
     ExecutionRequirements,
     resolve_execution_profile,
 )
+from platform_sdk.contracts.orchestration import ReasoningPolicy
+from platform_sdk.contracts.skills import (
+    CapabilityProviderDescriptor,
+    CapabilityRoutingPolicy,
+    SkillBinding,
+)
 from platform_sdk.contracts.workflow import (
     WorkflowConditionError,
     compile_workflow_condition,
@@ -61,6 +67,12 @@ class CompiledRuntimePlan(BaseModel):
     data_region: str | None = None
     retrieval_policy: dict[str, Any] = Field(default_factory=dict)
     subagents: list[dict[str, Any]] = Field(default_factory=list)
+    skills: list[dict[str, Any]] = Field(default_factory=list)
+    capability_providers: list[CapabilityProviderDescriptor] = Field(
+        default_factory=list
+    )
+    capability_routing: list[CapabilityRoutingPolicy] = Field(default_factory=list)
+    reasoning_policy: ReasoningPolicy = Field(default_factory=ReasoningPolicy)
 
 
 class RuntimeSnapshotArtifact(BaseModel):
@@ -158,11 +170,15 @@ def compile_runtime_snapshot(
         [str(item) for item in fallback.get("models") or []] if fallback else []
     )
     execution_requirements, executor_profile = _compile_execution_requirements(spec)
+    skills = _compile_skill_bindings(spec)
+    capability_providers, capability_routing = _compile_capability_catalog(spec)
     intent_catalog = compile_intent_catalog(spec)
     if executor_profile == "code-runner/v1":
         code_runner_bindings = [
-            item for item in spec.get("tools") or []
-            if isinstance(item, dict) and item.get("tool_name") == "controlled_code_runner"
+            item
+            for item in spec.get("tools") or []
+            if isinstance(item, dict)
+            and item.get("tool_name") == "controlled_code_runner"
         ]
         if len(code_runner_bindings) != 1 or not code_runner_bindings[0].get("version"):
             raise RuntimeSnapshotCompileError(
@@ -180,7 +196,9 @@ def compile_runtime_snapshot(
             graph_node_kinds=node_kinds,
             executor_profile=executor_profile,
             execution_requirements=execution_requirements,
-            intent_catalog_version=str(spec.get("intent_catalog_version", "platform-default/v1")),
+            intent_catalog_version=str(
+                spec.get("intent_catalog_version", "platform-default/v1")
+            ),
             intent_catalog=intent_catalog,
             required_capabilities=required_runtime_capabilities(
                 {**spec, "runtime_executor": executor_profile}
@@ -196,6 +214,12 @@ def compile_runtime_snapshot(
             data_region=default_route.get("data_region"),
             retrieval_policy=dict(spec.get("retrieval_policy") or {}),
             subagents=[dict(item) for item in spec.get("subagents") or []],
+            skills=skills,
+            capability_providers=capability_providers,
+            capability_routing=capability_routing,
+            reasoning_policy=ReasoningPolicy.model_validate(
+                spec.get("reasoning_policy") or {}
+            ),
         ),
     )
 
@@ -239,12 +263,16 @@ def compile_intent_catalog(spec: dict[str, Any]) -> dict[str, Any] | None:
         )
     raw_definitions = raw_catalog.get("definitions")
     if not isinstance(raw_definitions, list) or not raw_definitions:
-        raise RuntimeSnapshotCompileError("published intent catalog must contain definitions")
+        raise RuntimeSnapshotCompileError(
+            "published intent catalog must contain definitions"
+        )
     definitions: list[dict[str, Any]] = []
     names: set[str] = set()
     for item in raw_definitions:
         if not isinstance(item, dict):
-            raise RuntimeSnapshotCompileError("published intent definition must be an object")
+            raise RuntimeSnapshotCompileError(
+                "published intent definition must be an object"
+            )
         name = str(item.get("name", "")).strip()
         domain = str(item.get("domain", "")).strip()
         action = str(item.get("action", "")).strip()
@@ -257,11 +285,17 @@ def compile_intent_catalog(spec: dict[str, Any]) -> dict[str, Any] | None:
             or not action
             or not isinstance(examples, list)
             or not examples
-            or not all(isinstance(example, str) and example.strip() for example in examples)
+            or not all(
+                isinstance(example, str) and example.strip() for example in examples
+            )
             or not isinstance(entities, list)
-            or not all(isinstance(entity, str) and entity.strip() for entity in entities)
+            or not all(
+                isinstance(entity, str) and entity.strip() for entity in entities
+            )
         ):
-            raise RuntimeSnapshotCompileError("published intent catalog contains an invalid definition")
+            raise RuntimeSnapshotCompileError(
+                "published intent catalog contains an invalid definition"
+            )
         names.add(name)
         definitions.append(
             {
@@ -273,6 +307,52 @@ def compile_intent_catalog(spec: dict[str, Any]) -> dict[str, Any] | None:
             }
         )
     return {"version": version, "definitions": definitions}
+
+
+def _compile_skill_bindings(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """校验 Agent 仅绑定精确 SkillVersion 与摘要，禁止运行时按名称解析“最新版”。"""
+    bindings: list[dict[str, Any]] = []
+    identities: set[tuple[str, str]] = set()
+    for raw in spec.get("skills") or []:
+        try:
+            binding = SkillBinding.model_validate(raw)
+        except Exception as exc:
+            raise RuntimeSnapshotCompileError(
+                "published skill binding is invalid"
+            ) from exc
+        identity = (binding.skill_id, binding.version)
+        if identity in identities:
+            raise RuntimeSnapshotCompileError("published skill bindings must be unique")
+        identities.add(identity)
+        bindings.append(binding.model_dump(mode="json"))
+    return bindings
+
+
+def _compile_capability_catalog(
+    spec: dict[str, Any],
+) -> tuple[list[CapabilityProviderDescriptor], list[CapabilityRoutingPolicy]]:
+    """冻结 Agent 可见 Provider 与逐能力回退顺序，拒绝引用未声明对象。"""
+    providers = [
+        CapabilityProviderDescriptor.model_validate(item)
+        for item in spec.get("capability_providers") or []
+    ]
+    policies = [
+        CapabilityRoutingPolicy.model_validate(item)
+        for item in spec.get("capability_routing") or []
+    ]
+    provider_ids = [item.provider_id for item in providers]
+    if len(provider_ids) != len(set(provider_ids)):
+        raise RuntimeSnapshotCompileError("capability provider IDs must be unique")
+    capability_ids = [item.capability_id for item in policies]
+    if len(capability_ids) != len(set(capability_ids)):
+        raise RuntimeSnapshotCompileError("capability routing policies must be unique")
+    known = set(provider_ids)
+    for policy in policies:
+        if not set(policy.provider_order) <= known:
+            raise RuntimeSnapshotCompileError(
+                f"capability routing references unknown provider: {policy.capability_id}"
+            )
+    return providers, policies
 
 
 def _mapping(value: dict[str, Any], name: str) -> dict[str, Any]:

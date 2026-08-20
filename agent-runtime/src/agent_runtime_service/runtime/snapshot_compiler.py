@@ -19,7 +19,12 @@ from platform_sdk.contracts.execution_profile import (
     ExecutionProfileError,
     resolve_execution_profile,
 )
+from platform_sdk.contracts.orchestration import ReasoningPolicy
 from platform_sdk.contracts.runtime_snapshot import compile_intent_catalog
+from platform_sdk.contracts.skills import (
+    CapabilityProviderDescriptor,
+    CapabilityRoutingPolicy,
+)
 from platform_sdk.contracts.workflow import WorkflowConditionError, compile_workflow_condition
 from pydantic import BaseModel, Field
 
@@ -60,6 +65,10 @@ class CompiledAgentPlan(BaseModel):
     data_region: str | None = None
     retrieval_policy: dict[str, Any] = Field(default_factory=dict)
     subagents: list[dict[str, Any]] = Field(default_factory=list)
+    skills: list[dict[str, Any]] = Field(default_factory=list)
+    capability_providers: list[CapabilityProviderDescriptor] = Field(default_factory=list)
+    capability_routing: list[CapabilityRoutingPolicy] = Field(default_factory=list)
+    reasoning_policy: ReasoningPolicy = Field(default_factory=ReasoningPolicy)
 
     @property
     def retrieval_top_k(self) -> int:
@@ -161,6 +170,7 @@ def compile_snapshot(
     except ValueError as exc:
         raise SnapshotCompileError(str(exc)) from exc
     canonical = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    capability_providers, capability_routing = _compile_capability_catalog(spec)
     return CompiledAgentPlan(
         contract_hash=hashlib.sha256(canonical.encode()).hexdigest(),
         graph_id=str(_required(graph, "graph_id")),
@@ -184,6 +194,10 @@ def compile_snapshot(
         data_region=default_route.get("data_region"),
         retrieval_policy=dict(spec.get("retrieval_policy") or {}),
         subagents=[dict(item) for item in spec.get("subagents") or []],
+        skills=_compile_skill_bindings(spec),
+        capability_providers=capability_providers,
+        capability_routing=capability_routing,
+        reasoning_policy=ReasoningPolicy.model_validate(spec.get("reasoning_policy") or {}),
     )
 
 
@@ -322,7 +336,9 @@ def _compile_workflow_policy(
 
     entry_role = normalized[entrypoint]
     if entry_role not in {"decision", "retrieval", "clarify"}:
-        raise SnapshotCompileError("published workflow entry must be decision, retrieval or clarify")
+        raise SnapshotCompileError(
+            "published workflow entry must be decision, retrieval or clarify"
+        )
     return {
         "version": "workflow-policy/v1",
         "entrypoint": entrypoint,
@@ -358,6 +374,49 @@ def _mapping(value: dict[str, Any], name: str) -> dict[str, Any]:
     return item
 
 
+def _compile_skill_bindings(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """复用共享契约校验精确 SkillVersion 绑定，拒绝 Runtime 按名称自由发现能力。"""
+    from platform_sdk.contracts.skills import SkillBinding
+
+    bindings: list[dict[str, Any]] = []
+    identities: set[tuple[str, str]] = set()
+    for raw in spec.get("skills") or []:
+        try:
+            binding = SkillBinding.model_validate(raw)
+        except Exception as exc:
+            raise SnapshotCompileError("published skill binding is invalid") from exc
+        identity = (binding.skill_id, binding.version)
+        if identity in identities:
+            raise SnapshotCompileError("published skill bindings must be unique")
+        identities.add(identity)
+        bindings.append(binding.model_dump(mode="json"))
+    return bindings
+
+
+def _compile_capability_catalog(
+    spec: dict[str, Any],
+) -> tuple[list[CapabilityProviderDescriptor], list[CapabilityRoutingPolicy]]:
+    """以与发布端相同的强类型契约复核 Provider 目录和回退链。"""
+    providers = [
+        CapabilityProviderDescriptor.model_validate(item)
+        for item in spec.get("capability_providers") or []
+    ]
+    policies = [
+        CapabilityRoutingPolicy.model_validate(item)
+        for item in spec.get("capability_routing") or []
+    ]
+    provider_ids = [item.provider_id for item in providers]
+    if len(provider_ids) != len(set(provider_ids)):
+        raise SnapshotCompileError("capability provider IDs must be unique")
+    policy_ids = [item.capability_id for item in policies]
+    if len(policy_ids) != len(set(policy_ids)):
+        raise SnapshotCompileError("capability routing policies must be unique")
+    known = set(provider_ids)
+    if any(not set(item.provider_order) <= known for item in policies):
+        raise SnapshotCompileError("capability routing references an unknown provider")
+    return providers, policies
+
+
 def _compile_execution_requirements(spec: dict[str, Any]) -> tuple[ExecutionRequirements, str]:
     """把新双轴声明或旧 Profile 编译为唯一部署别名，避免运行时猜测组合语义。"""
     try:
@@ -368,6 +427,13 @@ def _compile_execution_requirements(spec: dict[str, Any]) -> tuple[ExecutionRequ
         ExecutionRequirements(
             lifecycle=ExecutionLifecycle(shared.lifecycle),
             reasoning=ReasoningMode(shared.reasoning),
+            engine=shared.engine,
+            durability=shared.durability,
+            planning_strategy=shared.planning_strategy,
+            default_step_strategy=shared.default_step_strategy,
+            adaptive_step_strategy=shared.adaptive_step_strategy,
+            context_strategy=shared.context_strategy,
+            tool_presentation=shared.tool_presentation,
         ),
         profile,
     )

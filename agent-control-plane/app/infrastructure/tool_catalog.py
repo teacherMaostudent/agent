@@ -33,10 +33,7 @@ class ToolCatalogValidator:
             # Local/test deployments may not mount the production Catalog;
             # production configuration turns this check on explicitly.
             return
-        if not self.path.exists():
-            raise ValueError(f"Tool Catalog is unavailable: {self.path}")
-        catalog = json.loads(self.path.read_text(encoding="utf-8"))
-        self.registry.validate("tool-catalog.v1.json", catalog)
+        catalog = self._load_catalog()
         available = {(str(item["name"]), str(item["version"])) for item in catalog["tools"]}
         missing = [
             f"{item.get('tool_name')}:{item.get('version')}"
@@ -45,3 +42,50 @@ class ToolCatalogValidator:
         ]
         if missing:
             raise ValueError("published tools are absent from Tool Catalog: " + ", ".join(missing))
+
+    def resolve_bindings(self, bindings: list[dict]) -> list[dict]:
+        """以 Catalog 为风险与权限事实源，返回可冻结进 Snapshot 的精确绑定。"""
+        if not self.required:
+            return [dict(item) for item in bindings]
+        catalog = self._load_catalog()
+        indexed = {(str(item["name"]), str(item["version"])): item for item in catalog["tools"]}
+        resolved: list[dict] = []
+        for binding in bindings:
+            key = (str(binding.get("tool_name")), str(binding.get("version")))
+            catalog_item = indexed.get(key)
+            if catalog_item is None:
+                raise ValueError(f"published tools are absent from Tool Catalog: {key[0]}:{key[1]}")
+            value = dict(binding)
+            value.update(
+                {
+                    "risk": catalog_item.get("risk", "read_only"),
+                    "approval_required": bool(catalog_item.get("approval_required", False)),
+                    "idempotent": bool(catalog_item.get("idempotent", False)),
+                    "required_permissions": list(catalog_item.get("required_permissions", [])),
+                }
+            )
+            value["side_effect"] = value["risk"] != "read_only"
+            resolved.append(value)
+        return resolved
+
+    def resolve_catalog_items(self, bindings: list[dict]) -> list[dict]:
+        """返回精确目录项供 Skill/Workflow 校验风险，调用者不得把它写成另一份事实源。"""
+        if not self.required:
+            return []
+        catalog = self._load_catalog()
+        indexed = {(str(item["name"]), str(item["version"])): item for item in catalog["tools"]}
+        result = []
+        for binding in bindings:
+            key = (str(binding.get("tool_name")), str(binding.get("version")))
+            if key not in indexed:
+                raise ValueError(f"published tools are absent from Tool Catalog: {key[0]}:{key[1]}")
+            result.append(dict(indexed[key]))
+        return result
+
+    def _load_catalog(self) -> dict:
+        """只在发布检查时读取并验证目录，所有校验方法共享同一解析规则。"""
+        if not self.path.exists():
+            raise ValueError(f"Tool Catalog is unavailable: {self.path}")
+        catalog = json.loads(self.path.read_text(encoding="utf-8"))
+        self.registry.validate("tool-catalog.v1.json", catalog)
+        return catalog

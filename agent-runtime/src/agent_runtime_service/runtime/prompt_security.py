@@ -49,7 +49,9 @@ _PROMPT_LEAK = re.compile(
 class PromptSecurityGuard:
     """把外部内容转换为不可执行数据段，并在输入/输出边界产生稳定风险结论。"""
 
-    def inspect(self, value: Any, *, trust: PromptTrust, source_id: str = "") -> list[InjectionFinding]:
+    def inspect(
+        self, value: Any, *, trust: PromptTrust, source_id: str = ""
+    ) -> list[InjectionFinding]:
         """检测高置信指令覆盖和提示泄露模式；只返回分类结果，不记录原始敏感文本。"""
         text = self._text(value)
         if not text or not _INJECTION.search(text):
@@ -67,7 +69,9 @@ class PromptSecurityGuard:
             "finding_codes": [item.code for item in findings],
         }
 
-    def prepare_model_input(self, state: dict[str, Any]) -> tuple[dict[str, Any], list[InjectionFinding]]:
+    def prepare_model_input(
+        self, state: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[InjectionFinding]]:
         """分段历史、证据和工具观察；高风险证据从模型上下文剔除而保留其审计事实。"""
         findings: list[InjectionFinding] = []
         history = []

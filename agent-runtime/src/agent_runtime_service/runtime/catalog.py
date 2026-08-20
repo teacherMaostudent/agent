@@ -10,7 +10,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from platform_sdk.contracts.execution_profile import (
+    PROFILE_BY_EXECUTION,
     REQUIREMENTS_BY_PROFILE,
+    DurabilityStrategy,
+    ExecutionEngine,
     legacy_execution_mode,
 )
 
@@ -33,11 +36,28 @@ class ExecutionProvider:
     supports_resume: bool = True
     lifecycle: ExecutionLifecycle = ExecutionLifecycle.REQUEST_SCOPED
     reasoning: ReasoningMode = ReasoningMode.GRAPH
+    engine: ExecutionEngine | None = None
+    durability: DurabilityStrategy | None = None
 
     @property
     def requirements(self) -> ExecutionRequirements:
         """返回该部署 Profile 明确承诺的双轴能力，而非从名称猜测语义。"""
-        return ExecutionRequirements(lifecycle=self.lifecycle, reasoning=self.reasoning)
+        return ExecutionRequirements(
+            lifecycle=self.lifecycle,
+            reasoning=self.reasoning,
+            engine=self.engine,
+            durability=self.durability,
+        )
+
+    @property
+    def normalized_engine(self) -> ExecutionEngine:
+        """兼容旧 Provider 声明，并投影为唯一执行内核。"""
+        return self.requirements.normalized_engine()
+
+    @property
+    def normalized_durability(self) -> DurabilityStrategy:
+        """兼容旧 Provider 声明，并投影为唯一持久化策略。"""
+        return self.requirements.normalized_durability()
 
 
 class ExecutionProviderRegistry:
@@ -75,14 +95,26 @@ class ExecutionProviderRegistry:
         return self.provider(profile).executor
 
     def resolve_requirements(self, requirements: ExecutionRequirements) -> ExecutorAdapter:
-        """按生命周期与推理方式解析已部署执行器，找不到或歧义时均失败关闭。"""
+        """按执行内核与持久化策略解析部署组合，找不到或歧义时均失败关闭。"""
+        preferred_profile = PROFILE_BY_EXECUTION.get(
+            (
+                requirements.normalized_engine(),
+                requirements.normalized_durability(),
+            )
+        )
+        if preferred_profile in self._providers:
+            return self._providers[preferred_profile].executor
         matches = [
             provider
             for provider in self._providers.values()
-            if provider.lifecycle == requirements.lifecycle and provider.reasoning == requirements.reasoning
+            if provider.normalized_engine == requirements.normalized_engine()
+            and provider.normalized_durability == requirements.normalized_durability()
         ]
         if len(matches) != 1:
-            rendered = f"{requirements.lifecycle.value}/{requirements.reasoning.value}"
+            rendered = (
+                f"{requirements.normalized_engine().value}/"
+                f"{requirements.normalized_durability().value}"
+            )
             raise LookupError(f"execution requirements are not uniquely deployed: {rendered}")
         return matches[0].executor
 
@@ -101,6 +133,8 @@ class ExecutorCatalog(ExecutionProviderRegistry):
                     supports_resume=profile != "simple/v1",
                     lifecycle=_requirements_for_profile(profile).lifecycle,
                     reasoning=_requirements_for_profile(profile).reasoning,
+                    engine=_requirements_for_profile(profile).normalized_engine(),
+                    durability=_requirements_for_profile(profile).normalized_durability(),
                 )
                 for profile, executor in entries.items()
             }

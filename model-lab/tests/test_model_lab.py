@@ -1,7 +1,6 @@
 """Model Lab 本地契约测试：持久化记录与不可逆 Worker 结论。"""
 
 import pytest
-
 from app.main import (
     EvaluationResult,
     ExperimentPlan,

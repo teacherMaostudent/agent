@@ -27,6 +27,13 @@ Gateway 执行灰度策略，监控 Gateway 性能后提升或回滚。Gateway �
 - Runtime Executor Catalog：发布前确认目标环境存在匹配执行器，并由 Runtime 实例实时证明能力
 - 管理端与 Runtime 端分离的鉴权入口
 - OpenAPI、Docker、Compose、调用样例和自动化测试
+- 独立 Skill Draft/Version 与 `VALIDATING -> CANDIDATE -> CANARY -> ACTIVE` 准入状态机
+- 独立 Workflow Draft/Version/Release，支持零 Agent 执行工件
+- 渐进披露 Skill Catalog，未选中前不返回 Prompt、Tool 和 Knowledge 绑定
+- 随 Agent/Workflow 工件冻结 Capability Provider 目录和逐能力回退顺序
+- 发布前校验 Active Skill、Tool Catalog 和 Workflow Provider 的精确版本/摘要
+- 发布 Agent 时以 Tool Catalog 为权限、风险、审批和幂等事实源冻结工具绑定；发布 Skill
+  时校验 Governance Profile 不得降低其内部 Tool 的真实风险
 
 ## 边界
 
@@ -44,7 +51,8 @@ flowchart LR
     RT --> TOOL["tool-gateway"]
 ```
 
-本服务不会运行 LangGraph、保存聊天记录、检索知识、调用模型或执行业务工具。
+本服务不会运行 LangGraph/Workflow/Skill、保存聊天记录、检索知识、调用模型
+或执行业务工具。
 
 ## 最重要的发布约束
 

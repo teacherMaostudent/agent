@@ -7,8 +7,14 @@ from typing import Any
 
 _SECRET_PATTERNS = (
     (re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+"), r"\1[REDACTED]"),
-    (re.compile(r"(?i)(password|passwd|secret|api[_-]?key)\s*[:=]\s*([^\s,;]+)"), r"\1=[REDACTED]"),
-    (re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE), "[REDACTED_EMAIL]"),
+    (
+        re.compile(r"(?i)(password|passwd|secret|api[_-]?key)\s*[:=]\s*([^\s,;]+)"),
+        r"\1=[REDACTED]",
+    ),
+    (
+        re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
+        "[REDACTED_EMAIL]",
+    ),
 )
 
 
@@ -31,6 +37,7 @@ def bound_untrusted(value: Any, max_chars: int = 12_000) -> Any:
         return [bound_untrusted(item, max_chars) for item in value[:200]]
     if isinstance(value, dict):
         return {
-            str(key): bound_untrusted(item, max_chars) for key, item in list(value.items())[:200]
+            str(key): bound_untrusted(item, max_chars)
+            for key, item in list(value.items())[:200]
         }
     return value

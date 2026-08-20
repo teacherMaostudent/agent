@@ -61,8 +61,12 @@ class LlmGatewayClient:
         if self.workload_identity is not None:
             headers.update(self.workload_identity.authorization_header())
         if execution_headers:
-            headers.update({key: value for key, value in execution_headers.items() if value})
-        with trace.get_tracer(__name__).start_as_current_span("gateway.chat_completion") as span:
+            headers.update(
+                {key: value for key, value in execution_headers.items() if value}
+            )
+        with trace.get_tracer(__name__).start_as_current_span(
+            "gateway.chat_completion"
+        ) as span:
             span.set_attribute("gen_ai.request.model", str(payload.get("model", "")))
             with httpx.Client(timeout=self.timeout, **self.mtls) as client:
                 response = client.post(

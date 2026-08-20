@@ -75,6 +75,19 @@ class ControlPlaneClient(_ServiceClient):
             response.raise_for_status()
             return response.json()
 
+    def resolve_skill(self, tenant_id: str, skill_id: str, version: str) -> dict[str, Any]:
+        """解析 Active SkillVersion；实验不允许引用 Candidate 或草稿。"""
+        headers = self._headers(tenant_id)
+        if self._runtime_key:
+            headers["X-Runtime-Key"] = self._runtime_key
+        with self._client() as client:
+            response = client.get(
+                f"/internal/v1/skills/{skill_id}/versions/{version}/resolve",
+                headers=headers,
+            )
+            response.raise_for_status()
+            return response.json()
+
 
 class RuntimeClient(_ServiceClient):
     """调用 Runtime 的公开执行 API，不嵌入 Graph、Planner 或 Harness 实现。"""
@@ -106,6 +119,17 @@ class RuntimeClient(_ServiceClient):
         headers = self._headers(tenant_id)
         with self._client() as client:
             response = client.get(f"/agent/sessions/{session_id}/events", headers=headers)
+            response.raise_for_status()
+            return response.json()
+
+    def run_skill(
+        self, payload: dict[str, Any], tenant_id: str, request_id: str
+    ) -> dict[str, Any]:
+        """调用 Runtime 的受控 Skill 入口；请求只传精确绑定和输入。"""
+        headers = self._headers(tenant_id)
+        headers.update({"X-Request-Id": request_id, "X-Trace-Id": request_id})
+        with self._client() as client:
+            response = client.post("/agent/skills/run", json=payload, headers=headers)
             response.raise_for_status()
             return response.json()
 

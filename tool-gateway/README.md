@@ -3,6 +3,10 @@
 企业 Agent 的工具执行面。它位于 `agent-runtime` 与业务 API / MCP Server 之间，统一
 完成工具发现、输入输出校验、授权、审批、幂等、限流、超时、重试、熔断和审计。
 
+Runtime 发起的生产写动作还必须携带 `plan_id`、`plan_admission_id`、`step_id` 和
+`operation_id`。计划准入不等于动作授权；Gateway 使用最新身份、参数、策略和审批做最终
+Step Authorization，并分别发布授权决定与执行完成事件。
+
 模型只负责选择已发现的工具并生成参数；模型输出不是可信执行指令，不能绕过本服务
 直接访问业务系统。
 

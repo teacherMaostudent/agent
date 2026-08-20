@@ -19,6 +19,34 @@ class AgentRunRequest(BaseModel):
     max_cost_usd: float | None = Field(default=None, gt=0, le=10_000)
 
 
+class SkillRunRequest(BaseModel):
+    """执行 Active SkillVersion 的公开请求；完整计划始终由 Runtime 从 Control Plane 解析。"""
+
+    skill_id: str = Field(min_length=2, max_length=160)
+    version: str = Field(min_length=1, max_length=100)
+    artifact_digest: str = Field(min_length=32, max_length=128)
+    capability_id: str = Field(min_length=2, max_length=160)
+    input: dict[str, Any] = Field(default_factory=dict)
+    deadline_seconds: int = Field(default=120, ge=1, le=600)
+    max_cost_usd: float = Field(default=2.0, gt=0, le=10_000)
+
+
+class WorkflowRunRequest(BaseModel):
+    """启动 Active WorkflowVersion；步骤和 Provider 目录只由 Control Plane 返回。"""
+
+    workflow_id: str = Field(min_length=2, max_length=160)
+    environment: str = Field(default="production", min_length=2, max_length=64)
+    input: dict[str, Any] = Field(default_factory=dict)
+    deadline_seconds: int = Field(default=300, ge=1, le=86_400)
+    max_cost_usd: float = Field(default=5.0, gt=0, le=10_000)
+
+
+class WorkflowResumeRequest(BaseModel):
+    """以人工或外部信号恢复同一 Workflow 历史。"""
+
+    signal: dict[str, Any] = Field(min_length=1)
+
+
 class AgentResumeRequest(BaseModel):
     approved: bool
     approval_id: str = Field(default="", max_length=160)

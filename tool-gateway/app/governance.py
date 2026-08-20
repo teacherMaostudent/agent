@@ -55,6 +55,25 @@ class GovernanceOutboxPublisher:
 
         Perform publish invocation within the GovernanceOutboxPublisher ownership boundary.
         """
+        occurred_at = datetime.now(UTC).isoformat()
+        if response.authorization and context.operation_id:
+            self.repository.enqueue_event(
+                {
+                    "event_id": f"evt_{uuid4().hex}",
+                    "source_service": "tool-gateway",
+                    "event_type": "tool.authorization.decided",
+                    "trace_id": context.trace_id or context.request_id,
+                    "tenant_id": context.tenant_id,
+                    "occurred_at": occurred_at,
+                    "payload": {
+                        **response.authorization,
+                        "request_id": context.request_id,
+                        "run_id": context.run_id,
+                        "snapshot_id": context.snapshot_id,
+                        "approval_granted": approval_granted,
+                    },
+                }
+            )
         self.repository.enqueue_event(
             {
                 "event_id": f"evt_{uuid4().hex}",
@@ -62,7 +81,7 @@ class GovernanceOutboxPublisher:
                 "event_type": "tool.execution.completed",
                 "trace_id": context.trace_id or context.request_id,
                 "tenant_id": context.tenant_id,
-                "occurred_at": datetime.now(UTC).isoformat(),
+                "occurred_at": occurred_at,
                 "payload": {
                     "request_id": context.request_id,
                     "run_id": context.run_id,
@@ -70,6 +89,11 @@ class GovernanceOutboxPublisher:
                     "agent_id": context.agent_id,
                     "agent_version": context.agent_version,
                     "snapshot_id": context.snapshot_id,
+                    "operation_id": context.operation_id,
+                    "step_id": context.step_id,
+                    "plan_id": context.plan_id,
+                    "plan_admission_id": context.plan_admission_id,
+                    "authorization": response.authorization,
                     "tool_name": response.tool_name,
                     "tool_version": response.tool_version,
                     "invocation_id": response.invocation_id,

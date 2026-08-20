@@ -143,6 +143,22 @@ def test_planner_uses_intent_catalog_frozen_in_compiled_snapshot() -> None:
     assert analysis["intent"]["name"] == "site_visit"
 
 
+def test_planner_projects_frozen_agent_topology_instead_of_hardcoding_single() -> None:
+    """审计中的 Topology 必须与发布委派/独立责任主体一致。"""
+    planner = RuntimePlanner(HeuristicSemanticAnalyzer())
+    current = state("调查跨部门问题")
+    current["compiled_plan"] = {"subagents": [{"agent_id": "worker"}]}
+    current.update(planner.analyze(current))
+    assert planner.build_plan(current).topology == "sub_agent"
+
+    current["compiled_plan"] = {
+        "capability_providers": [
+            {"kind": "agent", "requires_independent_authority": True}
+        ]
+    }
+    assert planner.build_plan(current).topology == "multi_agent"
+
+
 def test_llm_call_limit_is_enforced_outside_the_decision_engine() -> None:
     budget = RuntimeBudget(
         deadline_at=datetime.now(UTC) + timedelta(minutes=1),

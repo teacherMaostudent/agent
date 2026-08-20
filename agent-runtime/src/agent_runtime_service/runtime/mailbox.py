@@ -52,9 +52,7 @@ class ClaimedRunMailboxItem:
 class RunMailbox(Protocol):
     """Graph 使用的窄邮箱接口，避免它依赖 RuntimeStore 或 SQL 实现细节。"""
 
-    def claim_mailbox_input(
-        self, tenant_id: str, run_id: str
-    ) -> ClaimedRunMailboxItem | None:
+    def claim_mailbox_input(self, tenant_id: str, run_id: str) -> ClaimedRunMailboxItem | None:
         """领取当前 Run 最早的未消费输入；相同项在租约有效期内不会被第二个 Worker 领取。"""
         ...
 

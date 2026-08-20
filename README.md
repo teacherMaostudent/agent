@@ -29,6 +29,41 @@
 | 双轴执行 | 发布快照用 `lifecycle × reasoning` 描述“是否耐久”和“如何推理”；Profile 只是已部署执行器的受控别名。 |
 | 向量空间不可漂移 | 知识绑定固定索引版本与嵌入契约；摄取、查询、Runtime 和发布门禁拒绝不同模型/维度的混用。 |
 
+## 新执行基线：双 Owner + 能力层
+
+顶层编排只保留 `WORKFLOW` 和 `AGENT` 两种 Owner，同一 `root_task_id` 不允许
+两者同时决定下一步。Single/Sub/Multi-Agent 是 Agent 拓扑，ReAct/Reflect/Graph 是
+ReasoningPolicy，Skill/Tool/RAG/Memory 是 Capability，Temporal 是 Durability。详细契约、
+状态与代码定位见 [Workflow / Agent / Skill 收敛架构](docs/skill-architecture.md)。
+
+复杂任务采用 `Plan-Execute-Replan` 宏观控制，ReAct 只用于局部自适应步骤；执行内核与
+持久化策略正交组合。Planner 先产生 `ProposedExecutionPlan`，Runtime Guard 生成
+`AdmittedExecutionPlan`，Tool Gateway 再对每个具体 operation 做最终授权和提交。详见
+[Plan-Execute 与分层授权执行架构](docs/plan-execute-authorization-architecture.md)。
+原设计 40 个章节的逐项落地证据见
+[设计落地验收清单](docs/skill-design-implementation-checklist.md)。
+
+```mermaid
+flowchart TD
+    Request --> Planner["Platform Planner / ExecutionPlan"]
+    Planner -->|owner=WORKFLOW| WF["Workflow Runtime / Temporal"]
+    Planner -->|owner=AGENT| AR["Agent Runtime / Harness + LangGraph"]
+    WF --> Resolver["Capability Resolver"]
+    AR --> Resolver
+    Resolver --> Tool["Tool"]
+    Resolver --> Skill["Skill Runtime"]
+    Resolver --> RAG["RAG / Memory"]
+    Resolver --> Agent["Agent / Human / Workflow"]
+    Tool --> Gateways["LLM / Tool / RAG Gateways"]
+    Skill --> Gateways
+    RAG --> Gateways
+```
+
+Planner 只提出 `capability_id`，Resolver 依发布快照的资格、健康、权限、成本、SLA、
+独立责任主体和逐能力回退链选 Provider。模型不能提交 Provider ID。零 Agent
+Workflow 不加载 Planner 或 Agent Session，支持重试、补偿、Human Signal 和 Temporal
+恢复。Skill 是可版本化、可评测的有界能力，不拥有长期 Session 或全局 What-Next。
+
 ## 阅读路线
 
 1. 第一次了解平台：阅读本文的“架构总览”“生命周期”和“服务目录”。
@@ -138,7 +173,11 @@ Model Lab 在生产使用 PostgreSQL 保存冻结计划、Worker 身份、评测
 存储桶的工件 URI。Control Plane 通过 mTLS、OIDC 与内部服务凭据读取批准结果。RAG 生产环境必须显式
 选择云端或自部署语义 Embedding Provider，Hash 向量只保留给本地测试与契约验证。
 
-## 一次 Agent 运行的生命周期
+## 一次任务的生命周期
+
+0. 入口 Planner 先冻结 `ExecutionPlan` 的 Owner、Topology、Reasoning、Capabilities、
+   Durability、Governance、Budget 和 VersionBindings。路径可预知时可以选择
+   `owner=WORKFLOW, topology=NONE`，整个任务不创建 Agent。
 
 1. 调用方携带 OIDC Token 进入 Runtime。身份中间件验证 JWT，并从权限声明重建内部身份
    Header；业务代码不会信任调用方自行伪造的权限 Header。
@@ -177,6 +216,9 @@ Model Lab 在生产使用 PostgreSQL 保存冻结计划、Worker 身份、评测
     Runtime 的每次合法 Run 状态迁移都产生不含正文的关联事件（Run/Session/Trace/快照、前后状态和触发
     原因），最终结果则保留独立的完成事件；Governance 的评测与合规处理异步进行，不会把主运行链路变成
     同步依赖。
+11. Agent 仅在 ExecutionPlan 边界内维护 `TaskPlan`。能力调用产生的大结果以
+    Task Artifact 不可变引用交换；Workflow History、Agent Run、User Conversation 和
+    SkillExecutionContext 保持分离。
 
 ## Harness、Executor 与 Capability 的边界
 

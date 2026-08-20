@@ -166,9 +166,7 @@ class AgentLabClient:
         self._settings = settings
         self._workload_identity = build_workload_token_provider(settings)
 
-    async def approved_release_evidence(
-        self, tenant_id: str, experiment_id: str
-    ) -> dict[str, Any]:
+    async def approved_release_evidence(self, tenant_id: str, experiment_id: str) -> dict[str, Any]:
         """只接受已通过 Governance 门禁且绑定不可变快照的实验事实。"""
         async with httpx.AsyncClient(
             base_url=self._settings.agent_lab_base_url,

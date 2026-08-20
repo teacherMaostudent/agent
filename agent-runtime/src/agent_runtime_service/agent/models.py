@@ -8,6 +8,7 @@ class AgentAction(StrEnum):
     RETRIEVE = "RETRIEVE"
     TOOL = "TOOL"
     SUBAGENT = "SUBAGENT"
+    CAPABILITY = "CAPABILITY"
     ANSWER = "ANSWER"
 
 
@@ -20,6 +21,9 @@ class AgentDecision(BaseModel):
     subagent_id: str = ""
     subagent_capability: str = ""
     subagent_task: str = ""
+    capability_id: str = ""
+    capability_input: dict[str, Any] = Field(default_factory=dict)
+    require_independent_authority: bool = False
     final_answer: str = ""
 
     @model_validator(mode="after")
@@ -37,7 +41,11 @@ class AgentDecision(BaseModel):
             (not self.subagent_id.strip() and not self.subagent_capability.strip())
             or not self.subagent_task.strip()
         ):
-            raise ValueError("SUBAGENT requires subagent_capability (or legacy subagent_id) and subagent_task")
+            raise ValueError(
+                "SUBAGENT requires subagent_capability (or legacy subagent_id) and subagent_task"
+            )
+        if self.action == AgentAction.CAPABILITY and not self.capability_id.strip():
+            raise ValueError("CAPABILITY requires capability_id")
         if self.action == AgentAction.ANSWER and not self.final_answer.strip():
             raise ValueError("ANSWER requires final_answer")
         return self
@@ -60,6 +68,8 @@ class AgentState(TypedDict, total=False):
     root_task_id: str
     collaboration_snapshot_id: str
     business_operation_id: str
+    orchestration_owner: str
+    workflow_id: str
     agent_id: str
     agent_version: str
     snapshot_id: str
@@ -75,6 +85,9 @@ class AgentState(TypedDict, total=False):
     entities: list[dict[str, Any]]
     source_plan: dict[str, Any]
     execution_plan: dict[str, Any]
+    proposed_execution_plan: dict[str, Any]
+    plan_admission: dict[str, Any]
+    task_plan: dict[str, Any]
     workflow_cursor: str
     execution_trace: list[dict[str, Any]]
     pending_approval: dict[str, Any]
@@ -95,6 +108,7 @@ class AgentState(TypedDict, total=False):
     mailbox_lease_token: str
     mailbox_replan: bool
     tool_deferred: bool
+    resolved_capability_provider: dict[str, Any]
 
 
 class AgentRunResult(BaseModel):

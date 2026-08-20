@@ -14,6 +14,7 @@ from platform_sdk.contracts.rag import (
 
 class RagQueryClient(Protocol):
     """定义 Runtime 所需的最小只读 RAG 契约，不暴露索引或存储实现。"""
+
     def search(self, request: RagSearchRequest) -> RagSearchResponse:
         """按请求中的租户、权限和检索策略返回已过滤的证据，不暴露底层索引实现。"""
         ...
@@ -25,6 +26,7 @@ class RagQueryClient(Protocol):
 
 class LocalRagQueryClient:
     """本地开发适配器；生产 Runtime 应使用 HTTP/mTLS 边界。"""
+
     def __init__(self, service) -> None:
         """接收实现稳定 query 契约的本地服务对象。"""
         self.service = service
@@ -44,6 +46,7 @@ class LocalRagQueryClient:
 
 class HttpRagQueryClient:
     """带工作负载身份与可选 mTLS 的远程只读 RAG 客户端。"""
+
     def __init__(
         self,
         base_url: str,
@@ -94,7 +97,9 @@ class HttpRagQueryClient:
 
     def _headers(self) -> dict[str, str]:
         """合并过渡服务密钥与工作负载令牌，不伪造最终用户权限。"""
-        headers = {"X-Rag-Agent-Key": self.service_api_key} if self.service_api_key else {}
+        headers = (
+            {"X-Rag-Agent-Key": self.service_api_key} if self.service_api_key else {}
+        )
         if self.workload_identity is not None:
             headers.update(self.workload_identity.authorization_header())
         return headers

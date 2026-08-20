@@ -1,6 +1,7 @@
 from platform_infra.identity import build_workload_token_provider
 from platform_infra.mtls import mtls_httpx_options
 
+from app.context.artifact_store import TaskArtifactStore
 from app.context.service import AgentContextService
 from app.context.store import ConversationStore
 from app.core.config import get_settings
@@ -24,6 +25,7 @@ class AgentContextContainer:
             retention_days=self.settings.context_retention_days,
             max_messages=self.settings.context_max_stored_messages,
         )
+        self.artifacts = TaskArtifactStore(backend)
         self.rag_client = HttpRagQueryClient(
             self.settings.rag_query_base_url,
             self.settings.internal_service_api_key,

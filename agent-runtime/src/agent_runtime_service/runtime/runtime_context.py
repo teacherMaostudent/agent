@@ -50,8 +50,8 @@ class ToolCapability(Protocol):
 class LlmCapability(Protocol):
     """提供经过 Gateway 路由、预算、限流和模型版本治理的模型调用能力。"""
 
-    def generate(self, *args: Any, **kwargs: Any) -> Any:
-        """请求一次受治理的模型生成；Provider 选择不属于执行器。"""
+    def complete_json(self, *args: Any, **kwargs: Any) -> Any:
+        """请求一次受治理的 JSON 生成；Provider 选择不属于执行器。"""
         ...
 
 

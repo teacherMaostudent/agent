@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from platform_sdk.contracts.skills import SkillCard
 
 from app.api.dependencies import (
     get_container,
@@ -28,9 +29,24 @@ from app.domain.models import (
     ReleaseManifest,
     ReleasePromote,
     RuntimeResolution,
+    SkillCreate,
+    SkillDefinition,
+    SkillDraftUpdate,
+    SkillRuntimeResolution,
+    SkillStatusUpdate,
+    SkillVersion,
+    SkillVersionPublish,
     TenantPolicy,
     TenantPolicyUpdate,
     ValidationReport,
+    WorkflowCreate,
+    WorkflowDefinition,
+    WorkflowDraftUpdate,
+    WorkflowRelease,
+    WorkflowReleaseCreate,
+    WorkflowRuntimeResolution,
+    WorkflowVersion,
+    WorkflowVersionPublish,
 )
 
 ManagementIdentity = Annotated[Identity, Depends(management_identity)]
@@ -46,6 +62,88 @@ def service(container: AppContainer) -> ControlPlaneService:
     return container.service
 
 
+@router.post(
+    "/v1/workflows", response_model=WorkflowDefinition, status_code=201, tags=["workflows"]
+)
+async def create_workflow(
+    request: WorkflowCreate, identity: ManagementIdentity, container: Container, trace_id: TraceId
+) -> WorkflowDefinition:
+    """创建独立 Workflow Draft。"""
+    return await service(container).create_workflow(identity, request, trace_id)
+
+
+@router.get("/v1/workflows/{workflow_id}", response_model=WorkflowDefinition, tags=["workflows"])
+async def get_workflow(
+    workflow_id: str, identity: ManagementIdentity, container: Container
+) -> WorkflowDefinition:
+    """读取租户范围内的 Workflow Draft。"""
+    return await service(container).get_workflow(identity, workflow_id)
+
+
+@router.put(
+    "/v1/workflows/{workflow_id}/draft", response_model=WorkflowDefinition, tags=["workflows"]
+)
+async def update_workflow(
+    workflow_id: str,
+    request: WorkflowDraftUpdate,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> WorkflowDefinition:
+    """通过 CAS 更新 Workflow Draft。"""
+    return await service(container).update_workflow_draft(identity, workflow_id, request, trace_id)
+
+
+@router.post(
+    "/v1/workflows/{workflow_id}/versions",
+    response_model=WorkflowVersion,
+    status_code=201,
+    tags=["workflows"],
+)
+async def publish_workflow(
+    workflow_id: str,
+    request: WorkflowVersionPublish,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> WorkflowVersion:
+    """冻结 WorkflowVersion 与执行计划。"""
+    return await service(container).publish_workflow_version(
+        identity, workflow_id, request, trace_id
+    )
+
+
+@router.post(
+    "/v1/workflows/{workflow_id}/releases",
+    response_model=WorkflowRelease,
+    status_code=201,
+    tags=["workflows"],
+)
+async def release_workflow(
+    workflow_id: str,
+    request: WorkflowReleaseCreate,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> WorkflowRelease:
+    """激活目标环境的 WorkflowVersion。"""
+    return await service(container).create_workflow_release(
+        identity, workflow_id, request, trace_id
+    )
+
+
+@router.get(
+    "/internal/v1/workflows/{workflow_id}/resolve",
+    response_model=WorkflowRuntimeResolution,
+    tags=["runtime"],
+)
+async def resolve_workflow(
+    workflow_id: str, environment: str, identity: RuntimeIdentity, container: Container
+) -> WorkflowRuntimeResolution:
+    """供工作负载身份解析冻结 Workflow Release。"""
+    return await service(container).resolve_workflow(identity, workflow_id, environment)
+
+
 @router.get("/health/live", response_model=HealthStatus, tags=["health"])
 async def liveness() -> HealthStatus:
     """报告进程存活；不访问数据库，因此不能代表依赖项已就绪。"""
@@ -58,6 +156,97 @@ async def readiness(container: Container, response: Response) -> HealthStatus:
     if not await container.repository.healthcheck():
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return HealthStatus(status="ok")
+
+
+@router.post(
+    "/v1/skills",
+    response_model=SkillDefinition,
+    status_code=status.HTTP_201_CREATED,
+    tags=["skills"],
+)
+async def create_skill(
+    request: SkillCreate, identity: ManagementIdentity, container: Container, trace_id: TraceId
+) -> SkillDefinition:
+    """创建可编辑 Skill 草稿；它尚未被 Runtime 或 Capability Resolver 使用。"""
+    return await service(container).create_skill(identity, request, trace_id)
+
+
+@router.get("/v1/skills/catalog", response_model=list[SkillCard], tags=["skills"])
+async def list_skill_cards(
+    identity: ManagementIdentity,
+    container: Container,
+    capability_id: str = Query(default="", max_length=160),
+) -> list[SkillCard]:
+    """渐进披露 Skill Card，不向 Planner/用户泄露完整 Prompt 和工具绑定。"""
+    return await service(container).list_skill_cards(identity, capability_id)
+
+
+@router.get("/v1/skills/{skill_id}", response_model=SkillDefinition, tags=["skills"])
+async def get_skill(
+    skill_id: str, identity: ManagementIdentity, container: Container
+) -> SkillDefinition:
+    """读取当前租户 Skill 草稿，不能替代冻结版本。"""
+    return await service(container).get_skill(identity, skill_id)
+
+
+@router.put("/v1/skills/{skill_id}/draft", response_model=SkillDefinition, tags=["skills"])
+async def update_skill_draft(
+    skill_id: str,
+    request: SkillDraftUpdate,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> SkillDefinition:
+    """通过乐观锁更新 Skill 草稿，发布版本不受影响。"""
+    return await service(container).update_skill_draft(identity, skill_id, request, trace_id)
+
+
+@router.post(
+    "/v1/skills/{skill_id}/versions",
+    response_model=SkillVersion,
+    status_code=status.HTTP_201_CREATED,
+    tags=["skills"],
+)
+async def publish_skill_version(
+    skill_id: str,
+    request: SkillVersionPublish,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> SkillVersion:
+    """编译并冻结 SkillVersion，供 Agent/Workflow 以摘要精确绑定。"""
+    return await service(container).publish_skill_version(identity, skill_id, request, trace_id)
+
+
+@router.post(
+    "/v1/skills/{skill_id}/versions/{version_id}/status",
+    response_model=SkillVersion,
+    tags=["skills"],
+)
+async def update_skill_status(
+    skill_id: str,
+    version_id: str,
+    request: SkillStatusUpdate,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> SkillVersion:
+    """变更冻结工件的可用状态，不允许修改其内容或摘要。"""
+    return await service(container).update_skill_status(
+        identity, skill_id, version_id, request, trace_id
+    )
+
+
+@router.get(
+    "/internal/v1/skills/{skill_id}/versions/{version}/resolve",
+    response_model=SkillRuntimeResolution,
+    tags=["runtime"],
+)
+async def resolve_skill(
+    skill_id: str, version: str, identity: RuntimeIdentity, container: Container
+) -> SkillRuntimeResolution:
+    """供 Runtime 与 Agent Lab 解析 Active SkillVersion。"""
+    return await service(container).resolve_skill(identity, skill_id, version)
 
 
 @router.post(

@@ -72,11 +72,15 @@ class SideEffectBarrier:
         run_id = str(state.get("run_id", "")).strip()
         snapshot_id = str(state.get("snapshot_id", "")).strip()
         if not tenant_id or not run_id or not snapshot_id:
-            raise SideEffectBarrierRejected("side effect requires tenant, run, and immutable snapshot")
+            raise SideEffectBarrierRejected(
+                "side effect requires tenant, run, and immutable snapshot"
+            )
         if not tool_execution_id.strip():
             raise SideEffectBarrierRejected("side effect requires a deterministic idempotency key")
         if not policy.idempotent:
-            raise SideEffectBarrierRejected("published side-effect tool does not declare idempotency")
+            raise SideEffectBarrierRejected(
+                "published side-effect tool does not declare idempotency"
+            )
         if self._cancellation_checker is not None and self._cancellation_checker(tenant_id, run_id):
             raise SideEffectBarrierRejected("run is cancelled before side-effect dispatch")
         if self._inbox is not None and self._inbox.has_pending_replan_input(tenant_id, run_id):
@@ -178,9 +182,7 @@ class ToolExecutionEngine:
             "approval_required": policy.approval_required,
         }
 
-    def execute_batch(
-        self, calls: Iterable[tuple[ScheduledToolCall, Callable[[], T]]]
-    ) -> list[T]:
+    def execute_batch(self, calls: Iterable[tuple[ScheduledToolCall, Callable[[], T]]]) -> list[T]:
         """仅并行无冲突的只读调用；其余调用保持输入顺序，避免产生不可解释写竞争。"""
         ordered = list(calls)
         results: list[T | None] = [None] * len(ordered)

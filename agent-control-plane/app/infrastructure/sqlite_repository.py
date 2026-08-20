@@ -21,7 +21,13 @@ from app.domain.models import (
     OutboxEvent,
     ReleaseManifest,
     ReleaseStatus,
+    SkillDefinition,
+    SkillStatus,
+    SkillVersion,
     TenantPolicy,
+    WorkflowDefinition,
+    WorkflowRelease,
+    WorkflowVersion,
 )
 
 T = TypeVar("T")
@@ -29,6 +35,7 @@ T = TypeVar("T")
 
 class ControlPlaneRepositoryOperations:
     """与数据库方言无关的 Control Plane 聚合操作；I/O 事务由子类提供。"""
+
     def __init__(self, database_path: Path, schema_path: Path) -> None:
         """初始化该组件的依赖、配置与内部状态。
 
@@ -257,6 +264,344 @@ class ControlPlaneRepositoryOperations:
             self._insert_event(connection, event)
 
         await self._write(operation)
+
+    async def create_skill(self, skill: SkillDefinition, event: OutboxEvent) -> None:
+        """在与 Outbox 相同的事务中创建租户级 Skill 草稿。"""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            """写入草稿后记录不可变创建事实，失败时两者一并回滚。"""
+            connection.execute(
+                """INSERT INTO skills (
+                   tenant_id, skill_id, revision, draft_json,
+                   created_by, updated_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    skill.tenant_id,
+                    skill.skill_id,
+                    skill.revision,
+                    _json(skill.draft.model_dump(mode="json")),
+                    skill.created_by,
+                    skill.updated_by,
+                    skill.created_at.isoformat(),
+                    skill.updated_at.isoformat(),
+                ),
+            )
+            self._insert_event(connection, event)
+
+        await self._write(operation)
+
+    async def get_skill(self, tenant_id: str, skill_id: str) -> SkillDefinition | None:
+        """按租户和 Skill ID 读取草稿，避免跨租户能力目录泄露。"""
+
+        def operation(connection: sqlite3.Connection) -> SkillDefinition | None:
+            """在只读连接中把持久化行转换为严格领域模型。"""
+            row = connection.execute(
+                "SELECT * FROM skills WHERE tenant_id = ? AND skill_id = ?", (tenant_id, skill_id)
+            ).fetchone()
+            return _skill_from_row(row) if row else None
+
+        return await self._read(operation)
+
+    async def update_skill(
+        self, skill: SkillDefinition, expected_revision: int, event: OutboxEvent
+    ) -> bool:
+        """以 CAS 更新 Skill 草稿，防止并发编辑静默覆盖彼此配置。"""
+
+        def operation(connection: sqlite3.Connection) -> bool:
+            """仅在修订号匹配时更新草稿并写入同事务审计事件。"""
+            cursor = connection.execute(
+                """UPDATE skills SET revision = ?, draft_json = ?, updated_by = ?, updated_at = ?
+                   WHERE tenant_id = ? AND skill_id = ? AND revision = ?""",
+                (
+                    skill.revision,
+                    _json(skill.draft.model_dump(mode="json")),
+                    skill.updated_by,
+                    skill.updated_at.isoformat(),
+                    skill.tenant_id,
+                    skill.skill_id,
+                    expected_revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return False
+            self._insert_event(connection, event)
+            return True
+
+        return await self._write(operation)
+
+    async def create_skill_version(self, version: SkillVersion, event: OutboxEvent) -> None:
+        """持久化不可变 Skill 工件与 Outbox 事实，禁止只写其一。"""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            """在单事务内插入版本及其可审计发布事件。"""
+            connection.execute(
+                """INSERT INTO skill_versions (
+                   tenant_id, version_id, skill_id, semantic_version,
+                   source_revision, artifact_digest,
+                   plan_json, status, change_summary, published_by, published_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    version.tenant_id,
+                    version.version_id,
+                    version.skill_id,
+                    version.semantic_version,
+                    version.source_revision,
+                    version.artifact_digest,
+                    _json(version.plan.model_dump(mode="json")),
+                    version.status.value,
+                    version.change_summary,
+                    version.published_by,
+                    version.published_at.isoformat(),
+                    version.updated_at.isoformat(),
+                ),
+            )
+            self._insert_event(connection, event)
+
+        await self._write(operation)
+
+    async def get_skill_version_by_semantic(
+        self, tenant_id: str, skill_id: str, semantic_version: str
+    ) -> SkillVersion | None:
+        """按 Agent 快照中的语义版本读取 Skill，供发布前摘要和资格校验。"""
+
+        def operation(connection: sqlite3.Connection) -> SkillVersion | None:
+            """读取唯一语义版本，不在运行期按“最新”解析。"""
+            row = connection.execute(
+                """SELECT * FROM skill_versions
+                   WHERE tenant_id = ? AND skill_id = ? AND semantic_version = ?""",
+                (tenant_id, skill_id, semantic_version),
+            ).fetchone()
+            return _skill_version_from_row(row) if row else None
+
+        return await self._read(operation)
+
+    async def get_skill_version(
+        self, tenant_id: str, skill_id: str, version_id: str
+    ) -> SkillVersion | None:
+        """按内部版本 ID 读取 Skill 工件，供治理状态转换使用。"""
+
+        def operation(connection: sqlite3.Connection) -> SkillVersion | None:
+            """执行租户和 Skill 双重过滤，避免全局版本 ID 越权读取。"""
+            row = connection.execute(
+                """SELECT * FROM skill_versions
+                   WHERE tenant_id = ? AND skill_id = ? AND version_id = ?""",
+                (tenant_id, skill_id, version_id),
+            ).fetchone()
+            return _skill_version_from_row(row) if row else None
+
+        return await self._read(operation)
+
+    async def list_active_skill_versions(self, tenant_id: str) -> list[SkillVersion]:
+        """只列出当前租户 Active 工件，供渐进式目录生成 Skill Card。"""
+
+        def operation(connection: sqlite3.Connection) -> list[SkillVersion]:
+            """按 Skill/语义版本稳定排序，不暴露草稿和非准入工件。"""
+            rows = connection.execute(
+                """SELECT * FROM skill_versions
+                   WHERE tenant_id = ? AND status = ?
+                   ORDER BY skill_id, semantic_version""",
+                (tenant_id, SkillStatus.ACTIVE.value),
+            ).fetchall()
+            return [_skill_version_from_row(row) for row in rows]
+
+        return await self._read(operation)
+
+    async def update_skill_status(self, version: SkillVersion, event: OutboxEvent) -> None:
+        """只变更工件可用状态；计划和摘要保持不可变。"""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            """提交状态变化和审计事实，供 Runtime 健康降级和追溯。"""
+            connection.execute(
+                """UPDATE skill_versions SET status = ?, updated_at = ?
+                   WHERE tenant_id = ? AND skill_id = ? AND version_id = ?""",
+                (
+                    version.status.value,
+                    version.updated_at.isoformat(),
+                    version.tenant_id,
+                    version.skill_id,
+                    version.version_id,
+                ),
+            )
+            self._insert_event(connection, event)
+
+        await self._write(operation)
+
+    async def create_workflow(self, item: WorkflowDefinition, event: OutboxEvent) -> None:
+        """原子创建 Workflow Draft 与审计事件。"""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            """将 Draft 与 Outbox 写在同一个事务中。"""
+            connection.execute(
+                """INSERT INTO workflows (
+                   tenant_id, workflow_id, revision, draft_json,
+                   created_by, updated_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    item.tenant_id,
+                    item.workflow_id,
+                    item.revision,
+                    _json(item.draft.model_dump(mode="json")),
+                    item.created_by,
+                    item.updated_by,
+                    item.created_at.isoformat(),
+                    item.updated_at.isoformat(),
+                ),
+            )
+            self._insert_event(connection, event)
+
+        await self._write(operation)
+
+    async def get_workflow(self, tenant_id: str, workflow_id: str) -> WorkflowDefinition | None:
+        """按租户读取 Workflow Draft。"""
+
+        def operation(connection: sqlite3.Connection) -> WorkflowDefinition | None:
+            """读取并还原严格 WorkflowDefinition。"""
+            row = connection.execute(
+                "SELECT * FROM workflows WHERE tenant_id = ? AND workflow_id = ?",
+                (tenant_id, workflow_id),
+            ).fetchone()
+            return _workflow_from_row(row) if row else None
+
+        return await self._read(operation)
+
+    async def update_workflow(
+        self, item: WorkflowDefinition, expected_revision: int, event: OutboxEvent
+    ) -> bool:
+        """通过修订号 CAS 更新 Workflow Draft。"""
+
+        def operation(connection: sqlite3.Connection) -> bool:
+            """仅在预期修订号仍有效时提交变更和事件。"""
+            cursor = connection.execute(
+                """UPDATE workflows SET revision = ?, draft_json = ?, updated_by = ?, updated_at = ?
+                   WHERE tenant_id = ? AND workflow_id = ? AND revision = ?""",
+                (
+                    item.revision,
+                    _json(item.draft.model_dump(mode="json")),
+                    item.updated_by,
+                    item.updated_at.isoformat(),
+                    item.tenant_id,
+                    item.workflow_id,
+                    expected_revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return False
+            self._insert_event(connection, event)
+            return True
+
+        return await self._write(operation)
+
+    async def create_workflow_version(self, item: WorkflowVersion, event: OutboxEvent) -> None:
+        """原子保存不可变 WorkflowVersion 和发布事件。"""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            """写入已编译计划，禁止后续覆盖。"""
+            connection.execute(
+                """INSERT INTO workflow_versions (
+                   tenant_id, version_id, workflow_id, semantic_version, source_revision,
+                   artifact_digest, plan_json, published_by, published_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    item.tenant_id,
+                    item.version_id,
+                    item.workflow_id,
+                    item.semantic_version,
+                    item.source_revision,
+                    item.artifact_digest,
+                    _json(item.plan.model_dump(mode="json")),
+                    item.published_by,
+                    item.published_at.isoformat(),
+                ),
+            )
+            self._insert_event(connection, event)
+
+        await self._write(operation)
+
+    async def get_workflow_version(
+        self, tenant_id: str, workflow_id: str, version_id: str
+    ) -> WorkflowVersion | None:
+        """按租户、Workflow 和版本三元范围读取冻结工件。"""
+
+        def operation(connection: sqlite3.Connection) -> WorkflowVersion | None:
+            """拒绝仅凭全局版本 ID 跨租户读取。"""
+            row = connection.execute(
+                """SELECT * FROM workflow_versions
+                   WHERE tenant_id = ? AND workflow_id = ? AND version_id = ?""",
+                (tenant_id, workflow_id, version_id),
+            ).fetchone()
+            return _workflow_version_from_row(row) if row else None
+
+        return await self._read(operation)
+
+    async def get_workflow_version_by_semantic(
+        self, tenant_id: str, workflow_id: str, semantic_version: str
+    ) -> WorkflowVersion | None:
+        """按精确语义版本解析 Workflow Provider，不使用 latest。"""
+
+        def operation(connection: sqlite3.Connection) -> WorkflowVersion | None:
+            """在租户和 Workflow 双重边界内读取不可变工件。"""
+            row = connection.execute(
+                """SELECT * FROM workflow_versions
+                   WHERE tenant_id = ? AND workflow_id = ? AND semantic_version = ?""",
+                (tenant_id, workflow_id, semantic_version),
+            ).fetchone()
+            return _workflow_version_from_row(row) if row else None
+
+        return await self._read(operation)
+
+    async def create_workflow_release(self, item: WorkflowRelease, event: OutboxEvent) -> None:
+        """激活新 Workflow Release，并在同事务退役原 Active 版本。"""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            """以单事务保证同环境解析不会观察到两个 Active 版本。"""
+            connection.execute(
+                """UPDATE workflow_releases SET status = 'retired'
+                   WHERE tenant_id = ? AND workflow_id = ? AND environment = ?
+                     AND status = 'active'""",
+                (item.tenant_id, item.workflow_id, item.environment),
+            )
+            connection.execute(
+                """INSERT INTO workflow_releases (
+                   tenant_id, release_id, workflow_id, version_id, environment,
+                   status, created_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    item.tenant_id,
+                    item.release_id,
+                    item.workflow_id,
+                    item.version_id,
+                    item.environment,
+                    item.status,
+                    item.created_by,
+                    item.created_at.isoformat(),
+                ),
+            )
+            self._insert_event(connection, event)
+
+        await self._write(operation)
+
+    async def resolve_workflow_release(
+        self, tenant_id: str, workflow_id: str, environment: str
+    ) -> tuple[WorkflowRelease, WorkflowVersion] | None:
+        """解析当前 Active Release 及其不可变 WorkflowVersion。"""
+
+        def operation(connection: sqlite3.Connection):
+            """在同一只读快照中读取 Release 与 Version，避免版本错配。"""
+            row = connection.execute(
+                """SELECT r.*, v.semantic_version, v.source_revision, v.artifact_digest,
+                          v.plan_json, v.published_by, v.published_at
+                   FROM workflow_releases r JOIN workflow_versions v ON v.version_id = r.version_id
+                   WHERE r.tenant_id = ? AND r.workflow_id = ? AND r.environment = ?
+                     AND r.status = 'active' ORDER BY r.created_at DESC LIMIT 1""",
+                (tenant_id, workflow_id, environment),
+            ).fetchone()
+            if not row:
+                return None
+            release = _workflow_release_from_row(row)
+            version = _workflow_version_from_row(row)
+            return release, version
+
+        return await self._read(operation)
 
     async def get_version(
         self,
@@ -849,6 +1194,91 @@ def _version_from_row(row: sqlite3.Row) -> AgentVersion:
             "change_summary": row["change_summary"],
             "published_by": row["published_by"],
             "published_at": row["published_at"],
+        }
+    )
+
+
+def _skill_from_row(row: sqlite3.Row) -> SkillDefinition:
+    """将持久化的 Skill 草稿行还原为严格领域模型。"""
+    return SkillDefinition.model_validate(
+        {
+            "tenant_id": row["tenant_id"],
+            "skill_id": row["skill_id"],
+            "revision": row["revision"],
+            "draft": json.loads(row["draft_json"]),
+            "created_by": row["created_by"],
+            "updated_by": row["updated_by"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+    )
+
+
+def _skill_version_from_row(row: sqlite3.Row) -> SkillVersion:
+    """将冻结 SkillVersion 行还原为运行时可校验的编译计划。"""
+    return SkillVersion.model_validate(
+        {
+            "tenant_id": row["tenant_id"],
+            "version_id": row["version_id"],
+            "skill_id": row["skill_id"],
+            "semantic_version": row["semantic_version"],
+            "source_revision": row["source_revision"],
+            "artifact_digest": row["artifact_digest"],
+            "plan": json.loads(row["plan_json"]),
+            "status": row["status"],
+            "change_summary": row["change_summary"],
+            "published_by": row["published_by"],
+            "published_at": row["published_at"],
+            "updated_at": row["updated_at"],
+        }
+    )
+
+
+def _workflow_from_row(row: sqlite3.Row) -> WorkflowDefinition:
+    """将 Workflow Draft 持久化行还原为严格领域模型。"""
+    return WorkflowDefinition.model_validate(
+        {
+            "tenant_id": row["tenant_id"],
+            "workflow_id": row["workflow_id"],
+            "revision": row["revision"],
+            "draft": json.loads(row["draft_json"]),
+            "created_by": row["created_by"],
+            "updated_by": row["updated_by"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+    )
+
+
+def _workflow_version_from_row(row: sqlite3.Row) -> WorkflowVersion:
+    """将冻结 WorkflowVersion 行还原为编译计划。"""
+    return WorkflowVersion.model_validate(
+        {
+            "tenant_id": row["tenant_id"],
+            "version_id": row["version_id"],
+            "workflow_id": row["workflow_id"],
+            "semantic_version": row["semantic_version"],
+            "source_revision": row["source_revision"],
+            "artifact_digest": row["artifact_digest"],
+            "plan": json.loads(row["plan_json"]),
+            "published_by": row["published_by"],
+            "published_at": row["published_at"],
+        }
+    )
+
+
+def _workflow_release_from_row(row: sqlite3.Row) -> WorkflowRelease:
+    """将 Active/Retired Workflow Release 行还原为领域模型。"""
+    return WorkflowRelease.model_validate(
+        {
+            "tenant_id": row["tenant_id"],
+            "release_id": row["release_id"],
+            "workflow_id": row["workflow_id"],
+            "version_id": row["version_id"],
+            "environment": row["environment"],
+            "status": row["status"],
+            "created_by": row["created_by"],
+            "created_at": row["created_at"],
         }
     )
 
