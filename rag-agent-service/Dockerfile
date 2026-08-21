@@ -9,7 +9,9 @@ COPY platform-sdk /platform-sdk
 COPY rag-agent-service/pyproject.toml rag-agent-service/README.md ./
 COPY rag-agent-service/app ./app
 COPY rag-agent-service/apps ./apps
-RUN pip install --no-cache-dir /platform-infra /platform-sdk .
+# 与 Runtime 一样复用构建机 cache，不把 pip cache 带到运行时镜像中。
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install /platform-infra /platform-sdk .
 
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /service/data \

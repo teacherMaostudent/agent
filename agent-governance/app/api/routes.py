@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.api.dependencies import auditor_identity, get_container, validate_event_key
 from app.application.evaluation_service import (
@@ -78,6 +78,25 @@ async def list_audit_events(
 ) -> AuditEventList:
     """以序号分页读取租户审计链，审计身份不能跨越自己的租户边界。"""
     return await service(container).list_audit_events(identity, after_sequence, limit)
+
+
+@router.get("/internal/v1/governance/audit-events/runs/{run_id}", tags=["internal"])
+async def list_run_audit_events_for_runtime(
+    run_id: str,
+    _: EventKey,
+    container: Container,
+    x_tenant_id: str = Header(alias="X-Tenant-Id"),
+) -> dict[str, Any]:
+    """只向 Runtime 返回单个 Run 的审计事实；Runtime 仍须校验该 Run 的用户所有权。"""
+    events = await service(container).list_audit_events(
+        Identity(tenant_id=x_tenant_id, user_id="agent-runtime", roles={"service"}), 0, 1_000
+    )
+    items = [
+        item.model_dump(mode="json")
+        for item in events.items
+        if str(item.payload.get("run_id", "")) == run_id
+    ]
+    return {"items": items}
 
 
 @router.get("/v1/governance/audit-events/verify", tags=["audit"])

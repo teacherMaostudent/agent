@@ -10,11 +10,15 @@ RUN groupadd --system controlplane \
     && useradd --system --gid controlplane --home-dir /service controlplane
 
 COPY platform-infra /platform-infra
+COPY platform-sdk /platform-sdk
+COPY platform-contracts /platform-contracts
 COPY agent-control-plane/pyproject.toml agent-control-plane/README.md ./
 COPY agent-control-plane/app ./app
 COPY agent-control-plane/db ./db
 
-RUN pip install /platform-infra .
+# Control Plane 使用 SDK 中的发布快照、执行器目录等跨服务契约。镜像必须安装
+# 工作区内的固定源码，而不能在构建时从公共 PyPI 猜测或下载同名包。
+RUN pip install /platform-infra /platform-sdk .
 
 RUN mkdir -p /data \
     && chown -R controlplane:controlplane /service /data

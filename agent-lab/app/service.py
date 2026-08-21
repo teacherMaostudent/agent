@@ -12,6 +12,7 @@ import httpx
 from app.clients import ControlPlaneClient, GovernanceClient, RuntimeClient
 from app.models import (
     CaseRun,
+    CaseTrajectoryMetrics,
     ExperimentJob,
     ExperimentPlan,
     ExperimentRecord,
@@ -200,6 +201,13 @@ class AgentLabService:
                             int(ledger.get("next_after_sequence", 0))
                             if isinstance(ledger, dict)
                             else None
+                        ),
+                        trajectory=_trajectory_metrics(
+                            session_events,
+                            expected_evidence_ids=case.expected_evidence_ids,
+                            expected_tool_names=case.expected_tool_names,
+                            actual_evidence_ids=_evidence_ids(result),
+                            status=str(result.get("status", "UNKNOWN")),
                         ),
                     )
                 )
@@ -396,15 +404,99 @@ def _snapshot_identity(record: ExperimentRecord) -> dict:
 
 
 def _summary(record: ExperimentRecord) -> dict:
-    """汇总回放成功数、已知成本和治理门禁结论，避免基线比较依赖原始 Trace。"""
+    """汇总成功率、轨迹质量、成本和门禁结论，支持 Harness 策略基线比较。"""
     costs = [item.cost_usd for item in record.case_runs if item.cost_usd is not None]
+    latencies = [item.latency_ms for item in record.case_runs if item.latency_ms is not None]
+    trajectories = [item.trajectory for item in record.case_runs]
+    recalls = [item.evidence_recall for item in trajectories if item.evidence_recall is not None]
+    tool_precision = [
+        item.tool_selection_precision
+        for item in trajectories
+        if item.tool_selection_precision is not None
+    ]
+    succeeded = sum(item.task_succeeded for item in trajectories)
+    total = len(record.plan.cases)
     return {
         "status": record.status,
-        "succeededCases": sum(item.status == "SUCCEEDED" for item in record.case_runs),
-        "totalCases": len(record.plan.cases),
+        "succeededCases": succeeded,
+        "totalCases": total,
+        "taskSuccessRate": succeeded / total if total else 0.0,
         "totalKnownCostUsd": sum(costs),
+        "averageKnownCostUsd": sum(costs) / len(costs) if costs else None,
+        "averageLatencyMs": sum(latencies) / len(latencies) if latencies else None,
+        "totalToolCalls": sum(item.tool_call_count for item in trajectories),
+        "totalModelCalls": sum(item.model_call_count for item in trajectories),
+        "totalRetrievalRounds": sum(item.retrieval_round_count for item in trajectories),
+        "humanApprovalRate": (
+            sum(item.approval_count > 0 for item in trajectories) / len(trajectories)
+            if trajectories
+            else 0.0
+        ),
+        "recoveryEventCount": sum(item.recovery_event_count for item in trajectories),
+        "permissionViolationCount": sum(
+            item.permission_violation_count for item in trajectories
+        ),
+        "averageEvidenceRecall": sum(recalls) / len(recalls) if recalls else None,
+        "averageToolSelectionPrecision": (
+            sum(tool_precision) / len(tool_precision) if tool_precision else None
+        ),
         "qualityGatePassed": _gate_passed(record),
     }
+
+
+def _trajectory_metrics(
+    events: list[dict],
+    *,
+    expected_evidence_ids: list[str],
+    expected_tool_names: list[str],
+    actual_evidence_ids: list[str],
+    status: str,
+) -> CaseTrajectoryMetrics:
+    """从追加事件计算确定性指标；正文缺失时仍可依据事件类型稳定复现。"""
+    event_types = [str(item.get("event_type", "")) for item in events]
+    tool_events = [
+        item for item in events if str(item.get("event_type", "")) == "runtime.tool.intent_recorded"
+    ]
+    selected_tools = [
+        str((item.get("metadata") or {}).get("tool_name", ""))
+        for item in tool_events
+        if isinstance(item.get("metadata"), dict)
+    ]
+    expected_evidence = set(expected_evidence_ids)
+    expected_tools = set(expected_tool_names)
+    actual_evidence = set(actual_evidence_ids)
+    selected = {item for item in selected_tools if item}
+    violation_markers = ("permission", "forbidden", "unauthorized", "policy_denied")
+    violations = sum(
+        any(marker in str(item.get("metadata", {})).lower() for marker in violation_markers)
+        for item in events
+    )
+    return CaseTrajectoryMetrics(
+        task_succeeded=status in {"COMPLETED", "SUCCEEDED"},
+        tool_call_count=len(tool_events),
+        model_call_count=event_types.count("runtime.model.requested"),
+        retrieval_round_count=event_types.count("runtime.context.injected"),
+        approval_count=event_types.count("runtime.run.waiting_approval"),
+        recovery_event_count=sum(
+            event_types.count(item)
+            for item in (
+                "runtime.tool.dispatch_deferred",
+                "runtime.turn.interrupted",
+                "runtime.run.input_received",
+            )
+        ),
+        permission_violation_count=violations,
+        evidence_recall=(
+            len(expected_evidence & actual_evidence) / len(expected_evidence)
+            if expected_evidence
+            else None
+        ),
+        tool_selection_precision=(
+            len(expected_tools & selected) / len(selected)
+            if expected_tools and selected
+            else (1.0 if expected_tools == selected else None)
+        ),
+    )
 
 
 def _gate_passed(record: ExperimentRecord) -> bool | None:

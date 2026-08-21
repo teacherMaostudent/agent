@@ -1,0 +1,58 @@
+{
+  "name": "agent-desktop",
+  "version": "0.1.4",
+  "private": true,
+  "author": "teacherMaostudent",
+  "description": "Secure Electron client for the Enterprise Agent Execution Platform.",
+  "main": "dist-electron/main/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm run build && node scripts/dev.mjs",
+    "build": "node scripts/clean.mjs && vite build && tsc -p tsconfig.main.json",
+    "dist": "pnpm run build && electron-builder --publish never",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.1.0",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "24.3.0",
+    "@types/react": "19.1.12",
+    "@types/react-dom": "19.1.9",
+    "electron": "39.8.10",
+    "electron-builder": "26.15.3",
+    "jsdom": "30.0.1",
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
+    "vitest": "4.1.11"
+  },
+  "build": {
+    "appId": "com.teachermaostudent.agentworkbench",
+    "productName": "Agent Workbench",
+    "electronDist": "node_modules/electron/dist",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.productivity"
+    }
+  }
+}

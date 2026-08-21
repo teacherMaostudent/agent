@@ -9,17 +9,20 @@ from __future__ import annotations
 
 import sys
 import time
+import uuid
 from typing import Any
 
 import httpx
 
 BASE = {
-    "control": "http://localhost:8082",
-    "governance": "http://localhost:8081",
+    "control": "http://localhost:9002",
+    "governance": "http://localhost:9001",
     "runtime": "http://localhost:8001",
-    "tool": "http://localhost:8090",
+    "tool": "http://localhost:9090",
 }
 TENANT = "e2e-tenant"
+DESKTOP_TENANT = "demo"
+DESKTOP_AGENT = "general-agent"
 
 
 def request(client: httpx.Client, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
@@ -36,9 +39,13 @@ def spec() -> dict[str, Any]:
             "graph_id": "e2e-graph", "entrypoint": "decide", "terminal_nodes": ["answer"],
             "nodes": [
                 {"node_id": "decide", "kind": "decision", "config": {}},
+                {"node_id": "retrieve", "kind": "retrieval", "config": {}},
                 {"node_id": "answer", "kind": "answer", "config": {}},
             ],
-            "edges": [{"from_node": "decide", "to_node": "answer"}],
+            "edges": [
+                {"from_node": "decide", "to_node": "retrieve"},
+                {"from_node": "retrieve", "to_node": "answer"},
+            ],
         },
         "prompt": {"prompt_id": "e2e-prompt", "system_template": "Answer from evidence.", "variables": []},
         "tools": [], "knowledge": [],
@@ -49,6 +56,63 @@ def spec() -> dict[str, Any]:
                            "max_retrieval_rounds": 2, "max_execution_seconds": 30, "max_cost_usd": 1.0},
         "labels": {"fixture": "platform-e2e"},
     }
+
+
+def desktop_spec() -> dict[str, Any]:
+    """生成本地桌面演示的受控 Release，而不污染纯跨服务 E2E fixture。"""
+    value = spec()
+    value.update(
+        {
+            "display_name": "Desktop General Agent",
+            "description": "Local desktop baseline with an explicitly published read-only scan tool.",
+            # 发布 Graph 必须显式允许 decision -> tool -> decision -> answer。只绑定工具
+            # 但遗漏该迁移会被 Runtime fail-closed，不能让工具权限绕开 Workflow Policy。
+            "graph": {
+                "graph_id": "desktop-controlled-graph",
+                "entrypoint": "decide",
+                "terminal_nodes": ["answer"],
+                "nodes": [
+                    {"node_id": "decide", "kind": "decision", "config": {}},
+                    {"node_id": "retrieve", "kind": "retrieval", "config": {}},
+                    {"node_id": "tool", "kind": "tool", "config": {}},
+                    {"node_id": "answer", "kind": "answer", "config": {}},
+                ],
+                "edges": [
+                    {
+                        "from_node": "decide",
+                        "to_node": "retrieve",
+                        "condition": 'decision.action == "RETRIEVE"',
+                    },
+                    {
+                        "from_node": "decide",
+                        "to_node": "tool",
+                        "condition": 'decision.action == "TOOL"',
+                    },
+                    {
+                        "from_node": "decide",
+                        "to_node": "answer",
+                        "condition": 'decision.action == "ANSWER"',
+                    },
+                    {"from_node": "retrieve", "to_node": "decide"},
+                    {"from_node": "tool", "to_node": "decide"},
+                ],
+            },
+            "tools": [
+                {
+                    "tool_name": "controlled_scan",
+                    "version": "1.0.0",
+                    # 工具目录会在 Gateway 端再次冻结风险、权限和幂等属性；这里的声明
+                    # 仅表达 Release 所允许的最小调用范围。
+                    "risk": "read_only",
+                    "approval_required": False,
+                    "idempotent": True,
+                    "required_permissions": ["file:scan"],
+                }
+            ],
+            "labels": {"desktop_baseline": "v4", "fixture": "desktop-local"},
+        }
+    )
+    return value
 
 
 def wait_for(client: httpx.Client, url: str) -> None:
@@ -62,19 +126,115 @@ def wait_for(client: httpx.Client, url: str) -> None:
     raise RuntimeError(f"not ready: {url}")
 
 
+def management_headers(tenant_id: str) -> dict[str, str]:
+    """构造本地联调管理身份；生产部署不得复用这些示例密钥。"""
+    return {
+        "X-Tenant-Id": tenant_id,
+        "X-User-Id": "local-bootstrap",
+        "X-Roles": "agent-admin",
+        "X-Control-Plane-Admin-Key": "local-control-plane-admin-key",
+    }
+
+
+def ensure_desktop_release(client: httpx.Client) -> None:
+    """幂等准备桌面端默认 Agent，并将旧的无工具 Release 迁移到桌面基线。"""
+    resolve_url = f"{BASE['control']}/v1/runtime/agents/{DESKTOP_AGENT}/resolve"
+    runtime_headers = {
+        "X-Tenant-Id": DESKTOP_TENANT,
+        "X-User-Id": "agent-runtime",
+        "X-Runtime-Key": "local-control-plane-key",
+    }
+    manage = management_headers(DESKTOP_TENANT)
+    agent_url = f"{BASE['control']}/v1/agents/{DESKTOP_AGENT}"
+    agent_response = client.get(agent_url, headers=manage)
+    if agent_response.status_code == 404:
+        request(
+            client,
+            "POST",
+            f"{BASE['control']}/v1/agents",
+            headers=manage,
+            json={"agent_id": DESKTOP_AGENT, "spec": desktop_spec()},
+        )
+    else:
+        agent_response.raise_for_status()
+        agent = agent_response.json()
+        if agent.get("draft", {}).get("labels", {}).get("desktop_baseline") != "v4":
+            request(
+                client,
+                "PUT",
+                f"{agent_url}/draft",
+                headers=manage,
+                json={
+                    "expected_revision": agent["revision"],
+                    "spec": desktop_spec(),
+                },
+            )
+
+    versions = request(
+        client,
+        "GET",
+        f"{BASE['control']}/v1/agents/{DESKTOP_AGENT}/versions",
+        headers=manage,
+    )
+    version = next(
+        (item for item in versions if item["semantic_version"] == "1.3.0"),
+        None,
+    )
+    if version is None:
+        version = request(
+            client,
+            "POST",
+            f"{BASE['control']}/v1/agents/{DESKTOP_AGENT}/versions",
+            headers=manage,
+            json={
+                "semantic_version": "1.3.0",
+                "change_summary": "Add audited decision conditions to the desktop controlled scan graph",
+            },
+        )
+
+    releases = request(
+        client,
+        "GET",
+        f"{BASE['control']}/v1/agents/{DESKTOP_AGENT}/releases?environment=local",
+        headers=manage,
+    )
+    if not any(
+        item["status"] == "active" and item["version_id"] == version["version_id"]
+        for item in releases
+    ):
+        request(
+            client,
+            "POST",
+            f"{BASE['control']}/v1/agents/{DESKTOP_AGENT}/releases",
+            headers=manage,
+            json={
+                "version_id": version["version_id"],
+                "environment": "local",
+                "rollout_percentage": 100,
+                "reason": "Local desktop bootstrap",
+            },
+        )
+
+    verified = client.get(
+        resolve_url,
+        params={"environment": "local", "session_id": "desktop-bootstrap"},
+        headers=runtime_headers,
+    )
+    verified.raise_for_status()
+
+
 def main() -> int:
     with httpx.Client(timeout=15) as client:
         for target in (f"{BASE['control']}/health/ready", f"{BASE['governance']}/health/ready",
                        f"{BASE['runtime']}/api/v1/health/ready", f"{BASE['tool']}/api/v1/health/ready"):
             wait_for(client, target)
 
-        manage = {
-            "X-Tenant-Id": TENANT,
-            "X-User-Id": "e2e-admin",
-            "X-Roles": "agent-admin",
-            "X-Control-Plane-Admin-Key": "local-control-plane-admin-key",
-        }
-        agent = f"general-e2e-{int(time.time())}"
+        ensure_desktop_release(client)
+
+        manage = management_headers(TENANT)
+        # A restart can overlap two integration checks in the same second. A random
+        # suffix prevents the fixtures from producing a misleading publish 409.
+        agent = f"general-e2e-{uuid.uuid4().hex[:12]}"
         created = request(client, "POST", f"{BASE['control']}/v1/agents", headers=manage,
                           json={"agent_id": agent, "spec": spec()})
         version = request(client, "POST", f"{BASE['control']}/v1/agents/{agent}/versions", headers=manage,
@@ -91,7 +251,8 @@ def main() -> int:
             "X-Trace-Id": trace_id, "X-Rag-Agent-Key": "local-rag-service-key",
         }, json={"agent_id": agent, "environment": "local", "task": "Find evidence for the E2E check."})
         persisted = request(client, "GET", f"{BASE['runtime']}/api/v1/agent/runs/{run['run_id']}", headers={
-            "X-Tenant-Id": TENANT, "X-Rag-Agent-Key": "local-rag-service-key",
+            "X-Tenant-Id": TENANT, "X-User-Id": "e2e-user",
+            "X-Rag-Agent-Key": "local-rag-service-key",
         })
         assert persisted["status"] == "COMPLETED"
         assert persisted["context"]["snapshot_id"] == version["version_id"]
@@ -99,9 +260,17 @@ def main() -> int:
         request(client, "POST", f"{BASE['tool']}/api/v1/tools/create_ingestion_job/invoke", headers={
             "X-Tool-Gateway-Key": "local-tool-gateway-key", "X-Tenant-Id": TENANT,
             "X-User-Id": "e2e-user", "X-Permissions": "ingestion:write", "X-Request-Id": "e2e-tool-request",
-            "X-Idempotency-Key": "e2e-tool-idempotency-0001", "X-Trace-Id": trace_id,
+            "X-Idempotency-Key": f"e2e-tool-{run['run_id']}", "X-Trace-Id": trace_id,
             "X-Run-Id": run["run_id"], "X-Agent-Id": agent, "X-Agent-Version": "1.0.0",
             "X-Snapshot-Id": version["version_id"],
+            # 写工具必须来自已准入的计划步骤；这些关联 ID 证明它不是脱离 Runtime
+            # 状态机的任意副作用调用，并会原样进入工具审计事件。
+            "X-Root-Task-Id": run["run_id"],
+            "X-Business-Operation-Id": f"business-{run['run_id']}",
+            "X-Operation-Id": f"operation-{run['run_id']}",
+            "X-Plan-Id": f"plan-{run['run_id']}",
+            "X-Plan-Admission-Id": f"admission-{run['run_id']}",
+            "X-Step-Id": "step-create-ingestion-job",
         }, json={"arguments": {"job_type": "REINDEX"}})
 
         audit = request(client, "GET", f"{BASE['governance']}/v1/governance/audit-events", headers={

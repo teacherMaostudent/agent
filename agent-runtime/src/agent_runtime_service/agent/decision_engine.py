@@ -172,16 +172,88 @@ class OfflineDecisionEngine:
     uses_llm = False
 
     def decide(self, state: AgentState, tool_registry: ToolRegistry) -> AgentDecision:
-        """离线测试决策：先检索一次，再基于证据列表回答，不假装模型推理。"""
-        if not state.get("evidence"):
+        """执行可解释的本地演示策略，不假装模型推理或任意选择工具。
+
+        离线模式只为已发布的 ``controlled_scan`` 提供一条确定性演示分支：用户任务必须
+        明确要求扫描，且工具尚未执行。这样首次安装可验证 Tool Gateway 真实链路，同时
+        不会把自然语言错误地变成任意文件访问；其他任务仍只检索一次后说明证据不足。
+        """
+        if self._is_published_scan_request(state):
+            scan_observation = next(
+                (
+                    item
+                    for item in state.get("observations", [])
+                    if item.get("type") == "tool" and item.get("tool") == "controlled_scan"
+                ),
+                None,
+            )
+            if scan_observation is None:
+                return AgentDecision(
+                    action=AgentAction.TOOL,
+                    tool_name="controlled_scan",
+                    tool_arguments={
+                        "scope": "workspace",
+                        "pattern": self._scan_pattern(state.get("task", "")),
+                        "regex": False,
+                        "glob": "**/*",
+                    },
+                    reason="offline desktop demo performs one published controlled scan",
+                )
+            result = scan_observation.get("result", {})
+            if not scan_observation.get("success", False):
+                return AgentDecision(
+                    action=AgentAction.ANSWER,
+                    reason="offline desktop demo reports the controlled tool failure honestly",
+                    final_answer=(
+                        "controlled_scan did not complete: "
+                        f"{scan_observation.get('error', 'unknown tool error')}"
+                    ),
+                )
+            matches = result.get("matches", []) if isinstance(result, dict) else []
+            return AgentDecision(
+                action=AgentAction.ANSWER,
+                reason="offline desktop demo summarizes the completed controlled scan",
+                final_answer=(
+                    f"controlled_scan completed with {len(matches)} match(es) for "
+                    f"'{self._scan_pattern(state.get('task', ''))}'."
+                ),
+            )
+        retrieval_rounds = int(state.get("budget", {}).get("retrieval_rounds", 0))
+        if retrieval_rounds == 0:
             return AgentDecision(
                 action=AgentAction.RETRIEVE,
                 query=state["task"],
                 reason="offline mode performs one evidence retrieval",
             )
         citations = [item.get("source_id", "unknown") for item in state["evidence"][:5]]
+        final_answer = (
+            "Retrieved relevant evidence from: " + ", ".join(citations)
+            if citations
+            else "No relevant evidence was retrieved in offline mode."
+        )
         return AgentDecision(
             action=AgentAction.ANSWER,
-            reason="offline mode returns retrieved evidence without semantic generation",
-            final_answer="Retrieved relevant evidence from: " + ", ".join(citations),
+            reason="offline mode terminates after one retrieval without semantic generation",
+            final_answer=final_answer,
         )
+
+    @staticmethod
+    def _is_published_scan_request(state: AgentState) -> bool:
+        """只在快照绑定且用户明确请求扫描时启用本地确定性工具路径。"""
+        tools = state.get("compiled_plan", {}).get("tools", [])
+        if not any(item.get("tool_name") == "controlled_scan" for item in tools):
+            return False
+        task = state.get("task", "").casefold()
+        return any(token in task for token in ("controlled_scan", "扫描", "源码", "日志"))
+
+    @staticmethod
+    def _scan_pattern(task: str) -> str:
+        """从有限演示词表选择字面量模式，避免离线规则生成未经审核的正则式。"""
+        normalized = task.casefold()
+        if "todo" in normalized:
+            return "TODO"
+        if "异常" in normalized or "exception" in normalized:
+            return "except"
+        if "敏感" in normalized or "密钥" in normalized or "secret" in normalized:
+            return "password"
+        return "TODO"

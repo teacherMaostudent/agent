@@ -122,3 +122,5 @@ class AgentRunResult(BaseModel):
     budget: dict[str, Any] = Field(default_factory=dict)
     execution_trace: list[dict[str, Any]] = Field(default_factory=list)
     interrupts: list[dict[str, Any]] = Field(default_factory=list)
+    # 只保存被 Context Service 实际选中的消息摘要；不复制 Prompt 或完整历史正文。
+    context_summary: dict[str, Any] = Field(default_factory=dict)

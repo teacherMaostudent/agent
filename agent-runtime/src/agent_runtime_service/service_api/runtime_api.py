@@ -2,9 +2,11 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from time import monotonic
+from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+import httpx
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from platform_sdk.contracts.capabilities import RuntimeCapability
 from platform_sdk.contracts.context import ConversationMessage
@@ -30,6 +32,11 @@ from platform_sdk.contracts.workflow import CompiledWorkflowPlan
 from agent_runtime_service.runtime.capabilities import CapabilityUnavailable
 from agent_runtime_service.runtime.capability_dispatcher import GovernedCapabilityDispatcher
 from agent_runtime_service.runtime.capability_handlers import RuntimeCapabilityHandlers
+from agent_runtime_service.runtime.integration import (
+    ReleaseNotFoundError,
+    ReleaseResolutionError,
+    ReleaseResolutionUnavailable,
+)
 from agent_runtime_service.runtime.mailbox import ClaimedRunMailboxItem, RunMailboxInputType
 from agent_runtime_service.runtime.models import (
     ApprovalResume,
@@ -51,7 +58,48 @@ from agent_runtime_service.runtime.workflow_runtime import (
     ZeroAgentWorkflowRuntime,
 )
 
+
+def _resolve_release(container, **arguments) -> dict:
+    """把跨服务发布解析故障转换为稳定 API 语义，避免已知配置问题冒充 500。"""
+    try:
+        return container.agent_harness.resolve_release(**arguments)
+    except ReleaseNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "agent_release_not_found", "message": str(exc)},
+        ) from exc
+    except ReleaseResolutionUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "control_plane_unavailable", "message": str(exc)},
+        ) from exc
+    except ReleaseResolutionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "release_resolution_rejected", "message": str(exc)},
+        ) from exc
+
 router = APIRouter(prefix="/agent", tags=["agent-runtime"])
+
+
+def _http_internal_false() -> bool:
+    """HTTP 请求不能伪造 Worker 内部执行标记；直接 Worker 调用可显式覆盖参数。"""
+    return False
+
+
+def _http_internal_none():
+    """把仅供 Worker 直接调用的对象排除出 FastAPI 请求体和 OpenAPI。"""
+    return None
+
+
+def _http_internal_empty() -> str:
+    """为内部关联标识提供不可由外部请求扩大的空默认值。"""
+    return ""
+
+
+def _http_agent_owner() -> OrchestrationOwner:
+    """外部 Agent API 的编排所有者固定为 Agent；Workflow 嵌套只能由内部覆盖。"""
+    return OrchestrationOwner.AGENT
 
 
 def _public_result(result: dict) -> dict:
@@ -168,11 +216,11 @@ def run_workflow(
     x_permissions: str = Header(default="", alias="X-Permissions"),
     x_request_id: str = Header(default="", alias="X-Request-Id"),
     x_trace_id: str = Header(default="", alias="X-Trace-Id"),
-    _temporal_worker_execution: bool = False,
-    _release_resolution: dict | None = None,
-    _run_id: str = "",
-    _checkpoint: dict | None = None,
-    _signal: dict | None = None,
+    _temporal_worker_execution: Annotated[bool, Depends(_http_internal_false)] = False,
+    _release_resolution: Annotated[dict | None, Depends(_http_internal_none)] = None,
+    _run_id: Annotated[str, Depends(_http_internal_empty)] = "",
+    _checkpoint: Annotated[dict | None, Depends(_http_internal_none)] = None,
+    _signal: Annotated[dict | None, Depends(_http_internal_none)] = None,
 ) -> dict:
     """执行 Active 零 Agent Workflow；不创建 Agent Session 或调用 Planner。"""
     container = request.app.state.container
@@ -385,10 +433,12 @@ def run_agent(
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
     x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
     x_run_id: str | None = Header(default=None, alias="X-Run-Id"),
-    _temporal_worker_execution: bool = False,
-    _release_resolution: dict | None = None,
-    _orchestration_owner: OrchestrationOwner = OrchestrationOwner.AGENT,
-    _workflow_id: str = "",
+    _temporal_worker_execution: Annotated[bool, Depends(_http_internal_false)] = False,
+    _release_resolution: Annotated[dict | None, Depends(_http_internal_none)] = None,
+    _orchestration_owner: Annotated[
+        OrchestrationOwner, Depends(_http_agent_owner)
+    ] = OrchestrationOwner.AGENT,
+    _workflow_id: Annotated[str, Depends(_http_internal_empty)] = "",
 ) -> dict:
     """同步执行一个受发布快照约束的 Agent Run。
 
@@ -409,7 +459,8 @@ def run_agent(
     trace_id = x_trace_id or request_id
     try:
         # Harness 仅协调发布解析和快照加载; API 不再直接调用 Control Plane 或编译快照。
-        resolution = _release_resolution or container.agent_harness.resolve_release(
+        resolution = _release_resolution or _resolve_release(
+            container,
             tenant_id=x_tenant_id,
             user_id=x_user_id,
             agent_id=payload.agent_id,
@@ -749,7 +800,8 @@ def submit_agent_run(
     request_id = x_request_id or f"agent-{uuid4().hex}"
     # Durable Profile 必须在提交时就被识别, 防止同步 API 在 Worker 外绕开 Temporal。
     container = request.app.state.container
-    resolution = container.agent_harness.resolve_release(
+    resolution = _resolve_release(
+        container,
         tenant_id=x_tenant_id,
         user_id=x_user_id,
         agent_id=payload.agent_id,
@@ -780,6 +832,63 @@ def submit_agent_run(
     )
 
 
+@router.post("/interactive-runs", status_code=status.HTTP_202_ACCEPTED)
+def submit_interactive_agent_run(
+    payload: AgentRunRequest,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="rag:read", alias="X-Permissions"),
+    x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
+) -> dict:
+    """为桌面等交互客户端提交可观察运行，并立即返回稳定 Run ID。
+
+    与只接受 Durable Profile 的 ``/runs`` 不同，此入口允许短任务进入 Runtime 已部署
+    的持久队列。发布解析仍在提交时冻结，Worker 仍复用唯一 ``run_agent`` 状态机；
+    因而桌面端可以安全订阅事件、取消或恢复，而无需复制一套执行逻辑。
+    """
+    tenant_id, user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if "rag:read" not in permissions:
+        raise HTTPException(status_code=403, detail="rag:read permission is required")
+    container = request.app.state.container
+    request_id = x_request_id or f"interactive-{uuid4().hex}"
+    trace_id = x_trace_id or request_id
+    resolution = _resolve_release(
+        container,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_id=payload.agent_id,
+        environment=payload.environment,
+        session_id=payload.session_id or request_id,
+        trace_id=trace_id,
+    )
+    try:
+        loaded = container.agent_harness.load_snapshot(
+            resolution, tenant_id=tenant_id, agent_id=payload.agent_id
+        )
+    except (SnapshotCompileError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "snapshot_not_executable", "message": str(exc)},
+        ) from exc
+    return _capability(container, RuntimeCapability.WORKFLOW).submit(
+        {
+            "payload": payload.model_dump(mode="json"),
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "permissions": ",".join(sorted(permissions)),
+            "request_id": request_id,
+            "trace_id": trace_id,
+            "data_region": loaded.plan.data_region,
+            "release_resolution": resolution,
+            "interaction_channel": "desktop",
+        }
+    )
+
+
 @router.post("/runs/{run_id}/resume")
 def resume_run(
     run_id: str,
@@ -789,9 +898,11 @@ def resume_run(
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
     x_permissions: str = Header(default="", alias="X-Permissions"),
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
-    _temporal_worker_execution: bool = False,
-    _user_input: UserInputResume | None = None,
-    _claimed_control: ClaimedRunMailboxItem | None = None,
+    _temporal_worker_execution: Annotated[bool, Depends(_http_internal_false)] = False,
+    _user_input: Annotated[UserInputResume | None, Depends(_http_internal_none)] = None,
+    _claimed_control: Annotated[
+        ClaimedRunMailboxItem | None, Depends(_http_internal_none)
+    ] = None,
 ) -> dict:
     """恢复等待审批的检查点。
 
@@ -1093,10 +1204,13 @@ def get_run(
     run_id: str,
     request: Request,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
 ) -> dict:
     """读取租户范围内的运行或异步队列状态，不返回其他租户的检查点/提交内容。"""
-    x_tenant_id, _, _ = _trusted_identity(request, x_tenant_id, "anonymous", "")
+    x_tenant_id, x_user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
     run = request.app.state.container.run_store.get(x_tenant_id, run_id)
+    if run is not None and run.user_id != x_user_id:
+        raise HTTPException(status_code=404, detail="run not found")
     if run is None:
         queued = _capability(request.app.state.container, RuntimeCapability.WORKFLOW).get(
             x_tenant_id, run_id
@@ -1109,20 +1223,50 @@ def get_run(
     return body
 
 
+@router.get("/runs/{run_id}/audit-events")
+def get_run_audit_events(
+    run_id: str,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> dict:
+    """以 Run 所有权为边界代理读取 Governance 审计事实，桌面端不接触审计员密钥。"""
+    tenant_id, user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    container = request.app.state.container
+    run = container.run_store.get(tenant_id, run_id)
+    if run is None or run.user_id != user_id:
+        raise HTTPException(status_code=404, detail="run not found")
+    if not container.settings.governance_base_url:
+        return {"items": [], "status": "unconfigured"}
+    try:
+        response = httpx.get(
+            f"{container.settings.governance_base_url.rstrip('/')}/internal/v1/governance/audit-events/runs/{run_id}",
+            headers={"X-Tenant-Id": tenant_id, "X-Governance-Event-Key": container.settings.governance_event_key},
+            timeout=container.settings.service_http_timeout,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="governance audit is unavailable") from exc
+    return {**response.json(), "status": "available"}
+
+
 @router.get("/runs/{run_id}/events")
 async def stream_run_events(
     run_id: str,
     request: Request,
     after_sequence: int = 0,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
 ) -> StreamingResponse:
     """以 SSE 从已提交 Session Ledger 流式输出单个 Run 事件，不依赖单进程 Event Bus。"""
     if after_sequence < 0:
         raise HTTPException(status_code=422, detail="after_sequence must be non-negative")
-    x_tenant_id, _, _ = _trusted_identity(request, x_tenant_id, "anonymous", "")
+    x_tenant_id, x_user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
     store = request.app.state.container.run_store
     run = store.get(x_tenant_id, run_id)
     if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if run.user_id != x_user_id:
         raise HTTPException(status_code=404, detail="run not found")
 
     async def event_stream():

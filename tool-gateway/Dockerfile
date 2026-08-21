@@ -5,6 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /service
 COPY platform-infra /platform-infra
+COPY platform-contracts /platform-contracts
 COPY tool-gateway/pyproject.toml tool-gateway/README.md ./
 COPY tool-gateway/app ./app
 COPY tool-gateway/config ./config

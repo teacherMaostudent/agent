@@ -13,6 +13,18 @@ python scripts/platform_e2e.py
 RAG Query、摄取 API 与摄取 Worker 虽共用 RAG 源码包，但在 Compose 中是独立工作负载；Runtime 使用
 独立镜像，不安装 `rag-agent-service`。
 
+桌面端在宿主机独立运行，不放进服务端 Compose：
+
+```powershell
+cd agent-desktop
+pnpm install
+pnpm run dev
+```
+
+生产安装包使用 `pnpm run dist` 生成。正式发布还必须配置 Windows/macOS 代码签名、安装包来源校验和
+升级通道；未签名的本地构建只能用于演示。桌面端连接生产 Runtime 时必须提供 OIDC Token，不能依赖
+开发环境的租户/权限 Header。
+
 ## Agent Lab 发布门禁配置
 
 只有在 Control Plane 启用以下配置时，Agent 正式发布才强制要求 Agent Lab 回放证据：

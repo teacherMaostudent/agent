@@ -50,6 +50,21 @@ class ReplayCase(StrictModel):
     content: str | None = Field(default=None, max_length=100_000)
     metadata: dict[str, Any] = Field(default_factory=dict)
     expected_evidence_ids: list[str] = Field(default_factory=list)
+    expected_tool_names: list[str] = Field(default_factory=list)
+
+
+class CaseTrajectoryMetrics(StrictModel):
+    """从脱敏 Session Ledger 派生的 Harness 行为指标，不依赖 Judge 主观评分。"""
+
+    task_succeeded: bool = False
+    tool_call_count: int = Field(default=0, ge=0)
+    model_call_count: int = Field(default=0, ge=0)
+    retrieval_round_count: int = Field(default=0, ge=0)
+    approval_count: int = Field(default=0, ge=0)
+    recovery_event_count: int = Field(default=0, ge=0)
+    permission_violation_count: int = Field(default=0, ge=0)
+    evidence_recall: float | None = Field(default=None, ge=0, le=1)
+    tool_selection_precision: float | None = Field(default=None, ge=0, le=1)
 
 
 class EvaluationBinding(StrictModel):
@@ -115,6 +130,7 @@ class CaseRun(StrictModel):
     cost_usd: float | None = None
     session_event_count: int | None = Field(default=None, ge=0)
     session_last_sequence: int | None = Field(default=None, ge=0)
+    trajectory: CaseTrajectoryMetrics = Field(default_factory=CaseTrajectoryMetrics)
     error: str | None = None
 
 

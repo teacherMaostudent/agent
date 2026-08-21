@@ -1763,6 +1763,7 @@ class AgentGraph:
                     budget=result.get("budget", {}),
                     execution_trace=result.get("execution_trace", []),
                     interrupts=interrupt_items,
+                    context_summary=self._context_summary(result),
                 )
             return AgentRunResult(
                 status="WAITING_APPROVAL",
@@ -1775,6 +1776,7 @@ class AgentGraph:
                 budget=result.get("budget", {}),
                 execution_trace=result.get("execution_trace", []),
                 interrupts=interrupt_items,
+                context_summary=self._context_summary(result),
             )
         return AgentRunResult(
             status="COMPLETED",
@@ -1786,7 +1788,30 @@ class AgentGraph:
             execution_plan=result.get("execution_plan", {}),
             budget=result.get("budget", {}),
             execution_trace=result.get("execution_trace", []),
+            context_summary=self._context_summary(result),
         )
+
+    @staticmethod
+    def _context_summary(result: dict[str, Any]) -> dict[str, Any]:
+        """输出可审查但不泄露全文的 Context 选择清单，证明哪些历史进入了决策。"""
+        messages: list[dict[str, Any]] = []
+        for item in result.get("conversation_history", []):
+            if not isinstance(item, dict):
+                continue
+            content = str(item.get("content", ""))
+            metadata = item.get("metadata", {})
+            messages.append({
+                "role": item.get("role", "unknown"),
+                "created_at": item.get("created_at", ""),
+                "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "source": metadata.get("source", "context-service")
+                if isinstance(metadata, dict) else "context-service",
+            })
+        return {
+            "selected_history": messages,
+            "selected_history_count": len(messages),
+            "status": result.get("context_status", {}),
+        }
 
     @staticmethod
     def _limited_result(state: dict[str, Any], error: RuntimeLimitExceeded) -> AgentRunResult:

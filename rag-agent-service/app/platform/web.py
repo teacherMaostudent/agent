@@ -74,7 +74,6 @@ def create_service_app(
         base_url=settings.opa_base_url,
         decision_path=settings.opa_decision_path,
         public_paths=public_paths,
-        trusted_workload_prefixes=(),
     )
     app.add_middleware(
         OidcIdentityMiddleware,

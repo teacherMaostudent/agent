@@ -1,0 +1,28 @@
+select {
+  width: 100%;
+  margin-top: 5px;
+  border: 1px solid #2b3957;
+  border-radius: 9px;
+  color: #ecf2ff;
+  background: #111a2d;
+  padding: 10px 11px;
+  outline: none;
+  font: inherit;
+}
+
+select:focus {
+  border-color: #6386ff;
+  box-shadow: 0 0 0 3px rgba(99, 134, 255, 0.12);
+}
+
+.agent-config {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 130px;
+  gap: 10px;
+  width: 390px;
+}
+
+.composer-head .agent-config label {
+  width: auto;
+  margin: 0;
+}

@@ -12,6 +12,7 @@
 
 | 类型 | 服务 | 负责 | 不负责 |
 | --- | --- | --- | --- |
+| 客户端 | Agent Desktop | 任务交互、事件展示、人工决定和本地反馈 | Planner、工具鉴权、运行状态真源 |
 | 线上 | Control Plane | 定义、版本、发布快照、发布编排 | Agent Loop 与业务副作用 |
 | 线上 | Agent Runtime | Planner、LangGraph、Harness、审批/预算/状态 | 模型厂商协议、知识索引 |
 | 线上 | Context Service | 记忆组织、排序、Token 分配 | 决策与工具执行 |
@@ -45,19 +46,22 @@ Runtime Guard 随后生成 `AdmittedExecutionPlan`；Tool Gateway 仍对每个�
 
 ### 线上执行
 
-1. Runtime 验证调用方身份并从 Control Plane 解析 Agent、Workflow 或 Skill 的精确工件。
-2. Control Plane 在发布事务内完成 Artifact 编译；Runtime 在生产模式只校验哈希并加载它。Artifact 将 Graph、
+1. API 客户端或 Agent Desktop 提交任务。桌面端通过 Electron 主进程持有身份，Renderer 不接触
+   Token/Node API；交互提交会立即返回稳定 Run ID，并从 Session Ledger 展示后续事实。
+2. Runtime 验证调用方身份并从 Control Plane 解析 Agent、Workflow 或 Skill 的精确工件。
+3. Control Plane 在发布事务内完成 Artifact 编译；Runtime 在生产模式只校验哈希并加载它。Artifact 将 Graph、
    Prompt、知识、工具、模型与上限编译为可执行计划及受限
    `workflow-policy/v1`；未知节点类型、非法迁移与能力漂移会 fail-closed。
-3. Runtime 经 Context/RAG 获取排序后的记忆和 ACL 证据；RAG 可选时明确降级为 memory-only。
-4. Harness 只负责解析 Release、加载 Snapshot、创建执行上下文、选择 Executor 以及运行/恢复/取消；它不实现
+4. Runtime 经 Context/RAG 获取排序后的记忆和 ACL 证据；RAG 可选时明确降级为 memory-only。
+5. Harness 只负责解析 Release、加载 Snapshot、创建执行上下文、选择 Executor 以及运行/恢复/取消；它不实现
    Intent、RAG、Prompt Assembly、LLM Routing、Tool Auth 或领域逻辑。Executor 再由 LangGraph 在计划允许的边界内
    运行状态机；LLM Gateway 调模型，Tool Gateway 执行受控工具。
-5. Harness 先验证 Capability Manifest：能力名称、Provider 摘要、隔离等级及 Executor Profile 必须与
+6. Harness 先验证 Capability Manifest：能力名称、Provider 摘要、隔离等级及 Executor Profile 必须与
    目标 Runtime 集群部署证明一致。高风险工具转为审批中断；预算、取消和幂等状态由 Runtime 管理。
-6. Session Event Store 同时记录运行生命周期及脱敏后的模型可见投影（Prompt 组成、模型决策、工具/子 Agent
+7. Session Event Store 同时记录运行生命周期及脱敏后的模型可见投影（Prompt 组成、模型决策、工具/子 Agent
    结果）。它可解释模型上下文，但不复制 Context/RAG/Tool Gateway 的原始敏感正文。
-7. 各服务把业务事务和 Outbox 事件一起提交；Governance 异步审计、评测和生成发现。
+8. 各服务把业务事务和 Outbox 事件一起提交；Governance 异步审计、评测和生成发现。桌面反馈先在本地
+   脱敏保存，人工复核后才能进入 Agent Lab 用例，不能直接污染 Golden Dataset。
 
 多 Agent 协作同样受快照约束：Planner 只能请求能力 ID，`CapabilityRouter` 依据调用者、输入/输出
 Schema、管辖域和已发布 Binding 选择 Provider。Binding 可声明固定专家并行度和冲突策略；每个专家用

@@ -1,0 +1,20 @@
+.feedback {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid #2d3c5c;
+  border-radius: 11px;
+  background: #101a2d;
+}
+
+.feedback strong,
+.feedback span {
+  display: block;
+  color: #aab8cf;
+  font-size: 12px;
+}
+
+.feedback div {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}

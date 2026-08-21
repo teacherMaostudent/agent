@@ -18,6 +18,9 @@ x-rag-env: &rag-env
   RAG_RUNTIME_SNAPSHOT_REQUIRED: "true"
   RAG_GOVERNANCE_BASE_URL: http://agent-governance:8081
   RAG_GOVERNANCE_EVENT_KEY: local-governance-key
+  # 本地演示只把专用工作区作为固定 scope 以只读方式提供给 RAG Query。桌面端选择的
+  # 任意目录仍只会变成有界清单，绝不会借此获得容器文件读取权限。
+  RAG_SCAN_ROOTS: '{"workspace":"/workspace"}'
 
 x-rag-service: &rag-service
   build:
@@ -28,17 +31,29 @@ x-rag-service: &rag-service
   environment: *rag-env
   volumes:
     - rag-data:/service/data
+    - ./demo-workspace:/workspace:ro
 
 x-runtime-env: &runtime-env
   # Runtime 的配置与 RAG 进程彻底隔离：即使字段同名，也必须由 RUNTIME_ 显式声明。
   RUNTIME_ENVIRONMENT: local
   RUNTIME_DATA_DIR: /service/data
   RUNTIME_PERSISTENCE: sqlite
+  # Schema Registry 是部署工件；显式路径避免 wheel 安装位置改变契约解析结果。
+  RUNTIME_CONTRACTS_SCHEMA_DIR: /platform-contracts/schemas
   RUNTIME_REQUIRE_SERVICE_AUTH: "true"
   RUNTIME_SERVICE_API_KEY: local-runtime-service-key
   RUNTIME_INTERNAL_SERVICE_API_KEY: local-rag-service-key
   RUNTIME_CORS_ORIGINS: '[]'
-  RUNTIME_LLM_ENABLED: "false"
+  # 默认离线运行使无上游 Key 的首次部署仍可完成平台 E2E；在根目录 .env 显式设为
+  # true 后才会调用外部模型，防止缺失凭证表现为不透明的 5xx。
+  RUNTIME_LLM_ENABLED: ${RUNTIME_LLM_ENABLED:-false}
+  # 启动时先检查 Gateway 可达性；供应商调用仍由每次请求的路由/预算/熔断器决定。
+  RUNTIME_LLM_STARTUP_CHECK: ${RUNTIME_LLM_STARTUP_CHECK:-false}
+  # 容器内 localhost 指向 Runtime 自身；必须使用 Compose 服务名访问独立 LLM Gateway。
+  RUNTIME_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
+  # Runtime 以 Gateway 已登记的本地服务凭据发起调用；它不是 DeepSeek 的上游 Key。
+  # 生产环境应由 Secret 注入一个独立、最小权限的工作负载 Key，并在 Gateway 目录中登记。
+  RUNTIME_LLM_GATEWAY_API_KEY: ${RUNTIME_LLM_GATEWAY_API_KEY:-runtime-service-key}
   RUNTIME_CONTEXT_SERVICE_BASE_URL: http://agent-context-service:8002
   RUNTIME_RAG_QUERY_BASE_URL: http://rag-query-api:8003
   RUNTIME_TOOL_GATEWAY_BASE_URL: http://tool-gateway:8090
@@ -74,7 +89,8 @@ services:
       CONTROL_PLANE_GOVERNANCE_BASE_URL: http://agent-governance:8081
       CONTROL_PLANE_AGENT_LAB_BASE_URL: http://agent-lab:8092
       CONTROL_PLANE_AGENT_LAB_SERVICE_API_KEY: local-agent-lab-key
-    ports: ["8082:8080"]
+    # Windows/Hyper-V 经常动态保留 8xxx 端口段；宿主机使用 9002，容器内协议端口不变。
+    ports: ["9002:8080"]
     volumes: ["control-plane-data:/data"]
 
   agent-governance:
@@ -88,11 +104,16 @@ services:
       GOVERNANCE_EVENT_INGESTION_KEY: local-governance-key
       GOVERNANCE_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
       GOVERNANCE_LLM_GATEWAY_API_KEY: governance-service-key
-    ports: ["8081:8081"]
+    ports: ["9001:8081"]
     volumes: ["governance-data:/data"]
 
   llm-gateway:
     build: ./llm-gateway
+    # Key 只从未纳入版本控制的根目录 .env 或部署环境读取，不写入 Compose 或镜像层。
+    env_file:
+      # 本地首次启动可没有 .env；此时 Gateway 仍健康，但真实模型请求会因无凭证明确失败。
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: jdbc:postgresql://postgres:5432/agent_platform
       DATABASE_USERNAME: platform
@@ -110,13 +131,29 @@ services:
       CONTROL_PLANE_ADMIN_API_KEY: local-control-plane-admin-key
       GOVERNANCE_AUDITOR_API_KEY: local-governance-auditor-key
       GOVERNANCE_EVENT_INGESTION_KEY: local-governance-key
-    ports: ["8080:8080"]
+    ports: ["9000:8080"]
     depends_on: [postgres, redis]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/actuator/health | grep -q 'UP'"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
 
   agent-runtime:
     <<: *runtime-service
     ports: ["8001:8001"]
-    depends_on: [agent-control-plane, agent-governance, agent-context-service, tool-gateway]
+    depends_on:
+      llm-gateway:
+        condition: service_healthy
+      agent-control-plane:
+        condition: service_started
+      agent-governance:
+        condition: service_started
+      agent-context-service:
+        condition: service_started
+      tool-gateway:
+        condition: service_started
 
   agent-context-service:
     <<: *rag-service
@@ -161,7 +198,7 @@ services:
       RAG_INTERNAL_SERVICE_API_KEY: local-rag-service-key
       TOOL_GATEWAY_GOVERNANCE_BASE_URL: http://agent-governance:8081
       TOOL_GATEWAY_GOVERNANCE_EVENT_KEY: local-governance-key
-    ports: ["8090:8090"]
+    ports: ["9090:8090"]
     volumes: ["tool-gateway-data:/service/data"]
     depends_on: [agent-governance, ingestion-api]
 
@@ -169,7 +206,7 @@ services:
     build: ./model-lab
     restart: unless-stopped
     ports:
-      - "8091:8091"
+      - "9091:8091"
 
   agent-lab:
     build:
@@ -189,7 +226,7 @@ services:
       AGENT_LAB_SERVICE_API_KEY: local-agent-lab-key
       AGENT_LAB_TEMPORAL_ENABLED: "false"
     ports:
-      - "8092:8092"
+      - "9092:8092"
     volumes: [agent-lab-data:/data]
     depends_on: [agent-control-plane, agent-runtime, agent-governance]
 

@@ -31,6 +31,15 @@ Agent Lab
 - `GET /v1/experiments/{id}`：读取实验及用例结果；
 - `GET /v1/experiments/{id}/comparison`：与基线实验比较。
 
+## Harness Benchmark
+
+每个 `ReplayCase` 可固定 `expected_evidence_ids` 与 `expected_tool_names`。Agent Lab 从
+Runtime 的脱敏 Session Ledger 确定性计算任务成功率、工具/模型调用数、检索轮次、人工
+审批率、恢复事件、权限违规、Evidence Recall 与工具选择 Precision；Comparison 同时给出
+平均延迟和已知 USD 成本。推荐把“直接 ReAct”实验设为 baseline，再分别比较受控
+Plan-Execute、Context 压缩和失败恢复策略。Judge 负责回答质量，轨迹指标负责 Harness
+行为，两者不能相互替代。
+
 本地模式使用 SQLite 和同步本地队列，只用于开发、教学与契约测试。生产模式启动时强制要求
 PostgreSQL、Temporal、OIDC、工作负载令牌与 mTLS。API 只创建并提交任务；独立 Temporal Worker 通过
 数据库租约领取任务，避免长时间回放占用 Web 进程，也避免 Worker 故障后出现双重结算。

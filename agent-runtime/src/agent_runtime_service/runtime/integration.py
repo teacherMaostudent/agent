@@ -44,6 +44,18 @@ from agent_runtime_service.runtime.session_events import (
 )
 
 
+class ReleaseResolutionError(RuntimeError):
+    """Control Plane 无法为一次运行返回可执行 Release 时的稳定领域错误。"""
+
+
+class ReleaseNotFoundError(ReleaseResolutionError):
+    """目标租户、Agent 与环境组合没有可供 Runtime 执行的 Active Release。"""
+
+
+class ReleaseResolutionUnavailable(ReleaseResolutionError):
+    """Control Plane 暂时不可达或返回服务端故障，调用方可以稍后重试。"""
+
+
 def _governance_event_for_state_change(
     context: ExecutionContext, lifecycle_event: RuntimeLifecycleEvent
 ) -> dict[str, Any]:
@@ -113,14 +125,34 @@ class ControlPlaneClient:
             headers["X-Runtime-Key"] = self.runtime_key
         if self.workload_identity is not None:
             headers.update(self.workload_identity.authorization_header())
-        response = httpx.get(
-            f"{self.base_url}/v1/runtime/agents/{agent_id}/resolve",
-            params={"environment": environment, "session_id": session_id},
-            headers=headers,
-            timeout=self.timeout,
-            **self.mtls,
-        )
-        response.raise_for_status()
+        try:
+            response = httpx.get(
+                f"{self.base_url}/v1/runtime/agents/{agent_id}/resolve",
+                params={"environment": environment, "session_id": session_id},
+                headers=headers,
+                timeout=self.timeout,
+                **self.mtls,
+            )
+        except httpx.RequestError as exc:
+            raise ReleaseResolutionUnavailable(
+                "Control Plane is unavailable while resolving the Agent release."
+            ) from exc
+        if response.status_code == 404:
+            raise ReleaseNotFoundError(
+                f"No active release exists for Agent '{agent_id}' in environment "
+                f"'{environment}' and tenant '{tenant_id}'."
+            )
+        if response.status_code >= 500:
+            raise ReleaseResolutionUnavailable(
+                "Control Plane failed while resolving the Agent release."
+            )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # 不把 Control Plane 的响应正文透传到桌面端；其中可能包含内部策略细节。
+            raise ReleaseResolutionError(
+                f"Control Plane rejected release resolution with status {response.status_code}."
+            ) from exc
         return response.json()
 
     def resolve_skill(

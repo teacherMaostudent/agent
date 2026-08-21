@@ -15,6 +15,8 @@
 - 对知识检索、模型调用和工具副作用建立统一的身份、成本、审计和故障恢复链路；
 - 以 Agent Lab 回放冻结快照，以 Governance 质量门禁控制正式 Release，以 Model Lab 管理可选自部署模型实验；
 - 由 Temporal 承载跨天、审批等待、重试和故障恢复，不把长期任务留在 Web 请求或单个 Python 进程中。
+- 通过 `agent-desktop` 提供面向真实用户的 Electron 执行台，显示计划/事件、审批、Steering、
+  取消、结果与反馈，但不在客户端复制 Runtime 状态机或工具权限。
 
 ## 核心设计原则
 
@@ -120,7 +122,8 @@ Governance consumes the canonical Kafka topic with idempotency and DLQ handling.
 
 ```mermaid
 flowchart LR
-    Client["业务系统 / 用户"] --> Runtime["Agent Runtime"]
+    Client["业务系统 / API 用户"] --> Runtime["Agent Runtime"]
+    Desktop["Agent Desktop / Electron"] --> Runtime
     Runtime --> CP["Control Plane"]
     Runtime --> Context["Context Service"]
     Context --> RAG["RAG Service"]
@@ -167,6 +170,7 @@ agent/
 ├─ tool-gateway/           版本化工具目录、鉴权、审批、幂等、重试与安全调用
 ├─ agent-governance/       事件消费、评测、Judge 校准、审计与合规规则
 ├─ agent-lab/              冻结快照离线回放、基线比较、实验发布证据
+├─ agent-desktop/          Electron + React 桌面执行台、事件流、审批和用户反馈
 ├─ model-lab/              模型实验登记、模型卡、评测与可选训练工件
 ├─ platform-sdk/           Python 跨服务契约、HTTP Client、错误、脱敏与 Trace 传播
 ├─ platform-infra/         OIDC/mTLS、OPA、PostgreSQL、Telemetry、Schema/S3 适配器
@@ -174,6 +178,10 @@ agent/
 ├─ deploy/                 Kafka Connect、证书、部署辅助文件
 └─ docs/                   架构、部署、服务拆分和工程教程
 ```
+
+`agent-desktop` 是产品客户端而不是第八个线上平台服务。它通过 Runtime 公开 API 工作，OIDC
+Token 只保存在 Electron 主进程内存；Renderer 关闭 Node 权限。快速演示、三类任务和
+Harness Benchmark 方法见[桌面 Agent 演示指南](docs/desktop-agent-demo.md)。
 
 共享基础目录的使用规则：
 
@@ -334,6 +342,33 @@ Temporal、OIDC、工作负载身份和 mTLS。
 
 ### 最短联调路径
 
+Windows 可直接双击仓库根目录的 `start-platform.cmd`。它会检查并按需启动 Docker
+Desktop，构建七个逻辑服务及 PostgreSQL、Redis、摄取工作负载，等待全部健康检查，
+最后执行 `scripts/platform_e2e.py`。验收过程会幂等准备桌面端默认使用的
+`demo / general-agent / local` Release，因此首次安装后无需手工发布即可提交基础任务；
+持久化卷不会在普通启动或停止时删除。
+需要启动、状态、日志、重启和停止菜单时双击 `manage-platform.cmd`。两个 CMD 都会先
+切换到自身所在的仓库根目录，失败后保留窗口，不依赖用户打开终端时的当前目录。
+
+PowerShell 管理入口支持启动、停止、重启、状态和日志：
+
+```powershell
+Set-Location "C:\Users\Administrator\Documents\AI工作\agent"
+.\scripts\start-platform.ps1 -Action Start
+.\scripts\start-platform.ps1 -Action Status
+.\scripts\start-platform.ps1 -Action Logs
+.\scripts\start-platform.ps1 -Action Stop
+```
+
+本地宿主端口使用 `9000`（LLM Gateway）、`9001`（Governance）、`9002`（Control Plane）
+和 `9090`（Tool Gateway）；容器内部端口仍为 `8080/8081/8080/8090`。这样可避开
+Windows、Hyper-V 或 WSL 动态保留的常见 `8xxx` 端口段。Runtime 桌面连接地址仍是
+`http://127.0.0.1:8001/api/v1`。可选的 Model Lab 和 Agent Lab 分别使用宿主端口
+`9091`、`9092`。
+
+需要同时启动两个离线实验服务时增加 `-WithLabs`；已有镜像可使用 `-NoBuild`，只做
+服务启动；缺少本地 Python/httpx 时脚本会保留已启动服务并明确提示跳过黑盒 E2E。
+
 ```powershell
 git clone https://github.com/teacherMaostudent/agent.git
 cd agent
@@ -344,6 +379,16 @@ python scripts/platform_e2e.py
 ### Python 服务测试
 
 各服务拥有独立依赖和测试入口；不要用一个混合 `PYTHONPATH` 同时执行两个名为 `app` 的服务测试。
+
+桌面客户端测试与构建：
+
+```powershell
+cd agent-desktop
+pnpm install
+pnpm run typecheck
+pnpm test
+pnpm run build
+```
 
 ```powershell
 # Agent Runtime：同时需要共享 SDK 与 Infra

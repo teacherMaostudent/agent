@@ -139,6 +139,7 @@ gateway:
     deepseek:
       protocol: openai-compatible
       base-url: https://api.deepseek.com
+      # 只接受部署环境注入的凭证；禁止以源码中的默认值回退，避免密钥进入镜像和 Git。
       api-key: ${DEEPSEEK_API_KEY:}
       models:
         deepseek-v4-flash:
@@ -410,6 +411,21 @@ gateway:
         - qwen-plus
         - claude-sonnet-4
         - claude-3-5-haiku
+    runtime-service-key:
+      # Runtime 必须代表多个已认证租户发起模型请求；普通用户 Key 会被绑定租户校验拒绝。
+      # 本地值仅用于 Compose 联调，生产值必须由 Secret 注入并以最小模型白名单登记。
+      enabled: true
+      tenant-id: internal
+      user-id: agent-runtime
+      trusted-service: true
+      allowed-models:
+        - deepseek-v4-flash
+        - deepseek-v4-pro
+        - qwen-plus
+        - qwen-turbo
+        - claude-sonnet-4
+        - claude-3-5-haiku
+        - vllm-local
   prompt-templates:
     interview-answer:
       system: |

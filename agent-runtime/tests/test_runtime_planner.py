@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from agent_runtime_service.agent.decision_engine import OfflineDecisionEngine
 from agent_runtime_service.agent.graph import AgentGraph
 from agent_runtime_service.agent.models import AgentAction, AgentDecision
 from agent_runtime_service.runtime.budget import BudgetGuard
@@ -102,6 +103,54 @@ def state(task: str, *, budget: RuntimeBudget | None = None) -> dict:
         "evidence": [],
         "execution_trace": [],
     }
+
+
+def test_offline_engine_terminates_after_empty_retrieval() -> None:
+    """离线模式即使没有命中证据也应显式回答未知，不能无限重复检索。"""
+    current = state("Question without indexed evidence")
+    current["evidence"] = []
+    current["budget"]["retrieval_rounds"] = 1
+
+    decision = OfflineDecisionEngine().decide(current, tool_registry=None)  # type: ignore[arg-type]
+
+    assert decision.action == AgentAction.ANSWER
+    assert "No relevant evidence" in decision.final_answer
+
+
+def test_offline_engine_executes_only_published_explicit_scan() -> None:
+    """本地桌面演示可以验证真实 Tool Gateway 链路，但不能把任意任务变成文件扫描。"""
+    current = state("使用 controlled_scan 扫描源码中的 TODO")
+    current["compiled_plan"] = {"tools": [{"tool_name": "controlled_scan", "version": "1.0.0"}]}
+
+    decision = OfflineDecisionEngine().decide(current, tool_registry=None)  # type: ignore[arg-type]
+
+    assert decision.action == AgentAction.TOOL
+    assert decision.tool_name == "controlled_scan"
+    assert decision.tool_arguments == {
+        "scope": "workspace",
+        "pattern": "TODO",
+        "regex": False,
+        "glob": "**/*",
+    }
+
+
+def test_offline_engine_does_not_disguise_scan_failure_as_empty_result() -> None:
+    """工具失败必须在最终答案中可见，不能与“没有命中”混淆。"""
+    current = state("使用 controlled_scan 扫描源码中的 TODO")
+    current["compiled_plan"] = {"tools": [{"tool_name": "controlled_scan", "version": "1.0.0"}]}
+    current["observations"] = [
+        {
+            "type": "tool",
+            "tool": "controlled_scan",
+            "success": False,
+            "error": "tool upstream transport failed",
+        }
+    ]
+
+    decision = OfflineDecisionEngine().decide(current, tool_registry=None)  # type: ignore[arg-type]
+
+    assert decision.action == AgentAction.ANSWER
+    assert "did not complete" in decision.final_answer
 
 
 def test_planner_recognizes_intent_entities_sources_and_route() -> None:

@@ -223,6 +223,11 @@ Windows 非 ASCII 工作目录下不建议使用 Hatch editable 安装，因为 
 当 `RUNTIME_OIDC_ENABLED=true` 时，Runtime API 会要求经过 OIDC Middleware 验证的身份声明；业务路由
 从已验证的 `tenant_id`、`sub`、`permissions` 读取身份，拒绝把调用方裸传的 `X-Permissions` 当作
 授权依据。服务到服务调用应使用工作负载 Token + mTLS，而不是复用终端用户凭证。
+
+`/api/v1/agent/**` 是桌面端等最终用户入口，不要求客户端持有内部静态服务密钥；生产
+仍由 OIDC/OPA 强制验证。执行器目录、内部运维与其他未豁免路径继续使用工作负载凭据，
+路径匹配按完整段判断，`/agent-evil` 等相似前缀不能绕过认证。
+
 # Harness 边界
 
 `AgentHarness` 是 Runtime 的最小执行生命周期门面，只公开七项能力：

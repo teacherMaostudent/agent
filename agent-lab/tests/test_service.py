@@ -85,6 +85,55 @@ def test_replay_freezes_snapshot_runs_cases_and_delegates_gate(tmp_path: Path):
     }
 
 
+def test_trajectory_metrics_are_included_in_baseline_comparison(tmp_path: Path):
+    """比较报告必须覆盖 Harness 调用轨迹，而非只比较最终 Judge 结论。"""
+    from app.models import (
+        CaseRun,
+        CaseTrajectoryMetrics,
+        ExperimentPlan,
+        ExperimentRecord,
+        ReplayCase,
+    )
+
+    repository = ExperimentRepository(tmp_path / "trajectory.db")
+    baseline = ExperimentRecord(
+        experiment_id="baseline",
+        plan=ExperimentPlan(
+            name="base",
+            tenant_id="tenant-a",
+            agent_id="agent-a",
+            cases=[ReplayCase(case_id="c1", task="task")],
+        ),
+        status="COMPLETED",
+        case_runs=[
+            CaseRun(
+                case_id="c1",
+                session_id="s1",
+                status="COMPLETED",
+                latency_ms=100,
+                cost_usd=0.1,
+                trajectory=CaseTrajectoryMetrics(
+                    task_succeeded=True, tool_call_count=3, model_call_count=4
+                ),
+            )
+        ],
+    )
+    candidate = baseline.model_copy(deep=True)
+    candidate.experiment_id = "candidate"
+    candidate.plan.baseline_experiment_id = "baseline"
+    candidate.case_runs[0].trajectory.tool_call_count = 2
+    candidate.case_runs[0].latency_ms = 80
+    repository.create(baseline)
+    repository.create(candidate)
+    service = AgentLabService(repository, object(), object(), object(), max_cases=10)
+
+    report = service.comparison("tenant-a", "candidate")
+
+    assert report["current"]["taskSuccessRate"] == 1.0
+    assert report["current"]["totalToolCalls"] == 2
+    assert report["baseline"]["totalToolCalls"] == 3
+
+
 def test_skill_replay_resolves_exact_artifact_and_uses_governed_runtime(tmp_path: Path):
     class SkillControlPlane(FakeControlPlane):
         def resolve_skill(self, tenant_id, skill_id, version):

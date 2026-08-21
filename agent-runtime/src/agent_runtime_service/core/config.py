@@ -80,6 +80,11 @@ class RuntimeSettings(BaseSettings):
     cors_origins: list[str] = []
     require_service_auth: bool = False
     service_api_key: str = Field(default="", repr=False)
+    # API 根地址仅返回浏览器说明页。使用精确匹配，禁止顺带豁免 /api/v1 下的业务接口。
+    service_auth_exempt_paths: list[str] = ["/api/v1"]
+    # 用户交互入口由 OIDC/OPA 鉴权；内部能力、目录和运维接口仍要求工作负载凭据。
+    # 生产配置校验强制启用 OIDC，因此该豁免不会把裸身份 Header 变成生产信任根。
+    service_auth_exempt_prefixes: list[str] = ["/api/v1/agent"]
     oidc_enabled: bool = False
     oidc_issuer: str = ""
     oidc_audience: str = "agent-platform"

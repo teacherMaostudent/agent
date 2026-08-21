@@ -10,6 +10,7 @@ RUN groupadd --system governance \
     && useradd --system --gid governance --home-dir /service governance
 
 COPY platform-infra /platform-infra
+COPY platform-contracts /platform-contracts
 COPY agent-governance/pyproject.toml agent-governance/README.md ./
 COPY agent-governance/app ./app
 COPY agent-governance/db ./db
