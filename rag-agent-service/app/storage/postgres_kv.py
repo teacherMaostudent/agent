@@ -83,6 +83,15 @@ class PostgresKv:
             ).fetchall()
         return [json.loads(row["payload"]) for row in rows]
 
+    def list_prefix(self, kind: str, id_prefix: str, *, limit: int) -> list[dict[str, Any]]:
+        """按 RootTask 前缀限制范围读取；业务层必须先完成 tenant/Run 授权。"""
+        with connect_postgres(self._dsn, self._schema) as connection:
+            rows = connection.execute(
+                "SELECT payload FROM platform_kv WHERE kind = ? AND id LIKE ? ORDER BY id LIMIT ?",
+                (kind, f"{id_prefix}%", limit),
+            ).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
     def delete(self, kind: str, id: str) -> bool:
         """删除精确 key；权限校验必须在调用此前完成。"""
         with connect_postgres(self._dsn, self._schema) as connection:

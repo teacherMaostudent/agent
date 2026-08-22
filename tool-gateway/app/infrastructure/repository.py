@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -76,6 +77,76 @@ class SqliteRepository:
         """
         with self._lock:
             self.connection.execute("SELECT 1").fetchone()
+
+    def issue_connector_grant(
+        self, tenant_id: str, user_id: str, connector_id: str, run_id: str,
+        snapshot_id: str, tool_name: str, tool_version: str, expires_at: datetime,
+    ) -> str:
+        """签发绑定 Run/快照/工具的短期 opaque grant；明文只返回一次。"""
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        with self._lock:
+            self.connection.execute(
+                """INSERT INTO connector_grants(
+                    token_hash,tenant_id,user_id,connector_id,run_id,snapshot_id,
+                    tool_name,tool_version,expires_at
+                ) VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    token_hash, tenant_id, user_id, connector_id, run_id, snapshot_id,
+                    tool_name, tool_version, expires_at.isoformat(),
+                ),
+            )
+        return token
+
+    def consume_connector_grant(
+        self, tenant_id: str, user_id: str, connector_id: str, token: str,
+        run_id: str, snapshot_id: str, tool_name: str, tool_version: str,
+    ) -> bool:
+        """原子消费一次 grant；任何绑定字段不一致都 fail-closed。"""
+        now = _now().isoformat()
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        with self._lock:
+            cursor = self.connection.execute(
+                """UPDATE connector_grants SET consumed_at=? WHERE token_hash=?
+                AND tenant_id=? AND user_id=? AND connector_id=? AND run_id=?
+                AND snapshot_id=? AND tool_name=? AND tool_version=?
+                AND consumed_at IS NULL AND expires_at>?""",
+                (
+                    now, token_hash, tenant_id, user_id, connector_id, run_id,
+                    snapshot_id, tool_name, tool_version, now,
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def connector_result_receipt(
+        self, tenant_id: str, connector_id: str, task_id: str, result_sha256: str
+    ) -> str | None:
+        """查询已落库的 Connector 结果回执；相同任务重试不应再次消费 Grant。"""
+        with self._lock:
+            row = self.connection.execute(
+                """SELECT invocation_id,result_sha256 FROM connector_result_receipts
+                WHERE tenant_id=? AND connector_id=? AND task_id=?""",
+                (tenant_id, connector_id, task_id),
+            ).fetchone()
+        if row is not None and row["result_sha256"] != result_sha256:
+            raise ValueError("connector task result hash conflicts with existing receipt")
+        return str(row["invocation_id"]) if row is not None else None
+
+    def save_connector_result_receipt(
+        self, tenant_id: str, connector_id: str, task_id: str, result_sha256: str,
+        invocation_id: str,
+    ) -> None:
+        """保存审计回执，使 Runtime 重放可以得到稳定结果而非二次副作用。"""
+        with self._lock:
+            self.connection.execute(
+                """INSERT INTO connector_result_receipts(
+                    tenant_id,connector_id,task_id,result_sha256,invocation_id,created_at
+                ) VALUES (?,?,?,?,?,?)""",
+                (
+                    tenant_id, connector_id, task_id, result_sha256, invocation_id,
+                    _now().isoformat(),
+                ),
+            )
 
     def claim_idempotency(
         self,
@@ -589,6 +660,27 @@ CREATE TABLE IF NOT EXISTS audit_records (
 );
 CREATE INDEX IF NOT EXISTS audit_tenant_created_idx
 ON audit_records(tenant_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS connector_grants (
+    token_hash TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    connector_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    snapshot_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    tool_version TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS connector_grants_binding_idx
+ON connector_grants(tenant_id, connector_id, run_id, consumed_at);
+
+CREATE TABLE IF NOT EXISTS connector_result_receipts (
+    tenant_id TEXT NOT NULL, connector_id TEXT NOT NULL, task_id TEXT NOT NULL,
+    result_sha256 TEXT NOT NULL, invocation_id TEXT NOT NULL, created_at TEXT NOT NULL,
+    PRIMARY KEY(tenant_id, connector_id, task_id)
+);
 
 CREATE TABLE IF NOT EXISTS event_outbox (
     event_id TEXT PRIMARY KEY,

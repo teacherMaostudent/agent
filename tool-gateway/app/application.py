@@ -91,6 +91,16 @@ class ToolExecutionService:
                 raise ToolUpstreamError("downstream attempt budget is exhausted", retryable=False)
             self.registry.assert_visible(spec, context.tenant_id)
             self._authorize(spec, context)
+            if context.connector_id and (
+                not context.connector_grant or not self.repository.consume_connector_grant(
+                    context.tenant_id, context.user_id, context.connector_id,
+                    context.connector_grant, context.run_id, context.snapshot_id,
+                    spec.name, spec.version,
+                )
+            ):
+                raise ToolPermissionError(
+                    "connector grant is missing, expired, or already consumed"
+                )
             self._validate_runtime_action_identity(spec, context)
             if self.policy_authorizer is not None:
                 await asyncio.to_thread(
@@ -140,7 +150,6 @@ class ToolExecutionService:
                         approval_granted=bool(payload.approval_id),
                     )
                     return response
-
             if spec.approval_required:
                 pending = self._authorize_approval(spec, payload, context, request_hash)
                 if pending is not None:
@@ -246,6 +255,45 @@ class ToolExecutionService:
                 approval_granted=bool(payload.approval_id),
             )
             raise
+
+    async def record_connector_result(
+        self, name: str, version: str, task_id: str, result_sha256: str, context: InvocationContext
+    ) -> InvocationResponse:
+        """消费本机 Connector 的单次 Grant 并记录统一工具审计，不重复执行适配器。"""
+        spec, _ = self.registry.resolve(name, version)
+        self.registry.assert_visible(spec, context.tenant_id)
+        self._authorize(spec, context)
+        self._validate_runtime_action_identity(spec, context)
+        if not context.connector_id or not context.connector_grant:
+            raise ToolPermissionError("connector identity and grant are required")
+        receipt = self.repository.connector_result_receipt(
+            context.tenant_id, context.connector_id, task_id, result_sha256
+        )
+        if receipt is not None:
+            return InvocationResponse(
+                invocation_id=receipt, status=InvocationStatus.SUCCEEDED,
+                tool_name=spec.name, tool_version=spec.version,
+                output={"task_id": task_id, "result_sha256": result_sha256},
+                idempotent_replay=True,
+            )
+        if not self.repository.consume_connector_grant(
+            context.tenant_id, context.user_id, context.connector_id, context.connector_grant,
+            context.run_id, context.snapshot_id, spec.name, spec.version,
+        ):
+            raise ToolPermissionError("connector grant is missing, expired, or already consumed")
+        invocation = InvocationResponse(
+            status=InvocationStatus.SUCCEEDED, tool_name=spec.name, tool_version=spec.version,
+            output={"task_id": task_id, "result_sha256": result_sha256},
+        )
+        self._audit(invocation, spec, context, {"task_id": task_id, "result_sha256": result_sha256})
+        self.repository.save_connector_result_receipt(
+            context.tenant_id,
+            context.connector_id,
+            task_id,
+            result_sha256,
+            invocation.invocation_id,
+        )
+        return invocation
 
     def _authorize_approval(
         self,

@@ -1,21 +1,32 @@
 import asyncio
+import hashlib
 import json
-from datetime import UTC, datetime
+import secrets
+from datetime import UTC, datetime, timedelta
 from time import monotonic
 from typing import Annotated
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 from platform_sdk.contracts.capabilities import RuntimeCapability
 from platform_sdk.contracts.context import ConversationMessage
+from platform_sdk.contracts.desktop_connector import (
+    ConnectorGrantRequest,
+    ConnectorPairingRequest,
+    ConnectorTaskRequest,
+)
 from platform_sdk.contracts.execution import ExecutionContext
 from platform_sdk.contracts.runtime_api import (
     AgentFollowupRequest,
     AgentResumeRequest,
     AgentRunInputRequest,
     AgentRunRequest,
+    ReviewAssignmentRequest,
+    ReviewCommentRequest,
+    ReviewTransferRequest,
+    RunShareRequest,
     SessionCompactionRequest,
     SessionForkRequest,
     SkillRunRequest,
@@ -28,10 +39,12 @@ from platform_sdk.contracts.skills import (
     SkillBinding,
 )
 from platform_sdk.contracts.workflow import CompiledWorkflowPlan
+from platform_sdk.tools.registry import ToolContext
 
 from agent_runtime_service.runtime.capabilities import CapabilityUnavailable
 from agent_runtime_service.runtime.capability_dispatcher import GovernedCapabilityDispatcher
 from agent_runtime_service.runtime.capability_handlers import RuntimeCapabilityHandlers
+from agent_runtime_service.runtime.connector_artifact_relay import ConnectorArtifactRelay
 from agent_runtime_service.runtime.integration import (
     ReleaseNotFoundError,
     ReleaseResolutionError,
@@ -105,6 +118,436 @@ def _http_agent_owner() -> OrchestrationOwner:
 def _public_result(result: dict) -> dict:
     """移除仅用于恢复和内部编排的下划线字段，禁止它们穿透 Runtime API。"""
     return {key: value for key, value in result.items() if not key.startswith("_")}
+
+
+def _can_read_run(store, tenant_id: str, run, user_id: str) -> bool:
+    """Owner 或明确 share 才能读取 Run；Review 走独立端点，不混入 Workspace 规则。"""
+    return run.user_id == user_id or store.is_shared_with(tenant_id, run.run_id, user_id)
+
+
+def _review_projection(run, assignment: dict[str, str]) -> dict:
+    """生成 Review 所需、但不含 Prompt/工具原始输出的受控详情投影。
+
+    审查人需要复核结论、证据标识、冻结快照的结构性计划和预算事实；但原始 Prompt、
+    Context 正文、工具参数及工具返回可能含有额外数据域内容，不能因“Review”角色默认
+    泄露。后续的证据正文投影必须再经 RAG 数据域授权实现。
+    """
+    result = run.result if isinstance(run.result, dict) else {}
+    evidence = result.get("evidence", [])
+    safe_evidence = [
+        {
+            "evidence_id": str(item.get("evidence_id", item.get("id", item.get("document_id", "")))),
+            "source": str(item.get("source", item.get("title", item.get("source_id", "")))),
+        }
+        for item in evidence
+        if isinstance(item, dict)
+    ]
+    plan_summary: dict[str, object] = {}
+    try:
+        plan = CompiledAgentPlan.model_validate(result.get("_compiled_plan"))
+        plan_summary = {
+            "contract_hash": plan.contract_hash,
+            "graph": {
+                "graph_id": plan.graph_id,
+                "entrypoint": plan.graph_entrypoint,
+                "terminal_nodes": plan.graph_terminal_nodes,
+                "node_count": len(plan.graph_node_kinds),
+            },
+            "executor_profile": plan.executor_profile,
+            "required_capabilities": plan.required_capabilities,
+            "logical_model": plan.logical_model,
+            "fallback_models": plan.fallback_models,
+            "knowledge_bases": [str(item.get("knowledge_base", "")) for item in plan.knowledge],
+            "tool_names": [
+                str(item.get("tool_name", item.get("name", item.get("tool_id", ""))))
+                for item in plan.tools
+                if isinstance(item, dict)
+            ],
+        }
+    except Exception:
+        # 历史 Run 或部分故障 Run 可能没有成功保存编译计划。明确标记不可用，而非虚构计划。
+        plan_summary = {"status": "unavailable"}
+    budget = result.get("budget", {})
+    return {
+        "run_id": run.run_id,
+        "agent_id": run.context.agent_id,
+        "snapshot_id": run.snapshot_id,
+        "status": run.status,
+        "runtime_state": run.runtime_state,
+        "updated_at": run.updated_at.isoformat(),
+        "assignment": assignment,
+        "conclusion": {
+            "answer": str(result.get("answer", "")),
+            "termination_reason": str(result.get("termination_reason", "")),
+            "error_code": run.error_code,
+        },
+        "evidence": safe_evidence,
+        "budget": budget if isinstance(budget, dict) else {},
+        "plan": plan_summary,
+        "approval": {
+            "required": run.status == "WAITING_APPROVAL",
+            "approval_id": str(result.get("approval_id", "")),
+        },
+    }
+
+
+@router.post("/connectors/pairings")
+def create_connector_pairing(
+    payload: ConnectorPairingRequest,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict:
+    """创建短时 Desktop 配对码；只登记声明能力，不授予工具权限。"""
+    _, _, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
+    if "connector:pair" not in permissions:
+        raise HTTPException(status_code=403, detail="connector:pair permission is required")
+    code = secrets.token_urlsafe(24)
+    connector_id = request.app.state.container.run_store.create_connector(
+        x_tenant_id, x_user_id, payload.device_name, payload.capabilities,
+        hashlib.sha256(code.encode()).hexdigest(),
+        (datetime.now(UTC) + timedelta(minutes=10)).isoformat(),
+    )
+    return {"connector_id": connector_id, "pairing_code": code, "expires_in_seconds": 600}
+
+
+@router.post("/connectors/{connector_id}/confirm", status_code=status.HTTP_204_NO_CONTENT)
+def confirm_connector_pairing(
+    connector_id: str,
+    request: Request,
+    payload: dict,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> Response:
+    """确认配对码；确认后仍需每次通过 Runtime/Tool Gateway 做能力授权。"""
+    code = str(payload.get("pairing_code", ""))
+    if not code or len(code) > 128:
+        raise HTTPException(status_code=422, detail="pairing_code is required")
+    ok = request.app.state.container.run_store.confirm_connector(
+        x_tenant_id, x_user_id, connector_id, hashlib.sha256(code.encode()).hexdigest()
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="pairing is invalid or expired")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/connectors/{connector_id}/grants")
+def issue_connector_grant(
+    connector_id: str,
+    payload: ConnectorGrantRequest,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict:
+    """仅允许已连接设备的 Run 所有者申请单工具一次性执行授权。"""
+    _, _, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
+    if "connector:grant" not in permissions:
+        raise HTTPException(status_code=403, detail="connector:grant permission is required")
+    if payload.connector_id != connector_id:
+        raise HTTPException(status_code=422, detail="connector_id does not match path")
+    request.app.state.container.run_store.reconcile_stale_connectors(
+        request.app.state.container.settings.connector_heartbeat_timeout_seconds
+    )
+    connector = request.app.state.container.run_store.get_connector(
+        x_tenant_id, x_user_id, connector_id
+    )
+    if connector is None or connector["status"] != "CONNECTED":
+        raise HTTPException(status_code=409, detail="connector is not connected")
+    run = request.app.state.container.run_store.get(x_tenant_id, payload.run_id)
+    if run is None or run.user_id != x_user_id or run.snapshot_id != payload.snapshot_id:
+        raise HTTPException(status_code=404, detail="run or snapshot is not owned by caller")
+    if payload.tool_name not in set(connector["capabilities"]):
+        raise HTTPException(status_code=403, detail="connector did not declare requested capability")
+    compiled_plan = run.result.get("_compiled_plan", {})
+    if not isinstance(compiled_plan, dict) or not any(
+        item.get("tool_name") == payload.tool_name and item.get("version") == payload.tool_version
+        for item in compiled_plan.get("tools", [])
+        if isinstance(item, dict)
+    ):
+        raise HTTPException(status_code=403, detail="tool is not bound by the published run plan")
+    tool_gateway = request.app.state.container.capabilities.require(RuntimeCapability.TOOL)
+    grant = tool_gateway.issue_connector_grant(
+        ToolContext(
+            tenant_id=x_tenant_id,
+            user_id=x_user_id,
+            permissions=frozenset(permissions),
+            request_id=f"connector-grant-{uuid4().hex}",
+            run_id=payload.run_id,
+            snapshot_id=payload.snapshot_id,
+        ),
+        connector_id,
+        payload.run_id,
+        payload.snapshot_id,
+        payload.tool_name,
+        payload.tool_version,
+        payload.expires_in_seconds,
+    )
+    return {"connector_id": connector_id, "run_id": payload.run_id, **grant}
+
+
+@router.post("/connectors/{connector_id}/heartbeat", status_code=status.HTTP_204_NO_CONTENT)
+def heartbeat_connector(
+    connector_id: str,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> Response:
+    """由已确认 Connector 报告存活；状态记录用于断线诊断而不是工具授权。"""
+    if not request.app.state.container.run_store.heartbeat_connector(
+        x_tenant_id, x_user_id, connector_id
+    ):
+        raise HTTPException(status_code=409, detail="connector is not connected")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/connectors/{connector_id}/tasks")
+def enqueue_connector_task(
+    connector_id: str,
+    payload: ConnectorTaskRequest,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict:
+    """把已发布计划中的单个本机动作投递给指定在线 Connector。"""
+    _, _, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
+    if "connector:task:create" not in permissions:
+        raise HTTPException(status_code=403, detail="connector:task:create permission is required")
+    store = request.app.state.container.run_store
+    store.reconcile_stale_connectors(request.app.state.container.settings.connector_heartbeat_timeout_seconds)
+    connector = store.get_connector(x_tenant_id, x_user_id, connector_id)
+    run = store.get(x_tenant_id, payload.run_id)
+    if connector is None or connector["status"] != "CONNECTED":
+        raise HTTPException(status_code=409, detail="connector is not connected")
+    if run is None or run.user_id != x_user_id or run.snapshot_id != payload.snapshot_id:
+        raise HTTPException(status_code=404, detail="run or snapshot is not owned by caller")
+    compiled = run.result.get("_compiled_plan", {})
+    bound = isinstance(compiled, dict) and any(
+        item.get("tool_name") == payload.tool_name and item.get("version") == payload.tool_version
+        for item in compiled.get("tools", []) if isinstance(item, dict)
+    )
+    if payload.tool_name not in set(connector["capabilities"]) or not bound:
+        raise HTTPException(status_code=403, detail="connector capability or published tool binding is missing")
+    task_id = store.create_connector_task(
+        x_tenant_id, x_user_id, connector_id, payload.run_id, payload.snapshot_id,
+        payload.tool_name, payload.tool_version, payload.arguments,
+        (datetime.now(UTC) + timedelta(seconds=payload.expires_in_seconds)).isoformat(),
+    )
+    return {"task_id": task_id, "status": "PENDING"}
+
+
+@router.post("/connectors/{connector_id}/tasks/next")
+def claim_connector_task(
+    connector_id: str,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> dict:
+    """由桌面主进程领取一项待执行任务；领取不是执行，也不返回一次性 Grant。"""
+    store = request.app.state.container.run_store
+    store.reconcile_stale_connectors(request.app.state.container.settings.connector_heartbeat_timeout_seconds)
+    connector = store.get_connector(x_tenant_id, x_user_id, connector_id)
+    if connector is None or connector["status"] != "CONNECTED":
+        raise HTTPException(status_code=409, detail="connector is not connected")
+    item = store.claim_connector_task(x_tenant_id, x_user_id, connector_id)
+    return {"item": item}
+
+
+@router.post("/connectors/{connector_id}/tasks/{task_id}/complete", status_code=status.HTTP_204_NO_CONTENT)
+def complete_connector_task(
+    connector_id: str,
+    task_id: str,
+    payload: dict,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> Response:
+    """接收主进程已脱敏、限长的本机任务结果；拒绝覆盖租约外或终态任务。"""
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=422, detail="result object is required")
+    encoded = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(encoded) > 24_000:
+        raise HTTPException(status_code=422, detail="connector result exceeds 24KB limit")
+    connector_grant = str(payload.get("connector_grant", ""))
+    task = request.app.state.container.run_store.get_connector_task(
+        x_tenant_id, x_user_id, connector_id, task_id
+    )
+    if task is None or task["status"] != "CLAIMED" or not connector_grant:
+        raise HTTPException(status_code=409, detail="connector task or one-time grant is unavailable")
+    _, _, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
+    try:
+        request.app.state.container.capabilities.require(RuntimeCapability.TOOL).record_connector_result(
+            ToolContext(
+                tenant_id=x_tenant_id, user_id=x_user_id, permissions=frozenset(permissions),
+                request_id=f"connector-result-{task_id}", run_id=str(task["run_id"]),
+                snapshot_id=str(task["snapshot_id"]), connector_id=connector_id,
+                connector_grant=connector_grant,
+            ),
+            str(task["tool_name"]), str(task["tool_version"]), task_id,
+            hashlib.sha256(encoded.encode()).hexdigest(),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="connector result audit was rejected") from exc
+    # 将已审计的脱敏摘要交给 Context 工件边界；交付失败不能回滚已经完成的本机动作。
+    run = request.app.state.container.run_store.get(x_tenant_id, str(task["run_id"]))
+    artifact_delivery_status = "NOT_REQUIRED"
+    artifact_id = ""
+    if run is not None:
+        try:
+            artifact = _capability(
+                request.app.state.container, RuntimeCapability.CONTEXT
+            ).create_text_artifact(
+                run.context.root_task_id or run.run_id,
+                json.dumps(result, ensure_ascii=False, indent=2),
+                tenant_id=x_tenant_id,
+                user_id=x_user_id,
+            )
+            result["artifact_id"] = artifact.artifact_id
+            artifact_id = str(artifact.artifact_id)
+            artifact_delivery_status = "DELIVERED"
+        except Exception as exc:
+            result["artifact_delivery_status"] = "PENDING"
+            artifact_delivery_status = "PENDING"
+            request.app.state.container.run_store.enqueue_connector_artifact(
+                x_tenant_id,
+                x_user_id,
+                task_id,
+                run.context.root_task_id or run.run_id,
+                result,
+                type(exc).__name__,
+            )
+    ok = request.app.state.container.run_store.complete_connector_task(
+        x_tenant_id, x_user_id, connector_id, task_id, result,
+        hashlib.sha256(encoded.encode()).hexdigest(),
+        artifact_delivery_status=artifact_delivery_status,
+        artifact_id=artifact_id,
+    )
+    if not ok:
+        raise HTTPException(status_code=409, detail="connector task is not claimable")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/connectors/artifact-outbox/relay")
+def relay_connector_artifact_outbox(
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict[str, int]:
+    """受限 Relay 入口，供 Worker/运维任务重放 Connector Artifact 交付。"""
+    _, _, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
+    if "connector:artifact:relay" not in permissions:
+        raise HTTPException(status_code=403, detail="connector:artifact:relay permission is required")
+    # A browser/admin call can only replay its verified tenant. The independent workload is the
+    # only code path allowed to scan globally, using its dedicated database/network identity.
+    return ConnectorArtifactRelay(request.app.state.container).run_once(tenant_id=x_tenant_id)
+
+
+@router.get("/connectors/artifact-outbox/dead-letters")
+def list_connector_artifact_dead_letters(
+    request: Request,
+    limit: int = 50,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict[str, list[dict]]:
+    """返回当前租户的死信元数据，不暴露 Connector 结果正文。"""
+    _, _, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
+    if "connector:artifact:dlq:read" not in permissions:
+        raise HTTPException(status_code=403, detail="connector:artifact:dlq:read permission is required")
+    return {
+        "items": request.app.state.container.run_store.list_connector_artifact_dead_letters(
+            x_tenant_id, limit=limit
+        )
+    }
+
+
+@router.post("/connectors/artifact-outbox/dead-letters/{outbox_id}/requeue")
+def requeue_connector_artifact_dead_letter(
+    outbox_id: str,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict[str, str]:
+    """以显式高风险权限重放单条死信，幂等地拒绝非死信或跨租户记录。"""
+    _, _, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
+    if "connector:artifact:dlq:requeue" not in permissions:
+        raise HTTPException(
+            status_code=403, detail="connector:artifact:dlq:requeue permission is required"
+        )
+    if not request.app.state.container.run_store.requeue_connector_artifact_dead_letter(
+        x_tenant_id, outbox_id
+    ):
+        raise HTTPException(status_code=404, detail="connector artifact dead letter not found")
+    container = request.app.state.container
+    container.run_store.enqueue_governance(
+        {
+            "event_id": f"evt_{uuid4().hex}",
+            "source_service": "agent-runtime",
+            "event_type": "connector.artifact.dead_letter_requeued",
+            "trace_id": "",
+            "tenant_id": x_tenant_id,
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "payload": {"outbox_id": outbox_id, "requeued_by": x_user_id},
+        }
+    )
+    container.governance.flush()
+    return {"outbox_id": outbox_id, "status": "RETRY"}
+
+
+@router.get("/connectors/{connector_id}/tasks/{task_id}")
+def get_connector_task_status(
+    connector_id: str,
+    task_id: str,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> dict:
+    """供桌面端确认结果是否已审计并交付；响应不回显结果正文或一次性 Grant。"""
+    item = request.app.state.container.run_store.get_connector_task(
+        x_tenant_id, x_user_id, connector_id, task_id
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="connector task not found")
+    return item
+
+
+@router.delete("/connectors/{connector_id}", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_connector(
+    connector_id: str,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> Response:
+    """撤销当前用户的 Desktop Connector，撤销后不可重新确认。"""
+    _, _, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
+    if "connector:revoke" not in permissions:
+        raise HTTPException(status_code=403, detail="connector:revoke permission is required")
+    if not request.app.state.container.run_store.revoke_connector(x_tenant_id, x_user_id, connector_id):
+        raise HTTPException(status_code=404, detail="connector not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/connectors/{connector_id}")
+def get_connector(
+    connector_id: str, request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> dict:
+    """读取已配对设备状态，不返回配对码、Token 或本机路径。"""
+    request.app.state.container.run_store.reconcile_stale_connectors(
+        request.app.state.container.settings.connector_heartbeat_timeout_seconds
+    )
+    item = request.app.state.container.run_store.get_connector(x_tenant_id, x_user_id, connector_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="connector not found")
+    return item
 
 
 @router.get("/capabilities")
@@ -772,6 +1215,19 @@ def run_agent(
         "_compiled_plan": compiled_plan.model_dump(mode="json"),
         "_runtime_environment": payload.environment,
     }
+    # 最终回答的对象存储交付是可选增强：S3/Context 不可用时任务结果和状态机仍必须
+    # 正确完成。失败事实被保存为明确状态，而不是给 Workspace 伪造一个可下载 Artifact。
+    if result.status == "COMPLETED" and result.answer.strip():
+        try:
+            artifact = _capability(container, RuntimeCapability.CONTEXT).create_text_artifact(
+                execution.root_task_id or execution.run_id,
+                result.answer,
+                tenant_id=x_tenant_id,
+                user_id=x_user_id,
+            )
+            persisted_result["artifact_ids"] = [artifact.artifact_id]
+        except Exception as exc:  # Best-effort delivery must not roll back an already valid answer.
+            persisted_result["artifact_delivery_status"] = f"unavailable:{type(exc).__name__}"
     session_event = container.run_store.finish_and_enqueue(
         execution.run_id, result.status, persisted_result, event
     )
@@ -916,6 +1372,19 @@ def resume_run(
     run = container.run_store.get(x_tenant_id, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
+    # HTTP 调用者默认只能恢复自己的 Run。唯一例外是已被显式指派的审查人处理审批；
+    # 它仍需要两项权限，且不适用于 Steering/UserInput。Temporal Worker 以内部依赖注入
+    # 调用时才可跨用户处理已绑定的持久化检查点，该标记不能由 HTTP 请求传入。
+    reviewer_approval = False
+    if not _temporal_worker_execution and run.user_id != x_user_id:
+        reviewer_approval = (
+            _user_input is None
+            and "agent:review" in permissions
+            and "run:review:approve" in permissions
+            and container.run_store.is_assigned_reviewer(x_tenant_id, run_id, x_user_id)
+        )
+        if not reviewer_approval:
+            raise HTTPException(status_code=404, detail="run not found")
     expected_status = "WAITING_INPUT" if _user_input is not None else "WAITING_APPROVAL"
     if run.status != expected_status:
         raise HTTPException(
@@ -1209,7 +1678,7 @@ def get_run(
     """读取租户范围内的运行或异步队列状态，不返回其他租户的检查点/提交内容。"""
     x_tenant_id, x_user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
     run = request.app.state.container.run_store.get(x_tenant_id, run_id)
-    if run is not None and run.user_id != x_user_id:
+    if run is not None and not _can_read_run(request.app.state.container.run_store, x_tenant_id, run, x_user_id):
         raise HTTPException(status_code=404, detail="run not found")
     if run is None:
         queued = _capability(request.app.state.container, RuntimeCapability.WORKFLOW).get(
@@ -1221,6 +1690,402 @@ def get_run(
     body = run.model_dump(mode="json")
     body["result"] = _public_result(body.get("result") or {})
     return body
+
+
+@router.get("/runs")
+def list_my_runs(
+    request: Request,
+    limit: int = 30,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> dict:
+    """返回当前身份拥有的任务列表，而不是暴露可枚举的租户全量运行。
+
+    Workspace 只能基于该端点构建“我的任务”。Review 的团队队列必须等待显式的
+    assignment/share 数据模型和单独 permission 后再提供，不能通过放宽 owner 条件实现。
+    """
+    tenant_id, user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    # Limit is bounded at the API boundary as well as in the repository so a future storage
+    # implementation cannot accidentally turn one Workspace request into a tenant-wide scan.
+    runs = request.app.state.container.run_store.list_for_user(
+        tenant_id, user_id, limit=min(max(limit, 1), 100)
+    )
+    return {
+        "items": [
+            {
+                "run_id": run.run_id,
+                "agent_id": run.context.agent_id,
+                "snapshot_id": run.context.snapshot_id,
+                "status": run.status,
+                "runtime_state": run.runtime_state,
+                "created_at": run.created_at.isoformat(),
+                "updated_at": run.updated_at.isoformat(),
+                "error_code": run.error_code,
+                # 列表页不能成为计划、Prompt 或工具返回的批量导出接口。完整执行依据
+                # 只在单 Run 详情的所有权校验后按需读取，Review 另行采用授权投影。
+                "summary": {
+                    "answer": str(run.result.get("answer", ""))[:1_000],
+                    "termination_reason": str(run.result.get("termination_reason", "")),
+                    "evidence_count": len(run.result.get("evidence", [])),
+                    "tool_call_count": len(run.result.get("observations", [])),
+                    "waiting_for_approval": run.status == "WAITING_APPROVAL",
+                },
+            }
+            for run in runs
+        ]
+    }
+
+
+@router.post("/runs/{run_id}/shares", status_code=status.HTTP_204_NO_CONTENT)
+def share_run(
+    run_id: str, payload: RunShareRequest, request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> Response:
+    """Owner 以最小只读权限共享单一 Run；共享人不能继承取消或审批能力。"""
+    tenant_id, user_id, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
+    if "run:share" not in permissions:
+        raise HTTPException(status_code=403, detail="run:share permission is required")
+    store = request.app.state.container.run_store
+    run = store.get(tenant_id, run_id)
+    if run is None or run.user_id != user_id:
+        raise HTTPException(status_code=404, detail="run not found")
+    try:
+        store.share_run(tenant_id, run_id, payload.user_id, user_id, payload.reason)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/runs/{run_id}/artifacts")
+def list_run_artifacts(
+    run_id: str,
+    request: Request,
+    limit: int = 100,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> dict:
+    """投影已授权 Run 的 Artifact 索引，绝不把 content_ref 或对象存储位置交给浏览器。
+
+    Artifact 的原文和下载授权属于其数据域；Workspace 只获得可审计的类型、哈希和
+    创建时间。共享读者可以查看相同索引，但不能由此推导对象存储路径或凭据。
+    """
+    tenant_id, user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    container = request.app.state.container
+    run = container.run_store.get(tenant_id, run_id)
+    if run is None or not _can_read_run(container.run_store, tenant_id, run, user_id):
+        raise HTTPException(status_code=404, detail="run not found")
+    artifacts = container.runtime_context.context.list_task_artifacts(
+        run.context.root_task_id or run.run_id,
+        tenant_id=tenant_id,
+        limit=min(max(limit, 1), 100),
+    )
+    return {
+        "items": [
+            {
+                "artifact_id": artifact.artifact_id,
+                "artifact_type": artifact.artifact_type,
+                "media_type": artifact.media_type,
+                "content_sha256": artifact.content_sha256,
+                "created_at": artifact.created_at.isoformat(),
+            }
+            for artifact in artifacts
+        ]
+    }
+
+
+@router.get("/runs/{run_id}/artifacts/{artifact_id}/download")
+def get_run_artifact_download(
+    run_id: str,
+    artifact_id: str,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> dict[str, str | int | bool]:
+    """签发短期下载授权并记录不含 URL/对象键的访问事实。"""
+    tenant_id, user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    container = request.app.state.container
+    run = container.run_store.get(tenant_id, run_id)
+    if run is None or not _can_read_run(container.run_store, tenant_id, run, user_id):
+        raise HTTPException(status_code=404, detail="run not found")
+    try:
+        context_client = container.runtime_context.context
+        if hasattr(context_client, "artifact_download_authorization"):
+            authorization = context_client.artifact_download_authorization(
+                run.context.root_task_id or run.run_id, artifact_id, tenant_id=tenant_id
+            )
+        else:
+            authorization = {
+                "url": context_client.artifact_download_url(
+                    run.context.root_task_id or run.run_id, artifact_id, tenant_id=tenant_id
+                ),
+                "expires_in_seconds": 300,
+                "supports_range": True,
+            }
+    except httpx.HTTPStatusError as exc:
+        # Context has already constrained the Artifact to the same RootTask. Preserve a 404 for
+        # a guessed Artifact ID, but never relay storage topology or presigned URL details.
+        status_code = 404 if exc.response.status_code == 404 else 409
+        raise HTTPException(status_code=status_code, detail="artifact is not downloadable") from exc
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="artifact delivery is unavailable") from exc
+    access_event = container.run_store.append_session_event(
+        run.context,
+        RuntimeEventType.ARTIFACT_DOWNLOAD_AUTHORIZED,
+        status=run.status,
+        metadata={
+            "artifact_id": artifact_id,
+            "authorized_user_id": user_id,
+            "expires_in_seconds": int(authorization.get("expires_in_seconds", 300)),
+            "supports_range": bool(authorization.get("supports_range", True)),
+        },
+    )
+    container.publish_session_event(access_event)
+    container.run_store.enqueue_governance(
+        {
+            "event_id": f"gov_{access_event.event_id}",
+            "source_service": "agent-runtime",
+            "event_type": "artifact.download.authorized",
+            "trace_id": run.context.trace_id,
+            "tenant_id": tenant_id,
+            "occurred_at": access_event.occurred_at.isoformat(),
+            "payload": {
+                "run_id": run_id,
+                "artifact_id": artifact_id,
+                "authorized_user_id": user_id,
+                "session_event_id": access_event.event_id,
+                "expires_in_seconds": int(authorization.get("expires_in_seconds", 300)),
+                "supports_range": bool(authorization.get("supports_range", True)),
+            },
+        }
+    )
+    container.governance.flush()
+    return {
+        "url": str(authorization["url"]),
+        "expires_in_seconds": int(authorization.get("expires_in_seconds", 300)),
+        "supports_range": bool(authorization.get("supports_range", True)),
+    }
+
+
+@router.post("/runs/{run_id}/review-assignments", status_code=status.HTTP_204_NO_CONTENT)
+def assign_run_reviewer(
+    run_id: str,
+    payload: ReviewAssignmentRequest,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> Response:
+    """创建审查任务指派；只有明确具备指派权限的主体可扩大他人的可见范围。"""
+    tenant_id, user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if "run:review:assign" not in permissions:
+        raise HTTPException(status_code=403, detail="run:review:assign permission is required")
+    try:
+        request.app.state.container.run_store.assign_reviewer(
+            tenant_id, run_id, payload.reviewer_id, user_id, payload.reason
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/review/runs/{run_id}/transfer", status_code=status.HTTP_204_NO_CONTENT)
+def transfer_review_run(
+    run_id: str, payload: ReviewTransferRequest, request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> Response:
+    """由当前被指派审查人转交队列项；转交不会让其保留隐式读取权。"""
+    tenant_id, user_id, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
+    if "agent:review" not in permissions or "run:review:transfer" not in permissions:
+        raise HTTPException(status_code=403, detail="review transfer permission is required")
+    try:
+        request.app.state.container.run_store.transfer_reviewer(
+            tenant_id, run_id, user_id, payload.reviewer_id, payload.reason
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/review/runs/{run_id}/collaborators", status_code=status.HTTP_204_NO_CONTENT)
+def add_review_collaborator(
+    run_id: str,
+    payload: ReviewAssignmentRequest,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> Response:
+    """由已指派且具备协作授权的审查人新增共同 reviewer，不移除原 Assignment。"""
+    tenant_id, user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if "agent:review" not in permissions or "run:review:assign" not in permissions:
+        raise HTTPException(status_code=403, detail="review collaborator permission is required")
+    store = request.app.state.container.run_store
+    if not store.is_assigned_reviewer(tenant_id, run_id, user_id):
+        raise HTTPException(status_code=404, detail="run not found")
+    try:
+        store.assign_reviewer(tenant_id, run_id, payload.reviewer_id, user_id, payload.reason)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/review/runs")
+def list_review_runs(
+    request: Request,
+    limit: int = 30,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict:
+    """返回当前 reviewer 的显式队列，不以角色名扩大到同租户其他运行。"""
+    tenant_id, user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if "agent:review" not in permissions:
+        raise HTTPException(status_code=403, detail="agent:review permission is required")
+    assignments = request.app.state.container.run_store.list_for_reviewer(
+        tenant_id, user_id, limit=min(max(limit, 1), 100)
+    )
+    return {
+        "items": [
+            {
+                "run_id": run.run_id,
+                "agent_id": run.context.agent_id,
+                "status": run.status,
+                "updated_at": run.updated_at.isoformat(),
+                "assignment": assignment,
+                "summary": {
+                    "answer": str(run.result.get("answer", ""))[:1_000],
+                    "termination_reason": str(run.result.get("termination_reason", "")),
+                    "waiting_for_approval": run.status == "WAITING_APPROVAL",
+                },
+            }
+            for run, assignment in assignments
+        ]
+    }
+
+
+@router.get("/review/runs/{run_id}")
+def get_review_run(
+    run_id: str,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict:
+    """读取单项审查投影；同时验证 Review scope 与显式资源关系。"""
+    tenant_id, user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if "agent:review" not in permissions:
+        raise HTTPException(status_code=403, detail="agent:review permission is required")
+    store = request.app.state.container.run_store
+    assignment = store.review_assignment(tenant_id, run_id, user_id)
+    if assignment is None:
+        # 与不存在使用同一响应，避免攻击者通过 Review 详情枚举同租户 Run。
+        raise HTTPException(status_code=404, detail="run not found")
+    run = store.get(tenant_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return _review_projection(run, assignment)
+
+
+@router.get("/review/runs/{run_id}/evidence/{evidence_id}")
+def get_review_evidence(
+    run_id: str,
+    evidence_id: str,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict:
+    """在 Assignment 与数据域权限双重校验后返回一条限长、已脱敏证据正文。"""
+    tenant_id, user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if "agent:review" not in permissions or "evidence:content:read" not in permissions:
+        raise HTTPException(status_code=403, detail="evidence content permission is required")
+    store = request.app.state.container.run_store
+    if not store.is_assigned_reviewer(tenant_id, run_id, user_id):
+        raise HTTPException(status_code=404, detail="evidence not found")
+    run = store.get(tenant_id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="evidence not found")
+    evidence_items = run.result.get("evidence", []) if isinstance(run.result, dict) else []
+    for item in evidence_items:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("evidence_id", item.get("id", item.get("document_id", ""))))
+        if item_id != evidence_id:
+            continue
+        data_domain = str(item.get("data_domain", item.get("knowledge_base", ""))).strip()
+        if data_domain and f"data-domain:{data_domain}:read" not in permissions:
+            raise HTTPException(status_code=403, detail="evidence data-domain permission is required")
+        content = str(item.get("content", item.get("text", item.get("snippet", ""))))
+        return {
+            "evidence_id": item_id,
+            "source": str(item.get("source", item.get("title", ""))),
+            "data_domain": data_domain,
+            "content": content[:12_000],
+            "truncated": len(content) > 12_000,
+            "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
+        }
+    raise HTTPException(status_code=404, detail="evidence not found")
+
+
+@router.get("/review/runs/{run_id}/comments")
+def list_review_comments(
+    run_id: str,
+    request: Request,
+    limit: int = 100,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict:
+    """读取当前显式审查关系下的协作备注；不能通过角色名浏览他人讨论。"""
+    tenant_id, user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if "agent:review" not in permissions:
+        raise HTTPException(status_code=403, detail="agent:review permission is required")
+    try:
+        comments = request.app.state.container.run_store.list_review_comments(
+            tenant_id, run_id, user_id, limit=min(max(limit, 1), 200)
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    return {"items": comments}
+
+
+@router.post("/review/runs/{run_id}/comments", status_code=status.HTTP_201_CREATED)
+def add_review_comment(
+    run_id: str,
+    payload: ReviewCommentRequest,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict:
+    """由当前审查人写入协作备注；转交后旧 Assignment 自动失去写入权。"""
+    tenant_id, user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if "agent:review" not in permissions or "run:review:comment" not in permissions:
+        raise HTTPException(status_code=403, detail="review comment permission is required")
+    try:
+        return request.app.state.container.run_store.add_review_comment(
+            tenant_id, run_id, user_id, payload.message
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
 
 
 @router.get("/runs/{run_id}/audit-events")
@@ -1497,9 +2362,15 @@ def cancel_run(
     run_id: str,
     request: Request,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
 ) -> dict:
     """请求协作取消；运行中的外部调用将在下一守卫节点停止，队列任务立即标记。"""
-    x_tenant_id, _, _ = _trusted_identity(request, x_tenant_id, "anonymous", "")
+    x_tenant_id, x_user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    existing = request.app.state.container.run_store.get(x_tenant_id, run_id)
+    # 取消会改变执行状态且可能停止正在使用预算的工作流，因此不能因知道 run_id
+    # 就操作同租户其他用户的任务。团队取消应以后续显式委派/应急权限端点实现。
+    if existing is None or existing.user_id != x_user_id:
+        raise HTTPException(status_code=404, detail="run not found")
     run = request.app.state.container.agent_harness.cancel(x_tenant_id, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")

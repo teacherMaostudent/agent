@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent Workspace</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="/" aria-label="Agent Workspace 首页"><span>AE</span><strong>Agent<br />Workspace</strong></a>
+        <nav aria-label="工作区导航">
+          <button class="nav-item active" data-view="workspace"><span>◉</span>我的任务</button>
+          <button class="nav-item" data-view="review" data-requires="agent:review"><span>◎</span>审查中心</button>
+          <button class="nav-item" data-view="console" data-requires="ops:read"><span>◇</span>平台控制台</button>
+        </nav>
+        <div class="sidebar-bottom">
+          <p class="environment">受控执行环境</p>
+          <div id="identity-summary" class="identity-summary">正在读取会话…</div>
+        </div>
+      </aside>
+
+      <main>
+        <header class="topbar">
+          <div><p class="eyebrow">AGENT WORKSPACE</p><h1 id="page-title">我的任务</h1></div>
+          <button id="new-task-button" class="primary">新建任务</button>
+        </header>
+
+        <section id="development-identity" class="development-note" hidden>
+          <div><strong>本地开发身份</strong><p>此区域只在未启用 OIDC 的本地 Compose 环境出现。生产环境由统一登录提供身份，不显示租户、用户或权限输入。</p></div>
+          <div class="identity-fields"><label>租户<input id="tenant-input" value="demo" /></label><label>用户<input id="user-input" value="desktop-user" /></label><label>权限<input id="permissions-input" value="rag:read,file:scan,tool:invoke" /></label><button id="refresh-session">应用</button></div>
+        </section>
+
+        <section id="workspace-view" class="view">
+          <div class="hero-card">
+            <div><p class="eyebrow">从目标开始，而不是从系统配置开始</p><h2>今天想完成什么？</h2><p>Agent 会在已发布的权限、工具、预算与审批约束内完成任务。需要你决策时会明确通知你。</p></div>
+            <button class="primary" id="hero-new-task">创建任务</button>
+          </div>
+          <section class="section-heading"><div><h2>进行中与最近完成</h2><p>只显示你创建、拥有或被明确共享的任务。</p></div><button id="refresh-runs" class="ghost">刷新</button></section>
+          <div id="task-list" class="task-list" aria-live="polite"><div class="empty-state">正在加载任务…</div></div>
+        </section>
+
+        <section id="review-view" class="view" hidden>
+          <div class="hero-card compact"><div><p class="eyebrow">EXPLICIT REVIEW QUEUE</p><h2>被明确指派给你的任务</h2><p>审查权限不会自动扩大为全租户可见；每一项都必须存在单独的 Review Assignment。</p></div><button id="refresh-review" class="ghost">刷新队列</button></div>
+          <div id="review-list" class="task-list" aria-live="polite"><div class="empty-state">正在加载审查队列…</div></div>
+        </section>
+
+        <section id="console-view" class="view" hidden>
+          <div class="hero-card compact"><div><p class="eyebrow">OPERATIONS OVERVIEW</p><h2>平台服务健康概览</h2><p>只读显示七个服务边界及摄取工作负载的就绪状态。发布、路由和重放等高危控制动作仍保持在各自受限接口中。</p></div><button id="refresh-console" class="ghost">刷新状态</button></div>
+          <div id="console-list" class="service-list" aria-live="polite"><div class="empty-state">正在读取服务状态…</div></div>
+          <section id="release-catalog-section" hidden><div class="section-heading"><div><h2>Agent 发布目录</h2><p>查看 Draft 修订与冻结 Release；该视图不包含草稿正文、快照正文或密钥。</p></div><button id="refresh-release-catalog" class="ghost">刷新目录</button></div><div id="release-catalog-list" class="task-list" aria-live="polite"></div></section>
+          <section id="release-operations-section" hidden><div class="section-heading"><div><h2>受控发布操作</h2><p>版本冻结、Release 创建和流量动作使用独立权限；目标 ID 必须二次回显。</p></div></div><div class="service-list"><form id="agent-version-form" class="service-card operation-card"><div><h3>校验并冻结 Version</h3><label>Agent ID<input id="operation-agent-id" required /></label><label>语义版本<input id="operation-semantic-version" placeholder="1.0.0" required /></label><label>变更摘要<input id="operation-change-summary" /></label></div><div class="vertical-actions"><button id="validate-agent-button" type="button" class="ghost">只校验</button><button class="primary">冻结版本</button></div></form><form id="release-create-form" class="service-card operation-card"><div><h3>创建候选 Release</h3><label>Agent ID<input id="release-agent-id" required /></label><label>Version ID<input id="release-version-id" required /></label><label>环境<input id="release-environment" value="production" required /></label><label>首批流量（%）<input id="release-rollout" type="number" min="0" max="100" value="0" /></label><label>质量门禁 Run ID<input id="release-gate-run-id" /></label><label>原因<input id="release-reason" required /></label></div><button class="primary">创建 Release</button></form><form id="release-action-form" class="service-card operation-card"><div><h3>Release 流量控制</h3><label>Release ID<input id="release-action-id" required /></label><label>动作<select id="release-action"><option value="promote">提升</option><option value="pause">暂停</option><option value="rollback">回滚</option></select></label><label>目标流量（提升时）<input id="release-action-rollout" type="number" min="1" max="100" value="100" /></label></div><button class="primary">执行受控动作</button></form></div></section>
+          <section id="connector-dlq-section" hidden><div class="section-heading"><div><h2>Connector 工件死信</h2><p>本机动作已经审计成功、但交付 Context 多次失败的记录；重排不会再次执行本机工具。</p></div><button id="refresh-connector-dlq" class="ghost">刷新死信</button></div><div id="connector-dlq-list" class="task-list" aria-live="polite"></div></section>
+          <section id="golden-candidate-section" hidden><div class="section-heading"><div><h2>Golden Candidate 审核</h2><p>只有带有独立评测权限的人员可决定候选样本是否进入专家标注集。</p></div><button id="refresh-golden-candidates" class="ghost">刷新候选</button></div><div id="golden-candidate-list" class="task-list" aria-live="polite"></div></section>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="task-dialog">
+      <form id="task-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">受控任务</p><h2>新建任务</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+        <label>选择 Agent<select id="agent-input"><option value="general-agent">通用受控 Agent</option></select></label>
+        <label>发布环境<select id="environment-input"><option value="local">local</option><option value="staging">staging</option></select></label>
+        <label>任务目标<textarea id="task-input" required minlength="3" placeholder="例如：检查这份方案中的风险点，并给出带引用的修改建议。"></textarea></label>
+        <p class="form-note">提交后会冻结 Release Snapshot；模型与工具不能因前端输入而越过发布约束。</p>
+        <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button id="submit-task" class="primary" value="default">开始执行</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="task-detail-dialog">
+      <article id="task-detail" class="task-detail"></article>
+    </dialog>
+    <dialog id="review-transfer-dialog">
+      <form id="review-transfer-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">REVIEW ASSIGNMENT</p><h2>转交审查任务</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+        <label>接收审查人<input id="transfer-reviewer-input" required minlength="2" placeholder="例如：expert-reviewer-2" /></label>
+        <label>转交理由<textarea id="transfer-reason-input" required minlength="2" placeholder="说明为何需要转交，以及下一位审查人应重点关注什么。"></textarea></label>
+        <p class="form-note">提交后你的 Assignment 会被原子移除，接收人获得新的显式任务关系。</p>
+        <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button class="primary" value="default">确认转交</button></div>
+      </form>
+    </dialog>
+    <dialog id="review-feedback-dialog">
+      <form id="review-feedback-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">EXPERT CALIBRATION</p><h2>提交专家标注</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+        <label>评分<select id="feedback-rating-input"><option value="5">5 · 正确且证据充分</option><option value="4">4 · 基本正确</option><option value="3">3 · 需要改进</option><option value="2">2 · 明显问题</option><option value="1">1 · 严重错误</option></select></label>
+        <label>关键等级<select id="feedback-criticality-input"><option value="normal">普通</option><option value="high">高风险</option><option value="critical">关键</option></select></label>
+        <label>期望结论<textarea id="feedback-expected-answer-input" placeholder="可选：写下专家认可的结论，用于后续校准。"></textarea></label>
+        <label>标签<input id="feedback-tags-input" placeholder="用逗号分隔，例如：证据不足,高风险" /></label>
+        <p class="form-note">标注会带上当前登录审查人，写入 Governance 反馈闭环；不会改写本次 Run。</p>
+        <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button class="primary" value="default">提交标注</button></div>
+      </form>
+    </dialog>
+    <dialog id="review-comment-dialog">
+      <form id="review-comment-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">REVIEW COLLABORATION</p><h2>添加协作备注</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+        <label>备注<textarea id="review-comment-input" required minlength="1" maxlength="8000" placeholder="记录需要下一位审查人关注的风险、证据缺口或复核结论。"></textarea></label>
+        <p class="form-note">备注会持久化到当前 Review Assignment；任务转交后原审查人不再能追加评论。</p>
+        <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button class="primary" value="default">保存备注</button></div>
+      </form>
+    </dialog>
+    <dialog id="review-collaborator-dialog">
+      <form id="review-collaborator-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">CO-REVIEW</p><h2>添加共同审查人</h2></div><button value="cancel" class="icon-button">×</button></div>
+        <label>审查人 ID<input id="collaborator-reviewer-input" required minlength="2" placeholder="例如：security-expert-2" /></label>
+        <label>协作理由<textarea id="collaborator-reason-input" required minlength="2" maxlength="2000" placeholder="说明对方需要复核的数据域、风险或证据。"></textarea></label>
+        <p class="form-note">该操作保留你自己的 Assignment；对方只获得这一 Run 的显式审查关系。</p>
+        <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button class="primary">添加协作者</button></div>
+      </form>
+    </dialog>
+    <dialog id="golden-review-dialog">
+      <form id="golden-review-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">GOLDEN CANDIDATE</p><h2>审核候选样本</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+        <p id="golden-candidate-summary" class="form-note"></p>
+        <label>审核决定<select id="golden-approved-input"><option value="true">批准并纳入 Golden 集</option><option value="false">拒绝候选</option></select></label>
+        <label>审核说明<textarea id="golden-note-input" required minlength="2" maxlength="2000" placeholder="说明批准或拒绝的依据。"></textarea></label>
+        <p class="form-note">批准后由 Governance 创建新的 Golden Case；不会改写既有 Golden 样本。</p>
+        <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button class="primary" value="default">提交审核</button></div>
+      </form>
+    </dialog>
+    <dialog id="workspace-share-dialog">
+      <form id="workspace-share-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">READ-ONLY COLLABORATION</p><h2>共享任务</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+        <label>接收用户<input id="share-user-input" required minlength="2" placeholder="例如：project-owner-2" /></label>
+        <label>共享说明<textarea id="share-reason-input" required minlength="2" placeholder="说明共享目的与对方可阅读的业务范围。"></textarea></label>
+        <p class="form-note">接收人只能查看此任务的业务结果与引用，不能取消、审批、恢复或调用工具。</p>
+        <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button class="primary" value="default">确认共享</button></div>
+      </form>
+    </dialog>
+    <dialog id="workspace-steering-dialog">
+      <form id="workspace-steering-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">OWNER STEERING</p><h2>补充执行指令</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+        <label>新的约束或补充信息<textarea id="steering-message-input" required minlength="1" placeholder="例如：优先检查最新版本；不要访问外部网络；先等待我确认。"></textarea></label>
+        <p class="form-note">内容会先写入受控会话，再在下一安全边界由 Runtime 处理。</p>
+        <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button class="primary" value="default">提交指令</button></div>
+      </form>
+    </dialog>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

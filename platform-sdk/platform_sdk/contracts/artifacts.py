@@ -19,6 +19,14 @@ class TaskArtifactCreate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class TaskArtifactTextCreate(BaseModel):
+    """由受信任服务写入小型文本交付物；大文件仍应走专用摄取/对象存储流程。"""
+
+    content: str = Field(min_length=1, max_length=200_000)
+    artifact_type: str = Field(default="final-report", min_length=1, max_length=100)
+    media_type: str = Field(default="text/markdown; charset=utf-8", max_length=160)
+
+
 class TaskArtifact(BaseModel):
     """可跨 Workflow、Agent 与 Skill 传递的不可变、租户隔离引用。"""
 

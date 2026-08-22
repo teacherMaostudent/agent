@@ -207,6 +207,11 @@ class RuntimeStoreOperations:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
+        # API and local Relay use separate processes in Compose. WAL plus a bounded busy timeout
+        # prevents short writer overlap from surfacing as immediate "database is locked" errors.
+        # Production still requires PostgreSQL and never relies on SQLite for multi-replica HA.
+        self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection.execute("PRAGMA busy_timeout=5000")
         self._lock = Lock()
         self._schema_registry = schema_registry
         with self._lock:
@@ -252,6 +257,52 @@ class RuntimeStoreOperations:
                     archive_sha256 TEXT NOT NULL, archived_through_sequence INTEGER NOT NULL,
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (tenant_id, session_id, archived_through_sequence)
+                );
+                CREATE TABLE IF NOT EXISTS runtime_review_assignments (
+                    tenant_id TEXT NOT NULL, run_id TEXT NOT NULL, reviewer_id TEXT NOT NULL,
+                    assigned_by TEXT NOT NULL, reason TEXT NOT NULL, assigned_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, run_id, reviewer_id)
+                );
+                CREATE INDEX IF NOT EXISTS runtime_review_assignments_reviewer_idx
+                    ON runtime_review_assignments(tenant_id, reviewer_id, assigned_at DESC);
+                CREATE TABLE IF NOT EXISTS runtime_review_comments (
+                    comment_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, run_id TEXT NOT NULL,
+                    author_id TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS runtime_review_comments_lookup_idx
+                    ON runtime_review_comments(tenant_id, run_id, created_at ASC);
+                CREATE TABLE IF NOT EXISTS runtime_run_shares (
+                    tenant_id TEXT NOT NULL, run_id TEXT NOT NULL, user_id TEXT NOT NULL,
+                    shared_by TEXT NOT NULL, reason TEXT NOT NULL, shared_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, run_id, user_id)
+                );
+                CREATE INDEX IF NOT EXISTS runtime_run_shares_user_idx
+                    ON runtime_run_shares(tenant_id, user_id, shared_at DESC);
+                CREATE TABLE IF NOT EXISTS runtime_desktop_connectors (
+                    connector_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
+                    device_name TEXT NOT NULL, capabilities_json TEXT NOT NULL, pairing_code_hash TEXT NOT NULL,
+                    status TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL,
+                    connected_at TEXT, last_seen_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS runtime_connector_tasks (
+                    task_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
+                    connector_id TEXT NOT NULL, run_id TEXT NOT NULL, snapshot_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL, tool_version TEXT NOT NULL, arguments_json TEXT NOT NULL,
+                    status TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL,
+                    claimed_at TEXT, lease_expires_at TEXT, result_json TEXT NOT NULL DEFAULT '{}',
+                    result_sha256 TEXT NOT NULL DEFAULT '', completed_at TEXT,
+                    artifact_delivery_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED',
+                    artifact_id TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS runtime_connector_tasks_claim_idx
+                    ON runtime_connector_tasks(tenant_id, connector_id, status, created_at);
+                CREATE TABLE IF NOT EXISTS runtime_connector_artifact_outbox (
+                    outbox_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL UNIQUE, root_task_id TEXT NOT NULL, content_json TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'PENDING',
+                    next_attempt_at TEXT, lease_token TEXT NOT NULL DEFAULT '', lease_expires_at TEXT,
+                    delivered_at TEXT, delivered_artifact_id TEXT NOT NULL DEFAULT '',
+                    dead_lettered_at TEXT, last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS runtime_run_mailbox (
                     message_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, run_id TEXT NOT NULL,
@@ -356,6 +407,47 @@ class RuntimeStoreOperations:
                     "PRAGMA table_info(runtime_run_mailbox)"
                 ).fetchall()
             }
+            connector_columns = {
+                row["name"]
+                for row in self._connection.execute(
+                    "PRAGMA table_info(runtime_desktop_connectors)"
+                ).fetchall()
+            }
+            if "last_seen_at" not in connector_columns:
+                self._connection.execute(
+                    "ALTER TABLE runtime_desktop_connectors ADD COLUMN last_seen_at TEXT"
+                )
+            connector_task_columns = {
+                row["name"]
+                for row in self._connection.execute(
+                    "PRAGMA table_info(runtime_connector_tasks)"
+                ).fetchall()
+            }
+            for statement, column in (
+                ("ALTER TABLE runtime_connector_tasks ADD COLUMN result_json TEXT NOT NULL DEFAULT '{}'", "result_json"),
+                ("ALTER TABLE runtime_connector_tasks ADD COLUMN result_sha256 TEXT NOT NULL DEFAULT ''", "result_sha256"),
+                ("ALTER TABLE runtime_connector_tasks ADD COLUMN completed_at TEXT", "completed_at"),
+                ("ALTER TABLE runtime_connector_tasks ADD COLUMN artifact_delivery_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED'", "artifact_delivery_status"),
+                ("ALTER TABLE runtime_connector_tasks ADD COLUMN artifact_id TEXT NOT NULL DEFAULT ''", "artifact_id"),
+            ):
+                if column not in connector_task_columns:
+                    self._connection.execute(statement)
+            connector_outbox_columns = {
+                row["name"]
+                for row in self._connection.execute(
+                    "PRAGMA table_info(runtime_connector_artifact_outbox)"
+                ).fetchall()
+            }
+            for statement, column in (
+                ("ALTER TABLE runtime_connector_artifact_outbox ADD COLUMN status TEXT NOT NULL DEFAULT 'PENDING'", "status"),
+                ("ALTER TABLE runtime_connector_artifact_outbox ADD COLUMN next_attempt_at TEXT", "next_attempt_at"),
+                ("ALTER TABLE runtime_connector_artifact_outbox ADD COLUMN lease_token TEXT NOT NULL DEFAULT ''", "lease_token"),
+                ("ALTER TABLE runtime_connector_artifact_outbox ADD COLUMN lease_expires_at TEXT", "lease_expires_at"),
+                ("ALTER TABLE runtime_connector_artifact_outbox ADD COLUMN delivered_artifact_id TEXT NOT NULL DEFAULT ''", "delivered_artifact_id"),
+                ("ALTER TABLE runtime_connector_artifact_outbox ADD COLUMN dead_lettered_at TEXT", "dead_lettered_at"),
+            ):
+                if column not in connector_outbox_columns:
+                    self._connection.execute(statement)
             if "priority" not in mailbox_columns:
                 self._connection.execute(
                     "ALTER TABLE runtime_run_mailbox ADD COLUMN priority INTEGER NOT NULL DEFAULT 50"
@@ -608,6 +700,490 @@ class RuntimeStoreOperations:
                 (tenant_id, run_id),
             ).fetchone()
         return self._from_row(row) if row else None
+
+    def list_for_user(self, tenant_id: str, user_id: str, *, limit: int = 50) -> list[RuntimeRun]:
+        """列出调用者拥有的近期 Run，作为 Workspace 的最小任务投影数据源。
+
+        此查询刻意不提供任意 ``user_id`` 参数给 HTTP 调用方：当前产品尚未实现分享、
+        委派和 Review Assignment 模型，因此只能按 JWT 重建后的 owner 查询。后续加入
+        团队协作时应扩展独立资源关系表，而不是移除此处所有权过滤。
+        """
+        bounded_limit = min(max(limit, 1), 100)
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM runtime_runs
+                WHERE tenant_id = ? AND (user_id = ? OR run_id IN (
+                    SELECT run_id FROM runtime_run_shares WHERE tenant_id = ? AND user_id = ?
+                ))
+                ORDER BY updated_at DESC, run_id DESC
+                LIMIT ?
+                """,
+                (tenant_id, user_id, tenant_id, user_id, bounded_limit),
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    def share_run(self, tenant_id: str, run_id: str, user_id: str, shared_by: str, reason: str) -> None:
+        """持久化只读共享关系；调用方必须在 API 层先证明自己是 Run owner。"""
+        now = datetime.now(UTC).isoformat()
+        with self._lock:
+            if self._connection.execute(
+                "SELECT 1 FROM runtime_runs WHERE tenant_id = ? AND run_id = ?", (tenant_id, run_id)
+            ).fetchone() is None:
+                raise LookupError("run not found")
+            self._connection.execute(
+                """INSERT INTO runtime_run_shares(tenant_id, run_id, user_id, shared_by, reason, shared_at)
+                VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id, run_id, user_id) DO UPDATE SET
+                shared_by=excluded.shared_by, reason=excluded.reason, shared_at=excluded.shared_at""",
+                (tenant_id, run_id, user_id, shared_by, reason, now),
+            )
+            self._connection.commit()
+
+    def is_shared_with(self, tenant_id: str, run_id: str, user_id: str) -> bool:
+        """只检查单一 Run 的只读共享关系，禁止把用户角色解释为批量读权限。"""
+        with self._lock:
+            return self._connection.execute(
+                "SELECT 1 FROM runtime_run_shares WHERE tenant_id = ? AND run_id = ? AND user_id = ?",
+                (tenant_id, run_id, user_id),
+            ).fetchone() is not None
+
+    def create_connector(self, tenant_id: str, user_id: str, device_name: str, capabilities: list[str], code_hash: str, expires_at: str) -> str:
+        """保存待确认设备；配对码只保存哈希，不能由数据库反推出明文。"""
+        connector_id = f"connector_{uuid4().hex}"
+        now = datetime.now(UTC).isoformat()
+        with self._lock:
+            self._connection.execute("INSERT INTO runtime_desktop_connectors(connector_id,tenant_id,user_id,device_name,capabilities_json,pairing_code_hash,status,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)", (connector_id, tenant_id, user_id, device_name, json.dumps(capabilities), code_hash, "PENDING", expires_at, now))
+            self._connection.commit()
+        return connector_id
+
+    def confirm_connector(self, tenant_id: str, user_id: str, connector_id: str, code_hash: str) -> bool:
+        """原子确认尚未过期的配对；码不匹配、过期或已撤销均失败。"""
+        now = datetime.now(UTC).isoformat()
+        with self._lock:
+            cursor = self._connection.execute("UPDATE runtime_desktop_connectors SET status='CONNECTED', connected_at=?, last_seen_at=? WHERE connector_id=? AND tenant_id=? AND user_id=? AND pairing_code_hash=? AND status='PENDING' AND expires_at>?", (now, now, connector_id, tenant_id, user_id, code_hash, now))
+            self._connection.commit()
+            return cursor.rowcount == 1
+
+    def revoke_connector(self, tenant_id: str, user_id: str, connector_id: str) -> bool:
+        """撤销当前主体拥有的设备；终态不允许通过后续确认重新连接。"""
+        with self._lock:
+            cursor = self._connection.execute("UPDATE runtime_desktop_connectors SET status='REVOKED' WHERE connector_id=? AND tenant_id=? AND user_id=? AND status IN ('PENDING','CONNECTED','DISCONNECTED')", (connector_id, tenant_id, user_id))
+            self._connection.commit()
+            return cursor.rowcount == 1
+
+    def heartbeat_connector(self, tenant_id: str, user_id: str, connector_id: str) -> bool:
+        """记录已连接设备存活；撤销或待确认设备不能伪造在线状态。"""
+        now = datetime.now(UTC).isoformat()
+        with self._lock:
+            cursor = self._connection.execute(
+                "UPDATE runtime_desktop_connectors SET last_seen_at=? WHERE connector_id=? AND tenant_id=? AND user_id=? AND status='CONNECTED'",
+                (now, connector_id, tenant_id, user_id),
+            )
+            self._connection.commit()
+            return cursor.rowcount == 1
+
+    def reconcile_stale_connectors(self, heartbeat_timeout_seconds: int) -> int:
+        """将超过心跳窗口的已连接设备收敛为断线，不影响撤销或待配对记录。"""
+        cutoff = (datetime.now(UTC) - timedelta(seconds=heartbeat_timeout_seconds)).isoformat()
+        with self._lock:
+            cursor = self._connection.execute(
+                "UPDATE runtime_desktop_connectors SET status='DISCONNECTED' WHERE status='CONNECTED' AND (last_seen_at IS NULL OR last_seen_at <= ?)",
+                (cutoff,),
+            )
+            self._connection.commit()
+            return cursor.rowcount
+
+    def create_connector_task(
+        self, tenant_id: str, user_id: str, connector_id: str, run_id: str, snapshot_id: str,
+        tool_name: str, tool_version: str, arguments: dict[str, Any], expires_at: str,
+    ) -> str:
+        """持久化待领取任务；任务不含 Grant 明文，也不会自行触发本机副作用。"""
+        task_id = f"connector_task_{uuid4().hex}"
+        now = datetime.now(UTC).isoformat()
+        with self._lock:
+            self._connection.execute(
+                "INSERT INTO runtime_connector_tasks(task_id,tenant_id,user_id,connector_id,run_id,snapshot_id,tool_name,tool_version,arguments_json,status,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (task_id, tenant_id, user_id, connector_id, run_id, snapshot_id, tool_name,
+                 tool_version, json.dumps(arguments), "PENDING", expires_at, now),
+            )
+            self._connection.commit()
+        return task_id
+
+    def claim_connector_task(
+        self, tenant_id: str, user_id: str, connector_id: str, lease_seconds: int = 60,
+    ) -> dict[str, Any] | None:
+        """原子领取最早未过期任务；租约到期后允许同一 Connector 重新领取。"""
+        now = datetime.now(UTC)
+        now_text = now.isoformat()
+        lease_expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM runtime_connector_tasks WHERE tenant_id=? AND user_id=? AND connector_id=? AND expires_at>? AND (status='PENDING' OR (status='CLAIMED' AND lease_expires_at<?)) ORDER BY created_at ASC LIMIT 1",
+                (tenant_id, user_id, connector_id, now_text, now_text),
+            ).fetchone()
+            if row is None:
+                return None
+            updated = self._connection.execute(
+                "UPDATE runtime_connector_tasks SET status='CLAIMED', claimed_at=?, lease_expires_at=? WHERE task_id=? AND (status='PENDING' OR (status='CLAIMED' AND lease_expires_at<?))",
+                (now_text, lease_expires, row["task_id"], now_text),
+            )
+            self._connection.commit()
+            if updated.rowcount != 1:
+                return None
+        return {
+            "task_id": row["task_id"], "run_id": row["run_id"], "snapshot_id": row["snapshot_id"],
+            "tool_name": row["tool_name"], "tool_version": row["tool_version"],
+            "arguments": json.loads(row["arguments_json"]), "lease_expires_at": lease_expires,
+        }
+
+    def complete_connector_task(
+        self, tenant_id: str, user_id: str, connector_id: str, task_id: str,
+        result: dict[str, Any], result_sha256: str,
+        *, artifact_delivery_status: str = "NOT_REQUIRED", artifact_id: str = "",
+    ) -> bool:
+        """只允许领取者在有效租约内回传一次脱敏结果，终态不可覆盖。"""
+        now = datetime.now(UTC).isoformat()
+        with self._lock:
+            cursor = self._connection.execute(
+                "UPDATE runtime_connector_tasks SET status='COMPLETED', result_json=?, result_sha256=?, completed_at=?, artifact_delivery_status=?, artifact_id=? WHERE task_id=? AND tenant_id=? AND user_id=? AND connector_id=? AND status='CLAIMED' AND lease_expires_at>?",
+                (json.dumps(result), result_sha256, now, artifact_delivery_status, artifact_id,
+                 task_id, tenant_id, user_id, connector_id, now),
+            )
+            self._connection.commit()
+            return cursor.rowcount == 1
+
+    def get_connector_task(
+        self, tenant_id: str, user_id: str, connector_id: str, task_id: str
+    ) -> dict[str, Any] | None:
+        """读取当前 Connector 已领取任务的最小绑定字段，供回传审计校验。"""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT run_id,snapshot_id,tool_name,tool_version,status,artifact_delivery_status,artifact_id FROM runtime_connector_tasks WHERE task_id=? AND tenant_id=? AND user_id=? AND connector_id=?",
+                (task_id, tenant_id, user_id, connector_id),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def enqueue_connector_artifact(
+        self, tenant_id: str, user_id: str, task_id: str, root_task_id: str, content: dict[str, Any], error: str
+    ) -> None:
+        """将 Artifact 交付失败持久化，避免同步 Context 故障后只留下瞬时错误字符串。"""
+        with self._lock:
+            self._connection.execute(
+                "INSERT INTO runtime_connector_artifact_outbox(outbox_id,tenant_id,user_id,task_id,root_task_id,content_json,status,next_attempt_at,last_error,created_at) VALUES (?,?,?,?,?,?, 'PENDING', ?,?,?) ON CONFLICT(task_id) DO NOTHING",
+                (f"connector_artifact_{uuid4().hex}", tenant_id, user_id, task_id, root_task_id,
+                 json.dumps(content), datetime.now(UTC).isoformat(), error[:500], datetime.now(UTC).isoformat()),
+            )
+            self._connection.execute(
+                "UPDATE runtime_connector_tasks SET artifact_delivery_status='PENDING' WHERE task_id=?",
+                (task_id,),
+            )
+            self._connection.commit()
+
+    def claim_connector_artifacts(
+        self, *, tenant_id: str | None = None, limit: int = 20, lease_seconds: int = 60
+    ) -> list[dict[str, Any]]:
+        """以短租约领取到期的 Artifact 记录，避免多个 Relay 副本重复投递。
+
+        手工租户接口必须传入 ``tenant_id``；独立工作负载可省略它扫描全局积压。每条
+        更新仍带原状态与租约条件，因此跨进程竞争者只有一个能获得有效 lease token。
+        """
+        now = datetime.now(UTC)
+        now_text = now.isoformat()
+        lease_expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+        bounded = min(max(limit, 1), 100)
+        where_tenant = " AND tenant_id=?" if tenant_id else ""
+        parameters: list[Any] = [now_text, now_text]
+        if tenant_id:
+            parameters.append(tenant_id)
+        parameters.append(bounded)
+        claimed: list[dict[str, Any]] = []
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM runtime_connector_artifact_outbox "
+                "WHERE status IN ('PENDING','RETRY','PROCESSING') "
+                "AND (next_attempt_at IS NULL OR next_attempt_at<=?) "
+                "AND (lease_expires_at IS NULL OR lease_expires_at<?)"
+                + where_tenant
+                + " ORDER BY created_at ASC LIMIT ?",
+                tuple(parameters),
+            ).fetchall()
+            for row in rows:
+                lease_token = f"relay_lease_{uuid4().hex}"
+                cursor = self._connection.execute(
+                    "UPDATE runtime_connector_artifact_outbox SET status='PROCESSING',lease_token=?,lease_expires_at=? "
+                    "WHERE outbox_id=? AND status IN ('PENDING','RETRY','PROCESSING') "
+                    "AND (lease_expires_at IS NULL OR lease_expires_at<?)",
+                    (lease_token, lease_expires, row["outbox_id"], now_text),
+                )
+                if cursor.rowcount == 1:
+                    item = dict(row)
+                    item["lease_token"] = lease_token
+                    claimed.append(item)
+            self._connection.commit()
+        return claimed
+
+    def mark_connector_artifact_delivered(
+        self, outbox_id: str, lease_token: str, artifact_id: str
+    ) -> bool:
+        """只允许当前租约持有者确认投递，并同步更新桌面任务的交付投影。"""
+        with self._lock:
+            now = datetime.now(UTC).isoformat()
+            cursor = self._connection.execute(
+                "UPDATE runtime_connector_artifact_outbox SET status='DELIVERED',delivered_at=?,delivered_artifact_id=?,lease_token='',lease_expires_at=NULL,last_error='' WHERE outbox_id=? AND status='PROCESSING' AND lease_token=?",
+                (now, artifact_id, outbox_id, lease_token),
+            )
+            if cursor.rowcount == 1:
+                self._connection.execute(
+                    "UPDATE runtime_connector_tasks SET artifact_delivery_status='DELIVERED',artifact_id=? WHERE task_id=(SELECT task_id FROM runtime_connector_artifact_outbox WHERE outbox_id=?)",
+                    (artifact_id, outbox_id),
+                )
+            self._connection.commit()
+            return cursor.rowcount == 1
+
+    def fail_connector_artifact_delivery(
+        self, outbox_id: str, lease_token: str, error: str, *, max_attempts: int = 8,
+        max_backoff_seconds: int = 300,
+    ) -> str:
+        """记录失败并安排指数退避；超过阈值进入可查询、可重放的死信终态。"""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT attempts,task_id FROM runtime_connector_artifact_outbox WHERE outbox_id=? AND status='PROCESSING' AND lease_token=?",
+                (outbox_id, lease_token),
+            ).fetchone()
+            if row is None:
+                return "LEASE_LOST"
+            attempts = int(row["attempts"]) + 1
+            terminal = attempts >= max_attempts
+            next_attempt_at = None if terminal else (
+                datetime.now(UTC) + timedelta(seconds=min(2 ** max(attempts - 1, 0), max_backoff_seconds))
+            ).isoformat()
+            status = "DEAD_LETTER" if terminal else "RETRY"
+            dead_at = datetime.now(UTC).isoformat() if terminal else None
+            self._connection.execute(
+                "UPDATE runtime_connector_artifact_outbox SET attempts=?,status=?,next_attempt_at=?,lease_token='',lease_expires_at=NULL,dead_lettered_at=?,last_error=? WHERE outbox_id=? AND lease_token=?",
+                (attempts, status, next_attempt_at, dead_at, error[:500], outbox_id, lease_token),
+            )
+            self._connection.execute(
+                "UPDATE runtime_connector_tasks SET artifact_delivery_status=? WHERE task_id=?",
+                (status, row["task_id"]),
+            )
+            self._connection.commit()
+            return status
+
+    def list_connector_artifact_dead_letters(
+        self, tenant_id: str, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """列出租户内死信摘要；不返回结果正文，防止运维接口变成数据导出通道。"""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT outbox_id,task_id,root_task_id,attempts,last_error,created_at,dead_lettered_at "
+                "FROM runtime_connector_artifact_outbox WHERE tenant_id=? AND status='DEAD_LETTER' "
+                "ORDER BY dead_lettered_at DESC LIMIT ?",
+                (tenant_id, min(max(limit, 1), 100)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def requeue_connector_artifact_dead_letter(self, tenant_id: str, outbox_id: str) -> bool:
+        """显式重放单条死信；保留历史 attempts，后续成功仍可看出此前故障次数。"""
+        with self._lock:
+            now = datetime.now(UTC).isoformat()
+            cursor = self._connection.execute(
+                "UPDATE runtime_connector_artifact_outbox SET status='RETRY',next_attempt_at=?,dead_lettered_at=NULL,lease_token='',lease_expires_at=NULL WHERE tenant_id=? AND outbox_id=? AND status='DEAD_LETTER'",
+                (now, tenant_id, outbox_id),
+            )
+            if cursor.rowcount == 1:
+                self._connection.execute(
+                    "UPDATE runtime_connector_tasks SET artifact_delivery_status='RETRY' WHERE task_id=(SELECT task_id FROM runtime_connector_artifact_outbox WHERE outbox_id=?)",
+                    (outbox_id,),
+                )
+            self._connection.commit()
+            return cursor.rowcount == 1
+
+    def get_connector(self, tenant_id: str, user_id: str, connector_id: str) -> dict | None:
+        """读取当前主体拥有的 Connector，不返回配对码哈希。"""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT connector_id,device_name,capabilities_json,status,expires_at,created_at,connected_at,last_seen_at FROM runtime_desktop_connectors WHERE tenant_id=? AND user_id=? AND connector_id=?",
+                (tenant_id, user_id, connector_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "connector_id": row["connector_id"], "device_name": row["device_name"],
+            "capabilities": json.loads(row["capabilities_json"]), "status": row["status"],
+            "expires_at": row["expires_at"], "created_at": row["created_at"],
+            "connected_at": row["connected_at"] or "",
+            "last_seen_at": row["last_seen_at"] or "",
+        }
+
+    def assign_reviewer(
+        self, tenant_id: str, run_id: str, reviewer_id: str, assigned_by: str, reason: str
+    ) -> None:
+        """持久化明确的 Review 授权关系，避免主管角色隐式读取全租户任务。
+
+        重复指派同一 reviewer 更新理由与时间；不会修改 Run 本身、执行状态或历史审计事实。
+        """
+        now = datetime.now(UTC).isoformat()
+        with self._lock:
+            exists = self._connection.execute(
+                "SELECT 1 FROM runtime_runs WHERE tenant_id = ? AND run_id = ?",
+                (tenant_id, run_id),
+            ).fetchone()
+            if exists is None:
+                raise LookupError("run not found")
+            self._connection.execute(
+                """
+                INSERT INTO runtime_review_assignments(
+                    tenant_id, run_id, reviewer_id, assigned_by, reason, assigned_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tenant_id, run_id, reviewer_id) DO UPDATE SET
+                    assigned_by = excluded.assigned_by,
+                    reason = excluded.reason,
+                    assigned_at = excluded.assigned_at
+                """,
+                (tenant_id, run_id, reviewer_id, assigned_by, reason, now),
+            )
+            self._connection.commit()
+
+    def transfer_reviewer(
+        self, tenant_id: str, run_id: str, current_reviewer_id: str, next_reviewer_id: str, reason: str
+    ) -> None:
+        """原子移交当前审查人的 Assignment，不改变 Run 与已写入的执行事实。"""
+        now = datetime.now(UTC).isoformat()
+        with self._lock:
+            current = self._connection.execute(
+                "SELECT 1 FROM runtime_review_assignments WHERE tenant_id = ? AND run_id = ? AND reviewer_id = ?",
+                (tenant_id, run_id, current_reviewer_id),
+            ).fetchone()
+            if current is None:
+                raise LookupError("review assignment not found")
+            try:
+                self._connection.execute(
+                    "DELETE FROM runtime_review_assignments WHERE tenant_id = ? AND run_id = ? AND reviewer_id = ?",
+                    (tenant_id, run_id, current_reviewer_id),
+                )
+                self._connection.execute(
+                    """INSERT INTO runtime_review_assignments(tenant_id, run_id, reviewer_id, assigned_by, reason, assigned_at)
+                    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id, run_id, reviewer_id) DO UPDATE SET
+                    assigned_by = excluded.assigned_by, reason = excluded.reason, assigned_at = excluded.assigned_at""",
+                    (tenant_id, run_id, next_reviewer_id, current_reviewer_id, reason, now),
+                )
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def list_for_reviewer(
+        self, tenant_id: str, reviewer_id: str, *, limit: int = 50
+    ) -> list[tuple[RuntimeRun, dict[str, str]]]:
+        """返回仅显式指派给审查人的 Run 与指派理由，保持最小可见集合。"""
+        bounded_limit = min(max(limit, 1), 100)
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT r.*, a.assigned_by AS review_assigned_by, a.reason AS review_reason,
+                       a.assigned_at AS review_assigned_at
+                FROM runtime_review_assignments AS a
+                JOIN runtime_runs AS r ON r.tenant_id = a.tenant_id AND r.run_id = a.run_id
+                WHERE a.tenant_id = ? AND a.reviewer_id = ?
+                ORDER BY a.assigned_at DESC, r.run_id DESC
+                LIMIT ?
+                """,
+                (tenant_id, reviewer_id, bounded_limit),
+            ).fetchall()
+        return [
+            (
+                self._from_row(row),
+                {
+                    "assigned_by": str(row["review_assigned_by"]),
+                    "reason": str(row["review_reason"]),
+                    "assigned_at": str(row["review_assigned_at"]),
+                },
+            )
+            for row in rows
+        ]
+
+    def is_assigned_reviewer(self, tenant_id: str, run_id: str, reviewer_id: str) -> bool:
+        """验证 reviewer 对单一 Run 的显式指派关系，拒绝猜测或枚举式访问。"""
+        return self.review_assignment(tenant_id, run_id, reviewer_id) is not None
+
+    def review_assignment(
+        self, tenant_id: str, run_id: str, reviewer_id: str
+    ) -> dict[str, str] | None:
+        """读取单一审查授权及其理由，供 Review 详情做资源级再校验。
+
+        该查询不接受通配 reviewer，也不从 Run owner 或角色推断授权；因此详情页与队列页
+        共享同一条持久化资源关系，而不是一处校验、另一处放宽。
+        """
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT assigned_by, reason, assigned_at FROM runtime_review_assignments
+                WHERE tenant_id = ? AND run_id = ? AND reviewer_id = ?
+                """,
+                (tenant_id, run_id, reviewer_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "assigned_by": str(row["assigned_by"]),
+            "reason": str(row["reason"]),
+            "assigned_at": str(row["assigned_at"]),
+        }
+
+    def add_review_comment(
+        self, tenant_id: str, run_id: str, author_id: str, message: str
+    ) -> dict[str, str]:
+        """追加不可变的 Review 协作备注，并要求作者仍持有当前显式 Assignment。
+
+        这不是通用 Run 留言板：若转交已发生，前审查人不能继续写入，以免过期权限在
+        隐蔽的评论路径中复活。评论正文本身由上层限制长度，数据库只保存审查事实。
+        """
+        now = datetime.now(UTC).isoformat()
+        comment = {
+            "comment_id": f"review_comment_{uuid4().hex}",
+            "author_id": author_id,
+            "message": message,
+            "created_at": now,
+        }
+        with self._lock:
+            assigned = self._connection.execute(
+                "SELECT 1 FROM runtime_review_assignments WHERE tenant_id = ? AND run_id = ? AND reviewer_id = ?",
+                (tenant_id, run_id, author_id),
+            ).fetchone()
+            if assigned is None:
+                raise LookupError("review assignment not found")
+            self._connection.execute(
+                """INSERT INTO runtime_review_comments(
+                    comment_id, tenant_id, run_id, author_id, message, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (comment["comment_id"], tenant_id, run_id, author_id, message, now),
+            )
+            self._connection.commit()
+        return comment
+
+    def list_review_comments(
+        self, tenant_id: str, run_id: str, reviewer_id: str, *, limit: int = 100
+    ) -> list[dict[str, str]]:
+        """为当前被指派 reviewer 读取有限评论历史，禁止从 Run ID 直接枚举协作记录。"""
+        bounded_limit = min(max(limit, 1), 200)
+        if self.review_assignment(tenant_id, run_id, reviewer_id) is None:
+            raise LookupError("review assignment not found")
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT comment_id, author_id, message, created_at FROM runtime_review_comments
+                WHERE tenant_id = ? AND run_id = ? ORDER BY created_at ASC LIMIT ?""",
+                (tenant_id, run_id, bounded_limit),
+            ).fetchall()
+        return [
+            {
+                "comment_id": str(row["comment_id"]),
+                "author_id": str(row["author_id"]),
+                "message": str(row["message"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
 
     def is_run_ancestor(self, tenant_id: str, ancestor_run_id: str, descendant_run_id: str) -> bool:
         """沿持久化 ``parent_run_id`` 链验证谱系控制权，禁止并列 Agent 相互操控。"""

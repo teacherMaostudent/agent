@@ -26,6 +26,14 @@ class ContextCapability(Protocol):
         """将外部输入写入 Context 数据域，供后续安全点重新组装。"""
         ...
 
+    def list_task_artifacts(self, *args: Any, **kwargs: Any) -> Any:
+        """读取一个已完成资源授权的 RootTask 工件索引，不触碰工件正文。"""
+        ...
+
+    def artifact_download_url(self, *args: Any, **kwargs: Any) -> Any:
+        """在已完成 Run/Artifact 资源授权后获取短期下载 URL，绝不保存到执行状态。"""
+        ...
+
 
 class RetrievalCapability(Protocol):
     """提供经 RAG ACL、索引版本和证据契约约束的检索能力。"""
@@ -44,6 +52,10 @@ class ToolCapability(Protocol):
 
     def manifests(self, *args: Any, **kwargs: Any) -> Any:
         """返回当前调用主体可见的工具目录投影，供模型动作受限选择。"""
+        ...
+
+    def record_connector_result(self, *args: Any, **kwargs: Any) -> Any:
+        """消费 Connector 一次性授权并写入 Tool Gateway 统一审计。"""
         ...
 
 

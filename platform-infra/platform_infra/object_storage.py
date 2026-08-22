@@ -106,3 +106,18 @@ class S3ObjectStorage:
         target.parent.mkdir(parents=True, exist_ok=True)
         self.client.download_file(self.bucket, key, str(target))
         return target
+
+    def presign_download(self, key: str, *, expires_seconds: int = 300) -> str:
+        """签发指定对象的短期只读 URL；调用方必须先完成业务资源授权。
+
+        该方法不能接收完整 URL，以免被误用成任意主机跳转或跨桶数据外带。S3 IAM
+        仍是最终数据面边界；签名仅缩短已授权浏览器下载的凭据生命周期。
+        """
+        normalized_key = key.strip().lstrip("/")
+        if not normalized_key or ".." in Path(normalized_key).parts:
+            raise ValueError("invalid object storage key")
+        return self.client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self.bucket, "Key": normalized_key},
+            ExpiresIn=min(max(expires_seconds, 30), 900),
+        )

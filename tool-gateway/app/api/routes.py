@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, Query, Request, status
+from platform_sdk.contracts.desktop_connector import ConnectorGrantRequest
 
 from app.domain.models import (
     ApprovalDecision,
@@ -47,6 +48,8 @@ def _context(
     x_agent_id: str = Header(default="", alias="X-Agent-Id"),
     x_agent_version: str = Header(default="", alias="X-Agent-Version"),
     x_snapshot_id: str = Header(default="", alias="X-Snapshot-Id"),
+    x_connector_id: str = Header(default="", alias="X-Connector-Id"),
+    x_connector_grant: str = Header(default="", alias="X-Connector-Grant"),
     # FastAPI resolves this declarative dependency at request time; it is not
     # an eager application-side function call.
     x_deadline_at: datetime | None = Header(  # noqa: B008
@@ -81,6 +84,8 @@ def _context(
         agent_id=x_agent_id,
         agent_version=x_agent_version,
         snapshot_id=x_snapshot_id,
+        connector_id=x_connector_id,
+        connector_grant=x_connector_grant,
         deadline_at=x_deadline_at,
         attempt_budget_remaining=x_attempt_budget_remaining,
     )
@@ -99,6 +104,50 @@ def list_tools(
         context.tenant_id,
         context.permissions,
     )
+
+
+@router.post("/connector-grants", tags=["connectors"])
+def issue_connector_grant(
+    payload: ConnectorGrantRequest,
+    request: Request,
+    context: Annotated[InvocationContext, Depends(_context)],
+) -> dict:
+    """由 Runtime 内部为已配对设备签发绑定单工具的一次性 grant。"""
+    token = request.app.state.container.repository.issue_connector_grant(
+        context.tenant_id, context.user_id, payload.connector_id, payload.run_id,
+        payload.snapshot_id, payload.tool_name, payload.tool_version,
+        datetime.now(UTC) + timedelta(seconds=payload.expires_in_seconds),
+    )
+    return {
+        "connector_id": payload.connector_id,
+        "grant": token,
+        "expires_in_seconds": payload.expires_in_seconds,
+    }
+
+
+@router.post("/connector-results", tags=["connectors"])
+async def record_connector_result(
+    payload: dict,
+    request: Request,
+    context: Annotated[InvocationContext, Depends(_context)],
+) -> dict:
+    """记录本机执行结果摘要，并原子消费绑定该工具的 Connector Grant。"""
+    tool_name = str(payload.get("tool_name", ""))
+    version = str(payload.get("version", ""))
+    task_id = str(payload.get("task_id", ""))
+    result_sha256 = str(payload.get("result_sha256", ""))
+    if not all((tool_name, version, task_id, result_sha256)):
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=422,
+            detail="tool_name, version, task_id and result_sha256 are required",
+        )
+    response = await request.app.state.container.execution.record_connector_result(
+        tool_name, version, task_id, result_sha256, context
+    )
+    await request.app.state.container.governance.flush()
+    return {"invocation_id": response.invocation_id, "status": response.status}
 
 
 @router.post(

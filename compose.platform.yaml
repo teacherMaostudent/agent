@@ -155,6 +155,46 @@ services:
       tool-gateway:
         condition: service_started
 
+  # Connector 本机动作完成后，Context 工件交付由独立 Relay 从事务记录重试。
+  # 生产必须使用 PostgreSQL，让多个 Relay 副本通过租约安全竞争；本地 SQLite 仅用于单副本演示。
+  agent-runtime-connector-relay:
+    <<: *runtime-service
+    command: ["runtime-connector-artifact-relay"]
+    depends_on:
+      agent-context-service:
+        condition: service_started
+
+  # Browser-facing projection layer. It owns neither Agent state nor authorization decisions;
+  # Runtime remains the source of truth for Run ownership and state transitions.
+  agent-web-bff:
+    build:
+      context: .
+      dockerfile: agent-web-bff/Dockerfile
+    environment:
+      WEB_BFF_ENVIRONMENT: local
+      WEB_BFF_RUNTIME_BASE_URL: http://agent-runtime:8001/api/v1
+      WEB_BFF_RUNTIME_SERVICE_KEY: local-rag-service-key
+      WEB_BFF_GOVERNANCE_BASE_URL: http://agent-governance:8081
+      WEB_BFF_GOVERNANCE_AUDITOR_KEY: local-governance-auditor-key
+      WEB_BFF_CONTROL_PLANE_BASE_URL: http://agent-control-plane:8080
+      WEB_BFF_CONTROL_PLANE_ADMIN_KEY: local-control-plane-admin-key
+      WEB_BFF_OIDC_ENABLED: "false"
+      # Production must set the Authorization Code + PKCE fields and a dedicated Redis URL;
+      # local Compose keeps Header compatibility and never pretends to be a browser SSO setup.
+      WEB_BFF_SESSION_REDIS_URL: redis://redis:6379/2
+      WEB_BFF_CONSOLE_RUNTIME_HEALTH_URL: http://agent-runtime:8001/api/v1/health/ready
+      WEB_BFF_CONSOLE_CONTROL_PLANE_HEALTH_URL: http://agent-control-plane:8080/health/ready
+      WEB_BFF_CONSOLE_GOVERNANCE_HEALTH_URL: http://agent-governance:8081/health/ready
+      WEB_BFF_CONSOLE_LLM_GATEWAY_HEALTH_URL: http://llm-gateway:8080/actuator/health
+      WEB_BFF_CONSOLE_CONTEXT_HEALTH_URL: http://agent-context-service:8002/api/v1/health
+      WEB_BFF_CONSOLE_RAG_HEALTH_URL: http://rag-query-api:8003/api/v1/health
+      WEB_BFF_CONSOLE_INGESTION_HEALTH_URL: http://ingestion-api:8004/api/v1/health
+      WEB_BFF_CONSOLE_TOOL_GATEWAY_HEALTH_URL: http://tool-gateway:8090/api/v1/health/ready
+    ports: ["9010:8010"]
+    depends_on:
+      agent-runtime:
+        condition: service_started
+
   agent-context-service:
     <<: *rag-service
     build:

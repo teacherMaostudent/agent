@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -25,6 +26,8 @@ if (process.env.AGENT_DESKTOP_HARDWARE_ACCELERATION !== "true") {
 
 const runtime = new RuntimeClient();
 const streams = new Map<string, AbortController>();
+const claimedConnectorTasks = new Map<string, Record<string, unknown>>();
+let selectedWorkspaceRoot = "";
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const compatibilityArgument = "--agent-safe-mode";
 const diagnosticsDirectory = path.join(app.getPath("userData"), "diagnostics");
@@ -130,6 +133,36 @@ async function previewWorkspace(root: string): Promise<WorkspacePreview> {
   return { rootName: path.basename(root), totalEntries: entries.length, truncated, entries };
 }
 
+function redactScanLine(value: string): string {
+  return value.replace(/(?:sk|api)[-_][A-Za-z0-9_-]{12,}/gi, "[REDACTED_SECRET]")
+    .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[REDACTED_EMAIL]");
+}
+
+async function executeControlledScan(task: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!selectedWorkspaceRoot) throw new Error("请先由用户选择本机工作区");
+  if (task.tool_name !== "controlled_scan") throw new Error("当前 Connector 仅支持 controlled_scan");
+  const argumentsValue = task.arguments as Record<string, unknown> | undefined;
+  const query = String(argumentsValue?.query ?? argumentsValue?.pattern ?? "TODO").slice(0, 120);
+  if (!query.trim()) throw new Error("扫描模式不能为空");
+  const findings: Array<Record<string, unknown>> = [];
+  const pending = [{ absolute: selectedWorkspaceRoot, relative: "", depth: 0 }];
+  let filesScanned = 0;
+  while (pending.length && filesScanned < 100 && findings.length < 100) {
+    const current = pending.shift()!;
+    for (const entry of await readdir(current.absolute, { withFileTypes: true })) {
+      if ([".git", "node_modules", ".venv", "dist"].includes(entry.name)) continue;
+      const absolute = path.join(current.absolute, entry.name);
+      const relative = path.join(current.relative, entry.name);
+      if (entry.isDirectory() && current.depth < 3) { pending.push({ absolute, relative, depth: current.depth + 1 }); continue; }
+      if (!entry.isFile() || (await stat(absolute)).size > 1_000_000) continue;
+      filesScanned += 1;
+      const lines = (await readFile(absolute, "utf8")).split(/\r?\n/);
+      lines.forEach((line, index) => { if (line.includes(query) && findings.length < 100) findings.push({ path: relative, line: index + 1, text: redactScanLine(line).slice(0, 500) }); });
+    }
+  }
+  return { tool: "controlled_scan", query, files_scanned: filesScanned, findings, truncated: pending.length > 0 || findings.length >= 100 };
+}
+
 function activeWindow(): BrowserWindow {
   const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
   if (!window) throw new Error("Desktop window is unavailable");
@@ -141,6 +174,41 @@ function registerIpc(): void {
   const history = new RunHistoryStore(path.join(app.getPath("userData"), "history"));
   ipcMain.handle("runtime:configure", (_event, value: RuntimeConnection) => runtime.configure(value));
   ipcMain.handle("runtime:capabilities", () => runtime.capabilities());
+  ipcMain.handle("runtime:pair", (_event, deviceName: string, capabilities: string[]) => runtime.pairConnector(deviceName, capabilities));
+  ipcMain.handle("runtime:confirm-pair", (_event, connectorId: string, code: string) => runtime.confirmConnector(connectorId, code));
+  ipcMain.handle("runtime:connector-status", (_event, connectorId: string) => runtime.connectorStatus(connectorId));
+  ipcMain.handle("runtime:revoke-connector", (_event, connectorId: string) => runtime.revokeConnector(connectorId));
+  ipcMain.handle("runtime:connector-grant", async (_event, connectorId: string, runId: string, snapshotId: string, toolName: string, toolVersion: string) => {
+    const { grant: _grant, ...safeProjection } = await runtime.requestConnectorGrant(connectorId, runId, snapshotId, toolName, toolVersion);
+    // Renderer 只需要知道授权已签发；一次性明文 grant 不离开受控主进程边界。
+    return safeProjection;
+  });
+  ipcMain.handle("runtime:connector-heartbeat", (_event, connectorId: string) => runtime.heartbeatConnector(connectorId));
+  ipcMain.handle("runtime:connector-task-next", async (_event, connectorId: string) => {
+    const task = await runtime.claimConnectorTask(connectorId);
+    if (task?.task_id) claimedConnectorTasks.set(String(task.task_id), task);
+    return task;
+  });
+  ipcMain.handle("runtime:connector-task-execute", async (_event, connectorId: string, taskId: string) => {
+    const task = claimedConnectorTasks.get(taskId);
+    if (!task) throw new Error("本机未持有该 Connector 任务或领取租约已失效");
+    const result = await executeControlledScan(task);
+    const digest = createHash("sha256").update(JSON.stringify(result)).digest("hex");
+    const grant = await runtime.requestConnectorGrant(
+      connectorId, String(task.run_id), String(task.snapshot_id),
+      String(task.tool_name), String(task.tool_version),
+    );
+    await runtime.completeConnectorTask(connectorId, taskId, { ...result, result_sha256: digest }, String(grant.grant));
+    claimedConnectorTasks.delete(taskId);
+    const delivery = await runtime.connectorTaskStatus(connectorId, taskId);
+    return {
+      task_id: taskId,
+      files_scanned: result.files_scanned,
+      finding_count: Array.isArray(result.findings) ? result.findings.length : 0,
+      ...delivery,
+    };
+  });
+  ipcMain.handle("runtime:connector-task-status", (_event, connectorId: string, taskId: string) => runtime.connectorTaskStatus(connectorId, taskId));
   ipcMain.handle("runtime:submit", (_event, value: AgentRunRequest) => runtime.submit(value));
   ipcMain.handle("runtime:get-run", (_event, runId: string) => runtime.getRun(runId));
   ipcMain.handle("runtime:get-audit-events", (_event, runId: string) => runtime.getAuditEvents(runId));
@@ -169,7 +237,9 @@ function registerIpc(): void {
   });
   ipcMain.handle("workspace:select", async () => {
     const result = await dialog.showOpenDialog(activeWindow(), { properties: ["openDirectory"] });
-    return result.canceled ? null : previewWorkspace(result.filePaths[0]);
+    if (result.canceled) return null;
+    selectedWorkspaceRoot = result.filePaths[0];
+    return previewWorkspace(selectedWorkspaceRoot);
   });
   ipcMain.handle("feedback:save", (_event, value: UserFeedback) => feedback.append(value));
   ipcMain.handle("runtime:record-run", (_event, value: RunHistoryItem) => history.append(value));

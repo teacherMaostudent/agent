@@ -19,6 +19,17 @@
   写盘前脱敏，可按周筛选负反馈并回流为 Agent Lab Replay Case。
 - 本地最近运行只保存 Run ID、状态和 Agent 索引；用户可显式导出单次运行的诊断 JSON，
   不会自动复制任务正文或证据到本地历史。
+- 可在已验证 Runtime 连接后生成短时 Connector 配对码、确认配对、查看状态并撤销；配对码
+  只在当前界面会话显示，服务端仅保存哈希。配对本身不等于 Tool Gateway 执行授权。
+- 已确认的 Connector 每 30 秒向 Runtime 发送一次心跳；心跳仅用于在线诊断，不扩展工具
+  权限，也不会自动恢复已撤销的设备。Runtime 在读取状态或签发 Grant 前会将超过 90 秒
+  未心跳的设备标记为 `DISCONNECTED`。
+- 已领取的 `controlled_scan` 任务必须由用户在桌面端再次点击确认后才会扫描当前显式选择
+  的目录。扫描仅遍历 3 层、最多 100 个文件、单文件最多 1MB、最多返回 100 条命中；结果会
+  脱敏常见 API Key 和邮箱并在回传前加哈希。
+- 任务队列明确展示 `AWAITING_CONFIRMATION`、`EXECUTING`、工具审计完成以及 Artifact
+  `PENDING / RETRY / DELIVERED / DEAD_LETTER` 状态；完成结果不会因 Context 短时故障而要求
+  用户重复执行本机扫描。Runtime 的独立 Relay 会按租约与指数退避继续交付。
 
 ## 本地运行
 

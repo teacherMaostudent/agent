@@ -386,6 +386,30 @@ class EvaluationService:
             tenant_id, GOLDEN_CANDIDATE, candidate_id, candidate
         )
 
+    async def list_golden_candidates(
+        self, tenant_id: str, *, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """返回 Golden Candidate 的最小审核投影，不把线上样本池作为 Console 数据源。
+
+        Candidate 的完整上下文可能来自受限业务域，因此这里只提供审核队列需要的题目、
+        建议基准、标签、状态和时间。证据正文仍必须经其原数据域重新授权。
+        """
+        candidates = await self._repository.list_documents(tenant_id, GOLDEN_CANDIDATE)
+        ordered = sorted(candidates, key=lambda item: str(item.get("updatedAt", "")), reverse=True)
+        return [
+            {
+                "id": str(item.get("id", "")),
+                "sampleId": str(item.get("sampleId", "")),
+                "question": str(item.get("question", "")),
+                "groundTruth": str(item.get("groundTruth", "")),
+                "tags": [str(tag) for tag in (item.get("tags") or [])[:20]],
+                "status": str(item.get("status", "PENDING")),
+                "createdAt": str(item.get("createdAt", "")),
+                "updatedAt": str(item.get("updatedAt", "")),
+            }
+            for item in ordered[: min(max(limit, 1), 200)]
+        ]
+
     async def run_regression(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
         """在冻结数据集和模型配置上执行确定性回归，保存逐用例结果、检索指标、红队结果和分组
         Hard Gate 证据。

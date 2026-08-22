@@ -47,6 +47,12 @@ class RuntimeSettings(BaseSettings):
     agent_tool_call_reservation_usd: float = 0.001
     agent_tool_timeout: float = 20.0
     agent_tool_result_max_chars: int = 12_000
+    connector_heartbeat_timeout_seconds: int = Field(default=90, ge=30, le=3_600)
+    connector_artifact_relay_poll_seconds: float = Field(default=2.0, ge=0.2, le=60.0)
+    connector_artifact_relay_batch_size: int = Field(default=20, ge=1, le=100)
+    connector_artifact_relay_lease_seconds: int = Field(default=60, ge=10, le=600)
+    connector_artifact_relay_max_attempts: int = Field(default=8, ge=1, le=100)
+    connector_artifact_relay_max_backoff_seconds: int = Field(default=300, ge=1, le=3_600)
     session_archive_enabled: bool = False
     session_archive_bucket: str = ""
     session_archive_prefix: str = "agent-runtime"

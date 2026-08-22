@@ -28,7 +28,9 @@ $coreServices = @(
     "agent-context-service",
     "ingestion-api",
     "tool-gateway",
-    "agent-runtime"
+    "agent-runtime",
+    # BFF 是浏览器访问 Runtime 的同源投影层，不属于七个领域服务，但必须和 Workspace 一起启动。
+    "agent-web-bff"
 )
 # 本地默认采用同步摄取，不启动必须连接 Temporal Cluster 的 ingestion-worker。
 # 生产环境的 Worker 由独立部署清单随 Temporal 一起扩缩容，不能以失败重启冒充就绪。
@@ -43,6 +45,7 @@ $healthChecks = [ordered]@{
     "Context Service" = "http://127.0.0.1:8002/api/v1/health/ready"
     "RAG Query"       = "http://127.0.0.1:8003/api/v1/health/ready"
     "Tool Gateway"    = "http://127.0.0.1:9090/api/v1/health/ready"
+    "Agent Web BFF"   = "http://127.0.0.1:9010/health/ready"
 }
 
 # 宿主端口只服务于浏览器、桌面端和本地验收；容器间始终使用 Compose 服务名及原始端口。
@@ -59,6 +62,7 @@ $hostPorts = [ordered]@{
     "Ingestion"     = 8004
     "Model Lab"     = 9091
     "Agent Lab"     = 9092
+    "Agent Web BFF" = 9010
 }
 
 # Compose 首次构建会并行请求多个 Docker Hub token；部分 Windows 网络环境在 DNS、
@@ -271,6 +275,7 @@ function Show-Endpoints {
     }
     Write-Host "  Control Plane API http://127.0.0.1:9002/docs"
     Write-Host "  Runtime API       http://127.0.0.1:8001/docs"
+    Write-Host "  Agent Web BFF     http://127.0.0.1:9010/health/ready"
     Write-Host ""
     Write-Host "桌面端连接地址：http://127.0.0.1:8001/api/v1（默认 demo/general-agent/local 已发布）" -ForegroundColor Green
 }

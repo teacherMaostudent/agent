@@ -1,5 +1,12 @@
+from io import BytesIO
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Header, HTTPException, Request
-from platform_sdk.contracts.artifacts import TaskArtifact, TaskArtifactCreate
+from platform_sdk.contracts.artifacts import (
+    TaskArtifact,
+    TaskArtifactCreate,
+    TaskArtifactTextCreate,
+)
 
 from app.contracts.context import ContextAssembleRequest, ContextPackage, ConversationMessage
 
@@ -32,6 +39,89 @@ def get_artifact(
     if artifact is None:
         raise HTTPException(status_code=404, detail="task artifact not found")
     return artifact
+
+
+@router.get("/tasks/{root_task_id}/artifacts", response_model=list[TaskArtifact])
+def list_artifacts(
+    root_task_id: str,
+    request: Request,
+    limit: int = 100,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+) -> list[TaskArtifact]:
+    """返回任务的不可变工件索引；正文仍只能经受控内容域按引用读取。"""
+    return request.app.state.container.artifacts.list(
+        x_tenant_id, root_task_id, limit=min(max(limit, 1), 200)
+    )
+
+
+@router.get("/tasks/{root_task_id}/artifacts/{artifact_id}/download-url")
+def artifact_download_url(
+    root_task_id: str,
+    artifact_id: str,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+) -> dict[str, str | int]:
+    """为已存在 Artifact 签发短期下载 URL，不允许把任意 s3:// 引用变成签名能力。"""
+    container = request.app.state.container
+    artifact = container.artifacts.get(x_tenant_id, root_task_id, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="task artifact not found")
+    storage = container.artifact_delivery
+    if storage is None:
+        raise HTTPException(status_code=409, detail="artifact delivery is not configured")
+    parsed = urlparse(artifact.content_ref)
+    required_prefix = storage.prefix.strip("/")
+    key = parsed.path.lstrip("/")
+    if (
+        parsed.scheme != "s3"
+        or parsed.netloc != storage.bucket
+        or (required_prefix and not key.startswith(f"{required_prefix}/"))
+    ):
+        # TaskArtifact 可以引用其他业务域内容，但 Context 绝不能为它们签名；应由该
+        # 业务域提供自己的授权下载器。
+        raise HTTPException(status_code=409, detail="artifact is not deliverable by this storage domain")
+    try:
+        return {
+            "url": storage.presign_download(key),
+            "expires_in_seconds": 300,
+            # S3-compatible GET signatures authorize byte-range requests without signing each
+            # Range header, enabling resumable downloads while keeping the same short expiry.
+            "supports_range": True,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="artifact storage key is invalid") from exc
+
+
+@router.post("/tasks/{root_task_id}/artifacts/text", response_model=TaskArtifact, status_code=201)
+def create_text_artifact(
+    root_task_id: str,
+    payload: TaskArtifactTextCreate,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> TaskArtifact:
+    """把受信任 Runtime 的小型最终报告写入配置 S3，再登记不可变 Artifact 引用。"""
+    storage = request.app.state.container.artifact_delivery
+    if storage is None:
+        raise HTTPException(status_code=409, detail="artifact delivery is not configured")
+    encoded = payload.content.encode("utf-8")
+    key, checksum = storage.put_stream(
+        f"tasks/{x_tenant_id}/{root_task_id}",
+        "final-report.md",
+        BytesIO(encoded),
+        content_type=payload.media_type,
+    )
+    return request.app.state.container.artifacts.create(
+        x_tenant_id,
+        x_user_id,
+        TaskArtifactCreate(
+            root_task_id=root_task_id,
+            artifact_type=payload.artifact_type,
+            content_ref=f"s3://{storage.bucket}/{key}",
+            content_sha256=checksum,
+            media_type=payload.media_type,
+        ),
+    )
 
 
 @router.post("/assemble", response_model=ContextPackage)

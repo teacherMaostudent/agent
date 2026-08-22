@@ -50,6 +50,20 @@ class TaskArtifactStore:
                 return TaskArtifact.model_validate(payload) if payload else None
             return self._memory.get(key)
 
+    def list(self, tenant_id: str, root_task_id: str, *, limit: int = 100) -> list[TaskArtifact]:
+        """列出一个 RootTask 的工件索引，不按租户扫描或返回工件正文。"""
+        bounded_limit = min(max(limit, 1), 200)
+        prefix = f"{tenant_id}:{root_task_id}:"
+        with self._lock:
+            if self._db is not None:
+                # KV 后端没有业务查询能力时只读取同一 RootTask 前缀；调用方仍须先在
+                # Runtime 完成 Run 资源授权，Context 不承担浏览器级共享策略。
+                items = self._db.list_prefix(_KIND, prefix, limit=bounded_limit)
+                artifacts = [TaskArtifact.model_validate(item) for item in items]
+            else:
+                artifacts = [item for key, item in self._memory.items() if key.startswith(prefix)]
+        return sorted(artifacts, key=lambda item: item.created_at, reverse=True)[:bounded_limit]
+
     @staticmethod
     def _key(tenant_id: str, root_task_id: str, artifact_id: str) -> str:
         """构造包含全部隔离维度的内部 KV 键。"""

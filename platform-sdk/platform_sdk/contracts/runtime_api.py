@@ -61,6 +61,33 @@ class AgentRunInputRequest(BaseModel):
     message: str = Field(min_length=1, max_length=24_000)
 
 
+class ReviewAssignmentRequest(BaseModel):
+    """将既有 Run 指派给明确审查人；Review 不是对租户全量运行的隐式读取权。"""
+
+    reviewer_id: str = Field(min_length=2, max_length=160)
+    reason: str = Field(min_length=2, max_length=2_000)
+
+
+class ReviewTransferRequest(BaseModel):
+    """将当前审查人的显式授权原子转交给另一位审查人。"""
+
+    reviewer_id: str = Field(min_length=2, max_length=160)
+    reason: str = Field(min_length=2, max_length=2_000)
+
+
+class ReviewCommentRequest(BaseModel):
+    """为单一 Review Assignment 写入协作备注；正文不应承载原始 Prompt 或密钥。"""
+
+    message: str = Field(min_length=1, max_length=8_000)
+
+
+class RunShareRequest(BaseModel):
+    """将单一 Run 以只读方式共享给明确主体，不能授予控制权。"""
+
+    user_id: str = Field(min_length=2, max_length=160)
+    reason: str = Field(min_length=2, max_length=2_000)
+
+
 class AgentFollowupRequest(BaseModel):
     """向已完成子 Agent 追加下一轮任务的受限请求，父运行必须通过谱系授权。"""
 

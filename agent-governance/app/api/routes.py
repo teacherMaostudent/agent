@@ -355,3 +355,18 @@ async def review_golden_candidate(
     return await container.evaluation.review_golden_candidate(
         identity.tenant_id, identity.user_id, candidate_id, request
     )
+
+
+@router.get(
+    "/v1/governance/evaluations/online/golden-candidates",
+    tags=["online-evaluation"],
+)
+async def list_golden_candidates(
+    identity: Auditor, container: Container, limit: int = Query(default=100, ge=1, le=200)
+) -> dict[str, Any]:
+    """列出候选 Golden 的最小审核投影；不返回线上样本原始请求/响应。"""
+    return {
+        "items": await container.evaluation.list_golden_candidates(
+            identity.tenant_id, limit=limit
+        )
+    }

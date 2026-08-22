@@ -135,6 +135,14 @@ secrets:
     file: ${RUNTIME_MTLS_CERT_FILE:-deploy/tls/agent-runtime.crt}
   runtime_key:
     file: ${RUNTIME_MTLS_KEY_FILE:-deploy/tls/agent-runtime.key}
+  runtime_connector_relay_cert:
+    file: ${RUNTIME_CONNECTOR_RELAY_MTLS_CERT_FILE:-deploy/tls/runtime-connector-relay.crt}
+  runtime_connector_relay_key:
+    file: ${RUNTIME_CONNECTOR_RELAY_MTLS_KEY_FILE:-deploy/tls/runtime-connector-relay.key}
+  web_bff_cert:
+    file: ${WEB_BFF_MTLS_CERT_FILE:-deploy/tls/agent-web-bff.crt}
+  web_bff_key:
+    file: ${WEB_BFF_MTLS_KEY_FILE:-deploy/tls/agent-web-bff.key}
   context_service_cert:
     file: ${CONTEXT_SERVICE_MTLS_CERT_FILE:-deploy/tls/agent-context-service.crt}
   context_service_key:
@@ -483,6 +491,64 @@ services:
     <<: *runtime-service
     command: runtime-temporal-worker
     depends_on: [agent-runtime, temporal]
+
+  runtime-connector-artifact-relay:
+    <<: *runtime-service
+    command: runtime-connector-artifact-relay
+    environment:
+      <<: *runtime-env
+      RUNTIME_WORKLOAD_CLIENT_ID: runtime-connector-artifact-relay
+      RUNTIME_WORKLOAD_CLIENT_SECRET: ${RUNTIME_CONNECTOR_RELAY_WORKLOAD_CLIENT_SECRET}
+      RUNTIME_MTLS_CERT_FILE: /run/secrets/runtime_connector_relay_cert
+      RUNTIME_MTLS_KEY_FILE: /run/secrets/runtime_connector_relay_key
+      RUNTIME_CONNECTOR_ARTIFACT_RELAY_POLL_SECONDS: ${RUNTIME_CONNECTOR_ARTIFACT_RELAY_POLL_SECONDS:-2}
+      RUNTIME_CONNECTOR_ARTIFACT_RELAY_BATCH_SIZE: ${RUNTIME_CONNECTOR_ARTIFACT_RELAY_BATCH_SIZE:-20}
+      RUNTIME_CONNECTOR_ARTIFACT_RELAY_MAX_ATTEMPTS: ${RUNTIME_CONNECTOR_ARTIFACT_RELAY_MAX_ATTEMPTS:-8}
+    secrets:
+      - agent_ca_pem
+      - runtime_connector_relay_cert
+      - runtime_connector_relay_key
+    depends_on: [postgres, agent-context-service, agent-governance]
+
+  agent-web-bff:
+    build:
+      <<: *python-build
+      dockerfile: agent-web-bff/Dockerfile
+    restart: unless-stopped
+    environment:
+      WEB_BFF_ENVIRONMENT: production
+      WEB_BFF_RUNTIME_BASE_URL: https://agent-runtime:8001/api/v1
+      WEB_BFF_GOVERNANCE_BASE_URL: https://agent-governance:8081
+      WEB_BFF_GOVERNANCE_AUDITOR_KEY: ${GOVERNANCE_AUDITOR_API_KEY}
+      WEB_BFF_CONTROL_PLANE_BASE_URL: https://agent-control-plane:8080
+      WEB_BFF_CONTROL_PLANE_ADMIN_KEY: ${CONTROL_PLANE_ADMIN_API_KEY}
+      WEB_BFF_OIDC_ENABLED: "true"
+      WEB_BFF_OIDC_ISSUER: ${OIDC_ISSUER}
+      WEB_BFF_OIDC_AUDIENCE: ${OIDC_AUDIENCE}
+      WEB_BFF_OIDC_JWKS_URL: ${OIDC_JWKS_URL}
+      WEB_BFF_OIDC_AUTHORIZATION_URL: ${OIDC_AUTHORIZATION_URL}
+      WEB_BFF_OIDC_TOKEN_URL: ${OIDC_TOKEN_URL}
+      WEB_BFF_OIDC_CLIENT_ID: ${WEB_BFF_OIDC_CLIENT_ID}
+      WEB_BFF_OIDC_CLIENT_SECRET: ${WEB_BFF_OIDC_CLIENT_SECRET:-}
+      WEB_BFF_OIDC_REDIRECT_URI: ${WEB_BFF_OIDC_REDIRECT_URI}
+      WEB_BFF_PUBLIC_ORIGIN: ${WEB_BFF_PUBLIC_ORIGIN}
+      WEB_BFF_SESSION_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/2
+      WEB_BFF_CSRF_ENFORCED: "true"
+      WEB_BFF_MTLS_ENABLED: "true"
+      WEB_BFF_MTLS_CA_FILE: /run/secrets/agent_ca_pem
+      WEB_BFF_MTLS_CERT_FILE: /run/secrets/web_bff_cert
+      WEB_BFF_MTLS_KEY_FILE: /run/secrets/web_bff_key
+      WEB_BFF_CONSOLE_RUNTIME_HEALTH_URL: https://agent-runtime:8001/api/v1/health/ready
+      WEB_BFF_CONSOLE_CONTROL_PLANE_HEALTH_URL: https://agent-control-plane:8080/health/ready
+      WEB_BFF_CONSOLE_GOVERNANCE_HEALTH_URL: https://agent-governance:8081/health/ready
+      WEB_BFF_CONSOLE_LLM_GATEWAY_HEALTH_URL: https://llm-gateway:8080/actuator/health
+      WEB_BFF_CONSOLE_CONTEXT_HEALTH_URL: https://agent-context-service:8002/api/v1/health
+      WEB_BFF_CONSOLE_RAG_HEALTH_URL: https://rag-query-api:8003/api/v1/health
+      WEB_BFF_CONSOLE_INGESTION_HEALTH_URL: https://ingestion-api:8004/api/v1/health
+      WEB_BFF_CONSOLE_TOOL_GATEWAY_HEALTH_URL: https://tool-gateway:8090/api/v1/health/ready
+    secrets: [agent_ca_pem, web_bff_cert, web_bff_key]
+    expose: ["8010"]
+    depends_on: [redis, agent-runtime, agent-control-plane, agent-governance]
 
   agent-context-service:
     <<: *rag-service

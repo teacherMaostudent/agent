@@ -55,6 +55,7 @@ class RuntimeEventType(StrEnum):
     TOOL_RESULT = "runtime.tool.result"
     SUBAGENT_DELEGATED = "runtime.subagent.delegated"
     SUBAGENT_RESULT = "runtime.subagent.result"
+    ARTIFACT_DOWNLOAD_AUTHORIZED = "runtime.artifact.download_authorized"
     USER_MESSAGE = "runtime.user.message"
     ASSISTANT_MESSAGE = "runtime.assistant.message"
 

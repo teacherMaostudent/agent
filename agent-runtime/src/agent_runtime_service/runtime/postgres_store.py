@@ -50,6 +50,54 @@ CREATE TABLE IF NOT EXISTS runtime_session_archives(
     created_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY(tenant_id, session_id, archived_through_sequence)
 );
+CREATE TABLE IF NOT EXISTS runtime_review_assignments(
+    tenant_id TEXT NOT NULL, run_id TEXT NOT NULL, reviewer_id TEXT NOT NULL,
+    assigned_by TEXT NOT NULL, reason TEXT NOT NULL, assigned_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY(tenant_id, run_id, reviewer_id)
+);
+CREATE INDEX IF NOT EXISTS runtime_review_assignments_reviewer_idx
+    ON runtime_review_assignments(tenant_id, reviewer_id, assigned_at DESC);
+CREATE TABLE IF NOT EXISTS runtime_review_comments(
+    comment_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, run_id TEXT NOT NULL,
+    author_id TEXT NOT NULL, message TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS runtime_review_comments_lookup_idx
+    ON runtime_review_comments(tenant_id, run_id, created_at ASC);
+CREATE TABLE IF NOT EXISTS runtime_run_shares(
+    tenant_id TEXT NOT NULL, run_id TEXT NOT NULL, user_id TEXT NOT NULL,
+    shared_by TEXT NOT NULL, reason TEXT NOT NULL, shared_at TEXT NOT NULL,
+    PRIMARY KEY(tenant_id, run_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS runtime_run_shares_user_idx
+    ON runtime_run_shares(tenant_id, user_id, shared_at DESC);
+CREATE TABLE IF NOT EXISTS runtime_desktop_connectors(
+    connector_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
+    device_name TEXT NOT NULL, capabilities_json TEXT NOT NULL, pairing_code_hash TEXT NOT NULL,
+    status TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL,
+    connected_at TIMESTAMPTZ,
+    last_seen_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS runtime_desktop_connectors_owner_idx
+    ON runtime_desktop_connectors(tenant_id, user_id, status);
+CREATE TABLE IF NOT EXISTS runtime_connector_tasks(
+    task_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
+    connector_id TEXT NOT NULL, run_id TEXT NOT NULL, snapshot_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL, tool_version TEXT NOT NULL, arguments_json JSONB NOT NULL,
+    status TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL,
+    claimed_at TIMESTAMPTZ, lease_expires_at TIMESTAMPTZ, result_json JSONB NOT NULL DEFAULT '{}',
+    result_sha256 TEXT NOT NULL DEFAULT '', completed_at TIMESTAMPTZ,
+    artifact_delivery_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED', artifact_id TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS runtime_connector_tasks_claim_idx
+    ON runtime_connector_tasks(tenant_id, connector_id, status, created_at);
+CREATE TABLE IF NOT EXISTS runtime_connector_artifact_outbox(
+    outbox_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
+    task_id TEXT NOT NULL UNIQUE, root_task_id TEXT NOT NULL, content_json JSONB NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'PENDING',
+    next_attempt_at TIMESTAMPTZ, lease_token TEXT NOT NULL DEFAULT '', lease_expires_at TIMESTAMPTZ,
+    delivered_at TIMESTAMPTZ, delivered_artifact_id TEXT NOT NULL DEFAULT '', dead_lettered_at TIMESTAMPTZ,
+    last_error TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL
+);
 CREATE TABLE IF NOT EXISTS runtime_run_mailbox(
     message_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, run_id TEXT NOT NULL,
     input_type TEXT NOT NULL, idempotency_key TEXT NOT NULL,
@@ -85,6 +133,14 @@ ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS step_id TEXT NOT NUL
 ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS epoch_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS attempt_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE runtime_session_events ADD COLUMN IF NOT EXISTS payload_version TEXT NOT NULL DEFAULT 'session-event/v1';
+ALTER TABLE runtime_connector_tasks ADD COLUMN IF NOT EXISTS artifact_delivery_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED';
+ALTER TABLE runtime_connector_tasks ADD COLUMN IF NOT EXISTS artifact_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE runtime_connector_artifact_outbox ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'PENDING';
+ALTER TABLE runtime_connector_artifact_outbox ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ;
+ALTER TABLE runtime_connector_artifact_outbox ADD COLUMN IF NOT EXISTS lease_token TEXT NOT NULL DEFAULT '';
+ALTER TABLE runtime_connector_artifact_outbox ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+ALTER TABLE runtime_connector_artifact_outbox ADD COLUMN IF NOT EXISTS delivered_artifact_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE runtime_connector_artifact_outbox ADD COLUMN IF NOT EXISTS dead_lettered_at TIMESTAMPTZ;
 """
 
 

@@ -63,6 +63,15 @@ export type RunHistoryItem = {
 export type DesktopApi = {
   configure(connection: RuntimeConnection): Promise<void>;
   capabilities(): Promise<Record<string, unknown>>;
+  pairConnector(deviceName: string, capabilities: string[]): Promise<Record<string, unknown>>;
+  confirmConnector(connectorId: string, pairingCode: string): Promise<void>;
+  connectorStatus(connectorId: string): Promise<Record<string, unknown>>;
+  revokeConnector(connectorId: string): Promise<void>;
+  requestConnectorGrant(connectorId: string, runId: string, snapshotId: string, toolName: string, toolVersion: string): Promise<Record<string, unknown>>;
+  heartbeatConnector(connectorId: string): Promise<void>;
+  claimConnectorTask(connectorId: string): Promise<Record<string, unknown> | null>;
+  executeConnectorTask(connectorId: string, taskId: string): Promise<Record<string, unknown>>;
+  connectorTaskStatus(connectorId: string, taskId: string): Promise<Record<string, unknown>>;
   submit(payload: AgentRunRequest): Promise<RunSnapshot>;
   getRun(runId: string): Promise<RunSnapshot>;
   getAuditEvents(runId: string): Promise<{ items: Record<string, unknown>[]; status: string }>;

@@ -54,6 +54,30 @@ AGENT_LAB_SERVICE_API_KEY=<same-long-random-secret>
 5. 独立 Temporal Cluster、区域化 Worker Queue、备份、恢复和跨区域故障转移演练。
 6. Metrics、Trace、日志脱敏、SLO、告警、容量基线与恢复演练。
 
+## Web 门户与桌面连接器
+
+`agent-web` 是同一套产品门户中的三个权限工作区：普通用户使用 Workspace，专家/主管使用
+Review，平台运维使用 Console。浏览器只访问同源 `agent-web-bff`，不能直接持有平台服务密钥或访问
+Runtime、Governance、Control Plane。生产 BFF 使用 OIDC Authorization Code + PKCE，登录状态只以
+随机 HttpOnly Cookie 表示，Access Token 保存在 Redis 服务端会话；发布、回滚和死信重放还会校验近期
+MFA/ACR。上线前必须配置 `OIDC_AUTHORIZATION_URL`、`OIDC_TOKEN_URL`、`WEB_BFF_OIDC_CLIENT_ID`、
+`WEB_BFF_OIDC_REDIRECT_URI`、Redis、BFF 独立客户端证书和最小 NetworkPolicy。当前实现要求 IdP 发放可由
+平台 JWKS 验证的 JWT Access Token；若 IdP 只发 opaque Token，应在部署前增加 Token Introspection 适配器。
+
+`agent-desktop` 只作为 Workspace 的本机能力增强端，不拥有更高的平台权限。用户在 Web 中生成一次性
+配对码，桌面确认后以 Connector 身份领取任务；每个本机副作用必须再次向用户展示工具名、参数、目标和风险，
+确认后才执行。Tool Gateway 签发短时、单工具、单参数摘要、一次性消费的 Grant；桌面重试使用
+`tool_execution_id`/收据幂等，不能重新执行已经完成的本机副作用。
+
+本机结果先写 Runtime 的 Transactional Outbox，再由独立 `runtime-connector-artifact-relay` 交付 Context。
+Relay 支持多副本租约、指数退避、DLQ、人工重放和失联设备对账；Context 暂时不可用不会要求桌面重复执行。
+生产必须给 Relay 配置独立 OIDC 工作负载客户端及 mTLS 证书，不得复用 Runtime API 的身份。应对
+`connector.artifact.dead_lettered` 告警，并定期演练 Context 故障、Relay 崩溃、租约过期和 DLQ 重放。
+
+Artifact 下载由 Runtime 先校验用户/审查 Assignment 关系，再向 Context 申请五分钟签名 URL；URL 不写入
+日志、审计或浏览器持久化，授权动作只记录 Artifact ID。对象存储应支持 Range、短时签名、KMS、版本化和
+租户前缀隔离。
+
 ## Runtime Executor Catalog
 
 每个可接收某环境流量的 Runtime Cluster 必须登记在 Control Plane 的版本化

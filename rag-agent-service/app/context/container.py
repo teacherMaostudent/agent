@@ -1,5 +1,6 @@
 from platform_infra.identity import build_workload_token_provider
 from platform_infra.mtls import mtls_httpx_options
+from platform_infra.object_storage import S3ObjectStorage
 
 from app.context.artifact_store import TaskArtifactStore
 from app.context.service import AgentContextService
@@ -26,6 +27,19 @@ class AgentContextContainer:
             max_messages=self.settings.context_max_stored_messages,
         )
         self.artifacts = TaskArtifactStore(backend)
+        # Artifact 元数据可在任何持久化模式下存在，但浏览器交付只允许生产对象存储。
+        # 本地/内存引用没有可验证的数据面，不伪造下载 URL。
+        self.artifact_delivery = (
+            S3ObjectStorage(
+                bucket=self.settings.s3_bucket,
+                prefix=self.settings.s3_prefix,
+                endpoint_url=self.settings.s3_endpoint_url,
+                region=self.settings.s3_region,
+                kms_key_id=self.settings.s3_kms_key_id,
+            )
+            if self.settings.object_storage_backend == "s3" and self.settings.s3_bucket
+            else None
+        )
         self.rag_client = HttpRagQueryClient(
             self.settings.rag_query_base_url,
             self.settings.internal_service_api_key,

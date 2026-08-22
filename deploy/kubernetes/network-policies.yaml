@@ -57,8 +57,10 @@ spec:
   ingress:
     - from:
         - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: agent-runtime
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [agent-runtime, runtime-connector-artifact-relay, agent-web-bff]
       ports:
         - protocol: TCP
           port: 8002
@@ -87,10 +89,143 @@ spec:
             matchExpressions:
               - key: app.kubernetes.io/name
                 operator: In
-                values: [agent-runtime, agent-context-service]
+                values: [agent-runtime, runtime-connector-artifact-relay, agent-context-service]
       ports:
         - protocol: TCP
           port: 8003
+---
+# The Connector relay owns no inbound API. It can reach only the result-artifact owner,
+# Governance transport, PostgreSQL and the controlled egress gateway used for workload OIDC.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runtime-connector-relay-egress
+  namespace: agent-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-connector-artifact-relay
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [agent-context-service, agent-governance, postgres]
+      ports:
+        - {protocol: TCP, port: 8002}
+        - {protocol: TCP, port: 8081}
+        - {protocol: TCP, port: 5432}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: egress-gateway
+      ports:
+        - {protocol: TCP, port: 443}
+---
+# Web is the only browser-facing projection. Ingress terminates public TLS; all internal calls
+# leave under the BFF's own workload identity and cannot address arbitrary platform pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-web-bff-boundary
+  namespace: agent-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agent-web-bff
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - {protocol: TCP, port: 8010}
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [agent-runtime, agent-control-plane, agent-governance, llm-gateway, agent-context-service, rag-query-api, ingestion-api, tool-gateway, redis]
+      ports:
+        - {protocol: TCP, port: 6379}
+        - {protocol: TCP, port: 8001}
+        - {protocol: TCP, port: 8002}
+        - {protocol: TCP, port: 8003}
+        - {protocol: TCP, port: 8004}
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 8081}
+        - {protocol: TCP, port: 8090}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: egress-gateway
+      ports:
+        - {protocol: TCP, port: 443}
+---
+# DNS is required even under default-deny. External OIDC/S3 traffic must still traverse the
+# allowlisted egress-gateway policy above; this rule does not grant general internet access.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-platform-dns-egress
+  namespace: agent-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: agent-platform
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: governance-ingress-from-declared-producers
+  namespace: agent-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agent-governance
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [agent-runtime, runtime-connector-artifact-relay, agent-web-bff, agent-control-plane, llm-gateway, agent-lab]
+      ports:
+        - {protocol: TCP, port: 8081}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: control-plane-ingress-from-declared-clients
+  namespace: agent-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agent-control-plane
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [agent-runtime, agent-web-bff, agent-lab, llm-gateway]
+      ports:
+        - {protocol: TCP, port: 8080}
 ---
 # Ingestion exposes its API only to the platform control path.  The worker has
 # no inbound HTTP listener and therefore receives no ingress allowance.

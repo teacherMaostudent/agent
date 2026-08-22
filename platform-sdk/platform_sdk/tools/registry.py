@@ -51,6 +51,8 @@ class ToolContext:
     deadline_at: str = ""
     attempt_budget_remaining: int = 0
     tool_version: str = ""
+    connector_id: str = ""
+    connector_grant: str = ""
 
 
 @dataclass(frozen=True)

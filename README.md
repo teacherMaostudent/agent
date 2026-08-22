@@ -15,8 +15,14 @@
 - 对知识检索、模型调用和工具副作用建立统一的身份、成本、审计和故障恢复链路；
 - 以 Agent Lab 回放冻结快照，以 Governance 质量门禁控制正式 Release，以 Model Lab 管理可选自部署模型实验；
 - 由 Temporal 承载跨天、审批等待、重试和故障恢复，不把长期任务留在 Web 请求或单个 Python 进程中。
-- 通过 `agent-desktop` 提供面向真实用户的 Electron 执行台，显示计划/事件、审批、Steering、
-  取消、结果与反馈，但不在客户端复制 Runtime 状态机或工具权限。
+- `agent-desktop` 是可选 Desktop Connector 和本地诊断客户端，不是平台主界面。它提供受控
+  本机扫描、人工确认、计划/事件、审批、Steering 与取消；平台发布和治理权限不会下放到桌面端。
+- `agent-web` 通过同源 `agent-web-bff` 提供 Workspace、Review 与 Console。BFF 已实现 PKCE、
+  Redis 服务端 Session、HttpOnly Cookie、CSRF/CSP 和独立 mTLS 身份；Review 支持共同审查、
+  数据域证据授权与专家标注；Console 支持版本/Release 状态动作和 Connector DLQ。生产高风险
+  操作要求独立 permission、目标 ID 回显和近期 MFA/ACR。
+- Desktop Connector 结果先由 Tool Gateway 幂等审计，再交给 Context。Context 暂时不可达时，
+  独立 `runtime-connector-artifact-relay` 使用租约、指数退避和 DLQ 恢复，绝不重复本机副作用。
 
 ## 核心设计原则
 
@@ -75,6 +81,7 @@ Workflow 不加载 Planner 或 Agent Session，支持重试、补偿、Human Sig
 5. 开发跨服务功能：先修改 `platform-contracts/` 或 `platform-sdk/` 中的版本化契约，再改各服务实现。
 6. 按调用链理解方法：阅读 [代码阅读与方法职责指南](docs/code-reading-guide.md)，它把入口、计划准入、
    Graph、Context/RAG、模型、工具、发布、治理和故障恢复映射到具体文件与方法。
+7. 规划业务产品与平台控制台：阅读 [统一 Agent Web 产品设计与现状审计](docs/unified-agent-web-product-design.md)。
 
 ## 注释与说明文件标准
 

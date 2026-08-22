@@ -130,6 +130,35 @@ class ToolGatewayClient:
             )
         return payload.get("output")
 
+    def issue_connector_grant(self, context: ToolContext, connector_id: str, run_id: str,
+                              snapshot_id: str, tool_name: str, tool_version: str,
+                              expires_in_seconds: int = 60) -> dict:
+        """为已配对 Connector 请求绑定单工具的一次性授权。"""
+        response = self.client.post(
+            f"{self.base_url}/api/v1/connector-grants",
+            headers=self._headers(context.tenant_id, context.user_id, context.permissions, context.request_id),
+            json={"connector_id": connector_id, "run_id": run_id, "snapshot_id": snapshot_id,
+                  "tool_name": tool_name, "tool_version": tool_version,
+                  "expires_in_seconds": expires_in_seconds},
+            timeout=self.timeout,
+        )
+        self._raise_for_gateway_error(response)
+        return response.json()
+
+    def record_connector_result(
+        self, context: ToolContext, tool_name: str, tool_version: str, task_id: str, result_sha256: str
+    ) -> dict:
+        """将本机结果摘要交给 Tool Gateway，消费一次性 Grant 并写入统一审计。"""
+        headers = self._headers(context.tenant_id, context.user_id, context.permissions, context.request_id)
+        headers.update(_execution_headers(context))
+        response = self.client.post(
+            f"{self.base_url}/api/v1/connector-results", headers=headers,
+            json={"tool_name": tool_name, "version": tool_version, "task_id": task_id, "result_sha256": result_sha256},
+            timeout=self.timeout,
+        )
+        self._raise_for_gateway_error(response)
+        return response.json()
+
     def execution_status(self, name: str, context: ToolContext) -> dict:
         """查询已持久化工具幂等键的状态，供崩溃恢复先对账再决定是否重试。
 
@@ -237,6 +266,8 @@ def _execution_headers(context: ToolContext) -> dict[str, str]:
         "X-Agent-Id": context.agent_id,
         "X-Agent-Version": context.agent_version,
         "X-Snapshot-Id": context.snapshot_id,
+        "X-Connector-Id": context.connector_id,
+        "X-Connector-Grant": context.connector_grant,
         "X-Deadline-At": context.deadline_at,
         "X-Attempt-Budget-Remaining": str(context.attempt_budget_remaining),
     }

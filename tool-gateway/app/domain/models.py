@@ -262,6 +262,8 @@ class InvocationContext(StrictModel):
     snapshot_id: str = ""
     deadline_at: datetime | None = None
     attempt_budget_remaining: int | None = Field(default=None, ge=0)
+    connector_id: str = ""
+    connector_grant: str = ""
 
 
 class ApprovalRecord(StrictModel):

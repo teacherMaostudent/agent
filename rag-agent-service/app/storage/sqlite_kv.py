@@ -102,6 +102,15 @@ class SqliteKv:
             rows = self._conn.execute("SELECT payload FROM kv WHERE kind = ?", (kind,)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
+    def list_prefix(self, kind: str, id_prefix: str, *, limit: int) -> list[dict]:
+        """按受调用方构造的精确 ID 前缀读取有限记录，避免在线调用全表扫描。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT payload FROM kv WHERE kind = ? AND id LIKE ? ORDER BY id LIMIT ?",
+                (kind, f"{id_prefix}%", limit),
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
     def delete(self, kind: str, id: str) -> bool:
         """删除精确实体并返回是否实际删除，供上层保持幂等删除语义。"""
         with self._lock:

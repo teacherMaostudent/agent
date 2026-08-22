@@ -14,6 +14,57 @@ export class RuntimeClient {
     return this.request("/agent/capabilities", { method: "GET" });
   }
 
+  async pairConnector(deviceName: string, capabilities: string[]): Promise<Record<string, unknown>> {
+    return this.request("/agent/connectors/pairings", {
+      method: "POST",
+      body: JSON.stringify({ device_name: deviceName, capabilities }),
+    });
+  }
+
+  async confirmConnector(connectorId: string, pairingCode: string): Promise<void> {
+    await this.request(`/agent/connectors/${encodeURIComponent(connectorId)}/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ pairing_code: pairingCode }),
+    });
+  }
+
+  async connectorStatus(connectorId: string): Promise<Record<string, unknown>> {
+    return this.request(`/agent/connectors/${encodeURIComponent(connectorId)}`, { method: "GET" });
+  }
+
+  async revokeConnector(connectorId: string): Promise<void> {
+    await this.request(`/agent/connectors/${encodeURIComponent(connectorId)}`, { method: "DELETE" });
+  }
+
+  async requestConnectorGrant(connectorId: string, runId: string, snapshotId: string, toolName: string, toolVersion: string): Promise<Record<string, unknown>> {
+    return this.request(`/agent/connectors/${encodeURIComponent(connectorId)}/grants`, {
+      method: "POST",
+      body: JSON.stringify({ connector_id: connectorId, run_id: runId, snapshot_id: snapshotId, tool_name: toolName, tool_version: toolVersion }),
+    });
+  }
+
+  async heartbeatConnector(connectorId: string): Promise<void> {
+    await this.request(`/agent/connectors/${encodeURIComponent(connectorId)}/heartbeat`, { method: "POST" });
+  }
+
+  async claimConnectorTask(connectorId: string): Promise<Record<string, unknown> | null> {
+    const result = await this.request(`/agent/connectors/${encodeURIComponent(connectorId)}/tasks/next`, { method: "POST" }) as { item?: Record<string, unknown> | null };
+    return result.item ?? null;
+  }
+
+  async completeConnectorTask(connectorId: string, taskId: string, result: Record<string, unknown>, connectorGrant: string): Promise<void> {
+    await this.request(`/agent/connectors/${encodeURIComponent(connectorId)}/tasks/${encodeURIComponent(taskId)}/complete`, {
+      method: "POST", body: JSON.stringify({ result, connector_grant: connectorGrant }),
+    });
+  }
+
+  async connectorTaskStatus(connectorId: string, taskId: string): Promise<Record<string, unknown>> {
+    return this.request(
+      `/agent/connectors/${encodeURIComponent(connectorId)}/tasks/${encodeURIComponent(taskId)}`,
+      { method: "GET" },
+    );
+  }
+
   async submit(payload: AgentRunRequest): Promise<RunSnapshot> {
     return this.request("/agent/interactive-runs", {
       method: "POST",
@@ -88,6 +139,11 @@ export class RuntimeClient {
       headers: { ...this.headers(Boolean(init.body)), ...(init.headers ?? {}) },
     });
     if (!response.ok) throw await this.failure(response);
+    // Several command endpoints deliberately return 204. Treating an empty successful response
+    // as JSON used to surface a renderer error after the server had already committed the action.
+    if (response.status === 204 || response.headers.get("Content-Length") === "0") {
+      return undefined as T;
+    }
     return response.json() as Promise<T>;
   }
 

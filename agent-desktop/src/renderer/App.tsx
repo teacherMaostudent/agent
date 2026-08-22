@@ -62,7 +62,7 @@ export function App() {
   const [baseUrl, setBaseUrl] = useState("http://127.0.0.1:8001/api/v1");
   const [tenant, setTenant] = useState("demo");
   const [user, setUser] = useState("desktop-user");
-  const [permissions, setPermissions] = useState("rag:read,file:scan,tool:invoke");
+  const [permissions, setPermissions] = useState("rag:read,file:scan,tool:invoke,connector:pair,connector:grant,connector:revoke");
   const [token, setToken] = useState("");
   const [connected, setConnected] = useState(false);
   const [task, setTask] = useState(templates[0].task);
@@ -81,6 +81,12 @@ export function App() {
   const [exportedPath, setExportedPath] = useState("");
   const [auditEvents, setAuditEvents] = useState<Record<string, unknown>[]>([]);
   const [auditStatus, setAuditStatus] = useState("not_requested");
+  const [connectorId, setConnectorId] = useState("");
+  const [pairingCode, setPairingCode] = useState("");
+  const [confirmCode, setConfirmCode] = useState("");
+  const [connector, setConnector] = useState<Record<string, unknown> | null>(null);
+  const [connectorMessage, setConnectorMessage] = useState("");
+  const [connectorTasks, setConnectorTasks] = useState<Record<string, unknown>[]>([]);
 
   useEffect(() => desktopApi.onRuntimeEvent((runId, event) => {
     if (runId === run?.run_id) setEvents((current) => current.some((item) => item.event_id === event.event_id) ? current : [...current, event]);
@@ -100,6 +106,80 @@ export function App() {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [run?.run_id, run?.status]);
+
+  useEffect(() => {
+    if (!connected || !connectorId || connector?.status !== "CONNECTED") return;
+    const heartbeat = async () => {
+      try {
+        await desktopApi.heartbeatConnector(connectorId);
+        setConnector(await desktopApi.connectorStatus(connectorId));
+      } catch (reason) {
+        setConnectorMessage(`Connector 心跳失败：${String(reason)}`);
+      }
+    };
+    void heartbeat();
+    const timer = window.setInterval(() => void heartbeat(), 30_000);
+    return () => window.clearInterval(timer);
+  }, [connected, connector?.status, connectorId]);
+
+  useEffect(() => {
+    if (!connected || !connectorId || connectorTasks.length === 0) return;
+    const refreshDelivery = async () => {
+      const refreshed = await Promise.all(connectorTasks.map(async (item) => {
+        if (!item.task_id || item.ui_status === "AWAITING_CONFIRMATION" || item.ui_status === "EXECUTING") return item;
+        try {
+          return { ...item, ...(await desktopApi.connectorTaskStatus(connectorId, String(item.task_id))) };
+        } catch {
+          return item;
+        }
+      }));
+      setConnectorTasks(refreshed);
+    };
+    void refreshDelivery();
+    const timer = window.setInterval(() => void refreshDelivery(), 5_000);
+    return () => window.clearInterval(timer);
+  }, [connected, connectorId, connectorTasks.length]);
+
+  async function executeClaimedConnectorTask(item: Record<string, unknown>) {
+    const taskId = String(item.task_id || "");
+    if (!taskId || !window.confirm(
+      `确认允许本机执行 ${String(item.tool_name || "受控工具")}？\n\n` +
+      `Run: ${String(item.run_id || "")}\n该操作只读取已选择的工作区，并上传脱敏、限长结果。`,
+    )) return;
+    setConnectorTasks((current) => current.map((candidate) =>
+      candidate.task_id === item.task_id ? { ...candidate, ui_status: "EXECUTING" } : candidate
+    ));
+    try {
+      const completed = await desktopApi.executeConnectorTask(connectorId, taskId);
+      setConnectorTasks((current) => current.map((candidate) =>
+        candidate.task_id === item.task_id ? { ...candidate, ...completed, ui_status: "COMPLETED" } : candidate
+      ));
+      setConnectorMessage(
+        `本机任务已审计：扫描 ${String(completed.files_scanned || 0)} 个文件，` +
+        `发现 ${String(completed.finding_count || 0)} 项；工件交付 ${String(completed.artifact_delivery_status || "PENDING")}。`,
+      );
+    } catch (reason) {
+      setConnectorTasks((current) => current.map((candidate) =>
+        candidate.task_id === item.task_id ? { ...candidate, ui_status: "FAILED", ui_error: String(reason) } : candidate
+      ));
+      setConnectorMessage(`本机任务未执行：${String(reason)}`);
+    }
+  }
+
+  useEffect(() => {
+    if (!connected || !connectorId || connector?.status !== "CONNECTED") return;
+    const claim = async () => {
+      try {
+        const item = await desktopApi.claimConnectorTask(connectorId);
+        if (item) setConnectorTasks((current) => current.some((task) => task.task_id === item.task_id) ? current : [{ ...item, ui_status: "AWAITING_CONFIRMATION" }, ...current].slice(0, 10));
+      } catch (reason) {
+        setConnectorMessage(`Connector 任务轮询失败：${String(reason)}`);
+      }
+    };
+    void claim();
+    const timer = window.setInterval(() => void claim(), 5_000);
+    return () => window.clearInterval(timer);
+  }, [connected, connector?.status, connectorId]);
 
   useEffect(() => {
     if (!run || !terminal.has(run.status)) return;
@@ -135,6 +215,48 @@ export function App() {
       setHistory(await desktopApi.listRunHistory());
       setConnected(true);
     } catch (reason) { setConnected(false); setError(String(reason)); }
+    finally { setBusy(false); }
+  }
+
+  /** 生成一次性配对码；明文只在本次响应和界面内存中存在，服务端仅保存哈希。 */
+  async function pairDesktopConnector() {
+    setBusy(true); setError(""); setConnectorMessage("");
+    try {
+      const result = await desktopApi.pairConnector("Agent Workbench", ["workspace:read", "controlled_scan"]);
+      setConnectorId(String(result.connector_id || ""));
+      setPairingCode(String(result.pairing_code || ""));
+      setConfirmCode("");
+      setConnector({ ...result, status: "PENDING" });
+      setConnectorMessage("配对码已生成，仅显示在本次会话中，10 分钟内有效。");
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(false); }
+  }
+
+  /** 确认配对后重新读取服务端状态，避免仅凭前端状态显示“已连接”。 */
+  async function confirmDesktopConnector() {
+    if (!connectorId || !confirmCode.trim()) return;
+    setBusy(true); setError("");
+    try {
+      await desktopApi.confirmConnector(connectorId, confirmCode.trim());
+      const status = await desktopApi.connectorStatus(connectorId);
+      setConnector(status);
+      setPairingCode("");
+      setConfirmCode("");
+      setConnectorMessage("Connector 已连接；后续能力仍受 Runtime 权限和工具目录约束。");
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(false); }
+  }
+
+  async function revokeDesktopConnector() {
+    if (!connectorId) return;
+    setBusy(true); setError("");
+    try {
+      await desktopApi.revokeConnector(connectorId);
+      setConnector(await desktopApi.connectorStatus(connectorId));
+      setPairingCode("");
+      setConfirmCode("");
+      setConnectorMessage("Connector 已撤销，原配对关系不可恢复。");
+    } catch (reason) { setError(String(reason)); }
     finally { setBusy(false); }
   }
 
@@ -176,6 +298,23 @@ export function App() {
         <label>权限<input value={permissions} onChange={(e) => setPermissions(e.target.value)} /></label>
         <label>OIDC Token（仅保存在主进程内存）<input type="password" value={token} onChange={(e) => setToken(e.target.value)} /></label>
         <button className={connected ? "success" : "primary"} onClick={connect} disabled={busy}>{connected ? "已连接" : "验证连接（开始前必做）"}</button>
+      </section>
+      <section><h3>Desktop Connector</h3>
+        <p className="muted">为本桌面端建立短时配对关系。配对码不会写入磁盘，撤销后不可复用。</p>
+        <button className="secondary" onClick={pairDesktopConnector} disabled={!connected || busy}>生成配对码</button>
+        {connectorId && <>
+          <p className="muted">Connector：{connectorId.slice(0, 18)}… · 状态：{String(connector?.status || "PENDING")}</p>
+          {pairingCode && <p className="muted">本次配对码：<code>{pairingCode}</code>（请在需要连接的受控端输入）</p>}
+          <div className="twocol"><input aria-label="配对码" placeholder="输入配对码" value={confirmCode} onChange={(e) => setConfirmCode(e.target.value)} /><button className="primary" onClick={confirmDesktopConnector} disabled={busy || !confirmCode.trim()}>确认配对</button></div>
+          {connector?.status === "CONNECTED" && <button className="danger" onClick={revokeDesktopConnector} disabled={busy}>撤销 Connector</button>}
+          {connectorMessage && <p className="muted">{connectorMessage}</p>}
+          {connectorTasks.length > 0 && <div className="muted">本机任务队列：{connectorTasks.map((item) => {
+            const state = String(item.ui_status || item.status || "AWAITING_CONFIRMATION");
+            const delivery = String(item.artifact_delivery_status || "");
+            const canExecute = state === "AWAITING_CONFIRMATION" || state === "FAILED";
+            return <button className="template" disabled={!canExecute} key={String(item.task_id)} onClick={() => void executeClaimedConnectorTask(item)}><b>{String(item.tool_name || "受控任务")} · {state}</b><span>Run {String(item.run_id || "").slice(0, 12)}…{delivery ? ` · 工件 ${delivery}` : " · 等待人工确认"}{item.artifact_id ? ` · ${String(item.artifact_id).slice(0, 12)}…` : ""}</span>{item.ui_error ? <small>{String(item.ui_error)}</small> : null}</button>;
+          })}</div>}
+        </>}
       </section>
       <section><h3>演示任务</h3>{templates.map((item) => <button className="template" key={item.id} onClick={() => setTask(item.task)}><b>{item.title}</b><span>{item.task.slice(0, 42)}…</span></button>)}</section>
       <section><h3>受控工作区</h3><button className="secondary" onClick={async () => setWorkspace(await desktopApi.selectWorkspace())}>选择本地目录</button>{workspace && <p className="muted">{workspace.rootName} · {workspace.totalEntries} 项{workspace.truncated ? "（已截断）" : ""}<br/>只发送有界文件清单，不发送绝对路径或文件正文。</p>}</section>

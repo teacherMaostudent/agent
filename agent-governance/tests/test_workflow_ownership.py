@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
 from fastapi.testclient import TestClient
+
+from app.application.evaluation_service import GOLDEN_CANDIDATE
 
 
 class FakeGateway:
@@ -44,6 +47,46 @@ class FakeGateway:
             "content": content,
             "raw": {"id": "gateway-response", "gateway": {"costEstimated": 0.01}},
         }
+
+
+def test_golden_candidate_queue_exposes_minimal_projection_and_promotes_only_on_approval(
+    client: TestClient, auditor_headers: dict[str, str]
+) -> None:
+    """候选审核队列不能借 Console 接口返回线上样本原始请求/响应。"""
+    repository = client.app.state.container.repository
+    asyncio.run(
+        repository.upsert_document(
+            "tenant-a",
+            GOLDEN_CANDIDATE,
+            "candidate-a",
+            {
+                "id": "candidate-a",
+                "sampleId": "sample-a",
+                "question": "What is the release rule?",
+                "groundTruth": "Approval is required.",
+                "contexts": ["secret evidence body"],
+                "tags": ["release"],
+                "status": "PENDING",
+                "createdAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:00Z",
+            },
+        )
+    )
+
+    queue = client.get(
+        "/v1/governance/evaluations/online/golden-candidates", headers=auditor_headers
+    )
+    assert queue.status_code == 200, queue.text
+    assert queue.json()["items"][0]["id"] == "candidate-a"
+    assert "contexts" not in queue.json()["items"][0]
+
+    reviewed = client.post(
+        "/v1/governance/evaluations/online/golden-candidates/candidate-a/review",
+        headers=auditor_headers,
+        json={"approved": True, "note": "expert confirmed"},
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    assert reviewed.json()["status"] == "PUBLISHED"
 
 
 def test_evaluation_assets_regression_judge_and_gate_are_governance_owned(
