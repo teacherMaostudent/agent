@@ -56,6 +56,10 @@ class RuntimeEventType(StrEnum):
     SUBAGENT_DELEGATED = "runtime.subagent.delegated"
     SUBAGENT_RESULT = "runtime.subagent.result"
     ARTIFACT_DOWNLOAD_AUTHORIZED = "runtime.artifact.download_authorized"
+    ARTIFACT_PREVIEWED = "runtime.artifact.previewed"
+    ARTIFACT_COMPARED = "runtime.artifact.compared"
+    ARTIFACT_INGESTION_DECIDED = "runtime.artifact.ingestion_decided"
+    ARTIFACT_INGESTION_SUBMITTED = "runtime.artifact.ingestion_submitted"
     USER_MESSAGE = "runtime.user.message"
     ASSISTANT_MESSAGE = "runtime.assistant.message"
 

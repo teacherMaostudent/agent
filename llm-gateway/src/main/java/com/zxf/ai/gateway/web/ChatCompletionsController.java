@@ -187,7 +187,14 @@ public class ChatCompletionsController {
      * 生产环境通常会扩展为按用户、租户、应用维度查询，并持久化到 Redis/MySQL/ClickHouse。</p>
      */
     @GetMapping("/usage/me")
-    public Map<String, Object> usage(@RequestHeader(value = "X-User-Id", required = false) String userId) {
-        return quotaService.snapshot(userId == null || userId.isBlank() ? "anonymous" : userId);
+    public Map<String, Object> usage(@RequestHeader HttpHeaders headers) {
+        ApiKeyService.AuthResult auth = apiKeyService.authenticate(
+                headers.getFirst(HttpHeaders.AUTHORIZATION),
+                headers.getFirst("X-Api-Key"),
+                headers.getFirst("X-Tenant-Id"),
+                headers.getFirst("X-User-Id"),
+                null
+        );
+        return quotaService.snapshot(auth.tenantId(), auth.userId());
     }
 }

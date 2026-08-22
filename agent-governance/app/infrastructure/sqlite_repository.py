@@ -22,8 +22,6 @@ T = TypeVar("T")
 class GovernanceRepositoryOperations:
     """与数据库方言无关的治理聚合操作；具体连接、锁与迁移由适配器负责。"""
 
-    """Serialize audit ledger writes so every tenant chain has one predecessor."""
-
     def __init__(self, database_path: Path, schema_path: Path) -> None:
         """保存数据库与建表脚本路径，并初始化串行写锁以维护审计链前序关系。"""
         self._database_path = database_path
@@ -405,6 +403,63 @@ class GovernanceRepositoryOperations:
             return [json.loads(row["payload_json"]) for row in rows]
 
         return await self._read(operation)
+
+    async def list_documents_all_tenants(
+        self, kind: str, limit: int = 1_000
+    ) -> list[dict[str, Any]]:
+        """List service-owned work items across tenants for background workers only.
+
+        This method is deliberately absent from request-facing services. Tenant-scoped
+        APIs must continue to use :meth:`list_documents`; the cross-tenant read exists
+        solely so a workload-identified relay can claim durable jobs.
+        """
+
+        def operation(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+            rows = connection.execute(
+                """
+                SELECT payload_json FROM governance_documents
+                WHERE kind = ? ORDER BY updated_at ASC, document_id ASC LIMIT ?
+                """,
+                (kind, limit),
+            ).fetchall()
+            return [json.loads(row["payload_json"]) for row in rows]
+
+        return await self._read(operation)
+
+    async def compare_and_swap_document(
+        self,
+        tenant_id: str,
+        kind: str,
+        document_id: str,
+        expected: dict[str, Any],
+        replacement: dict[str, Any],
+    ) -> bool:
+        """Atomically replace a work item only if its complete payload is unchanged.
+
+        The payload comparison is the repository's portable CAS token. It prevents
+        two worker replicas from acquiring the same export without relying on a
+        process-local lock and works identically through the PostgreSQL adapter.
+        """
+        from datetime import UTC, datetime
+
+        def operation(connection: sqlite3.Connection) -> bool:
+            cursor = connection.execute(
+                """
+                UPDATE governance_documents SET payload_json = ?, updated_at = ?
+                WHERE tenant_id = ? AND kind = ? AND document_id = ? AND payload_json = ?
+                """,
+                (
+                    _json(replacement),
+                    datetime.now(UTC).isoformat(),
+                    tenant_id,
+                    kind,
+                    document_id,
+                    _json(expected),
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return await self._write(operation)
 
     async def purge_documents_before(self, tenant_id: str, kinds: list[str], cutoff: str) -> int:
         """删除指定租户在保留截止时间之前、属于给定类别的文档。"""

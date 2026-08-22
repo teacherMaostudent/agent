@@ -14,6 +14,7 @@ public class ModelConfigService {
     private static final String PROVIDER_KIND = "config-provider";
     private static final String MODEL_KIND = "config-model";
     private static final String ROUTE_KIND = "config-route";
+    private static final String QUOTA_KIND = "config-quota";
 
     private final GatewayProperties properties;
     private final RuntimeStateRepository stateRepository;
@@ -96,6 +97,55 @@ public class ModelConfigService {
         return Map.of("deleted", true, "route", routeName, "store", stateRepository == null ? "memory" : "mysql");
     }
 
+    /** Return only one tenant's quota policy; provider credentials and other tenants stay hidden. */
+    public synchronized Map<String, GatewayProperties.UserQuota> quotas(String tenantId) {
+        String prefix = tenantId + ":";
+        return properties.getUserQuotas().entrySet().stream()
+                .filter(entry -> entry.getKey().startsWith(prefix))
+                .collect(java.util.stream.Collectors.toMap(
+                        entry -> entry.getKey().substring(prefix.length()),
+                        Map.Entry::getValue,
+                        (left, right) -> right,
+                        java.util.LinkedHashMap::new
+                ));
+    }
+
+    /** Atomically replace one tenant's desired user/default quotas and persist every override. */
+    public synchronized Map<String, Object> replaceQuotas(
+            String tenantId, Map<String, GatewayProperties.UserQuota> quotas) {
+        if (tenantId == null || tenantId.isBlank() || quotas.size() > 1_000) {
+            throw new GatewayException(HttpStatus.BAD_REQUEST, "Invalid tenant or quota count");
+        }
+        quotas.forEach((userId, quota) -> {
+            if (userId == null || userId.isBlank() || quota == null
+                    || quota.getDailyTokenLimit() < 1
+                    || quota.getDailyCostLimit() == null
+                    || quota.getDailyCostLimit().signum() <= 0) {
+                throw new GatewayException(HttpStatus.BAD_REQUEST, "Quota limits and user IDs must be positive");
+            }
+        });
+        String prefix = tenantId + ":";
+        var removed = properties.getUserQuotas().keySet().stream()
+                .filter(key -> key.startsWith(prefix)).toList();
+        removed.forEach(key -> {
+            properties.getUserQuotas().remove(key);
+            if (stateRepository != null) stateRepository.deleteDocument(QUOTA_KIND, key);
+        });
+        quotas.forEach((userId, quota) -> {
+            String key = prefix + userId;
+            properties.getUserQuotas().put(key, quota);
+            if (stateRepository != null) {
+                stateRepository.saveDocument(QUOTA_KIND, key, new QuotaOverride(key, quota));
+            }
+        });
+        return Map.of(
+                "updated", true,
+                "tenantId", tenantId,
+                "quotas", quotas(tenantId),
+                "store", stateRepository == null ? "memory" : "postgres"
+        );
+    }
+
     /**
      * 构建或解析 load persisted overrides 所需的受控对象，避免调用方依赖内部实现细节。
     */
@@ -115,6 +165,8 @@ public class ModelConfigService {
                 });
         stateRepository.listDocuments(ROUTE_KIND, RouteOverride.class)
                 .forEach(item -> properties.getRoutes().put(item.routeName(), item.route()));
+        stateRepository.listDocuments(QUOTA_KIND, QuotaOverride.class)
+                .forEach(item -> properties.getUserQuotas().put(item.subject(), item.quota()));
     }
 
     /**
@@ -133,5 +185,9 @@ public class ModelConfigService {
      * 定义路由级持久化覆盖项，包含固定 primary、fallback 与 canary 策略。
     */
     public record RouteOverride(String routeName, GatewayProperties.Route route) {
+    }
+
+    /** Tenant-qualified quota override; subject uses ``tenant:user`` or ``tenant:*``. */
+    public record QuotaOverride(String subject, GatewayProperties.UserQuota quota) {
     }
 }

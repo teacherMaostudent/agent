@@ -401,12 +401,21 @@ class AgentDefinition(StrictModel):
     updated_at: datetime
 
 
+class LlmQuotaLimit(StrictModel):
+    """Daily tenant/user budget compiled by Control Plane and enforced by LLM Gateway."""
+
+    daily_token_limit: int = Field(default=50_000, ge=1, le=10_000_000_000)
+    daily_cost_limit_usd: float = Field(default=1.0, gt=0, le=10_000_000)
+    currency: Literal["USD"] = "USD"
+
+
 class TenantPolicy(StrictModel):
     tenant_id: str
     allowed_models: list[str] = Field(default_factory=list)
     allowed_data_regions: list[str] = Field(default_factory=list)
     max_canary_percentage: int = Field(default=100, ge=0, le=100)
     require_approval_for_high_risk_tools: bool = True
+    llm_quotas: dict[str, LlmQuotaLimit] = Field(default_factory=dict, max_length=1_000)
     updated_by: str = "system"
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -416,6 +425,7 @@ class TenantPolicyUpdate(StrictModel):
     allowed_data_regions: list[str] = Field(default_factory=list)
     max_canary_percentage: int = Field(default=100, ge=0, le=100)
     require_approval_for_high_risk_tools: bool = True
+    llm_quotas: dict[str, LlmQuotaLimit] = Field(default_factory=dict, max_length=1_000)
 
 
 class ValidationIssue(StrictModel):

@@ -34,6 +34,8 @@ Gateway 执行灰度策略，监控 Gateway 性能后提升或回滚。Gateway �
 - 发布前校验 Active Skill、Tool Catalog 和 Workflow Provider 的精确版本/摘要
 - 发布 Agent 时以 Tool Catalog 为权限、风险、审批和幂等事实源冻结工具绑定；发布 Skill
   时校验 Governance Profile 不得降低其内部 Tool 的真实风险
+- 租户策略可声明 `llm_quotas`，Control Plane 保存权威配置并将租户/用户 Token 与 USD 日配额
+  投影到 LLM Gateway；模型供应商密钥仍只由 Gateway 持有，Console 不接触密钥。
 
 ## 边界
 

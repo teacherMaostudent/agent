@@ -33,7 +33,8 @@ async def run_worker() -> None:
         container.settings.temporal_region_targets,
     )
     client = await Client.connect(
-        router.target_for(container.settings.temporal_worker_region),
+        container.settings.temporal_worker_target_override
+        or router.target_for(container.settings.temporal_worker_region),
         namespace=container.settings.temporal_namespace,
     )
     worker = Worker(

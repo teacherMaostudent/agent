@@ -1,0 +1,11 @@
+modules:
+  http_platform_mtls:
+    prober: http
+    timeout: 8s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      tls_config:
+        ca_file: /run/secrets/agent_ca_pem
+        cert_file: /run/secrets/blackbox_exporter_cert
+        key_file: /run/secrets/blackbox_exporter_key

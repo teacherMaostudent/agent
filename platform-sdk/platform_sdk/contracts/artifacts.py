@@ -16,6 +16,7 @@ class TaskArtifactCreate(BaseModel):
     content_ref: str = Field(min_length=1, max_length=2_000)
     content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     media_type: str = Field(default="application/json", max_length=160)
+    logical_name: str = Field(default="", max_length=160)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -25,6 +26,7 @@ class TaskArtifactTextCreate(BaseModel):
     content: str = Field(min_length=1, max_length=200_000)
     artifact_type: str = Field(default="final-report", min_length=1, max_length=100)
     media_type: str = Field(default="text/markdown; charset=utf-8", max_length=160)
+    logical_name: str = Field(default="", max_length=160)
 
 
 class TaskArtifact(BaseModel):
@@ -37,6 +39,34 @@ class TaskArtifact(BaseModel):
     content_ref: str
     content_sha256: str
     media_type: str
+    logical_name: str = ""
+    version: int = Field(default=1, ge=1)
+    previous_artifact_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_by: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class TaskArtifactPreview(BaseModel):
+    """Bounded text projection; binary objects never pass through the application API."""
+
+    artifact_id: str
+    logical_name: str
+    version: int
+    media_type: str
+    content: str
+    truncated: bool
+    content_sha256: str
+    sha256_verified: bool | None = None
+
+
+class TaskArtifactComparison(BaseModel):
+    """Bounded unified diff between two versions in the same artifact series."""
+
+    base_artifact_id: str
+    target_artifact_id: str
+    logical_name: str
+    base_version: int
+    target_version: int
+    diff: str
+    truncated: bool

@@ -98,6 +98,19 @@ CREATE TABLE IF NOT EXISTS runtime_connector_artifact_outbox(
     delivered_at TIMESTAMPTZ, delivered_artifact_id TEXT NOT NULL DEFAULT '', dead_lettered_at TIMESTAMPTZ,
     last_error TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL
 );
+CREATE TABLE IF NOT EXISTS runtime_artifact_ingestions(
+    request_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
+    run_id TEXT NOT NULL, root_task_id TEXT NOT NULL, source_task_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL, status TEXT NOT NULL, approved_by TEXT,
+    approval_reason TEXT NOT NULL DEFAULT '', approved_at TIMESTAMPTZ,
+    attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TIMESTAMPTZ,
+    lease_token TEXT NOT NULL DEFAULT '', lease_expires_at TIMESTAMPTZ,
+    document_id TEXT NOT NULL DEFAULT '', ingestion_job_id TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL, UNIQUE(tenant_id, artifact_id)
+);
+CREATE INDEX IF NOT EXISTS runtime_artifact_ingestions_claim_idx
+    ON runtime_artifact_ingestions(status, next_attempt_at, created_at);
 CREATE TABLE IF NOT EXISTS runtime_run_mailbox(
     message_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, run_id TEXT NOT NULL,
     input_type TEXT NOT NULL, idempotency_key TEXT NOT NULL,

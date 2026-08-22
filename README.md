@@ -23,6 +23,10 @@
   操作要求独立 permission、目标 ID 回显和近期 MFA/ACR。
 - Desktop Connector 结果先由 Tool Gateway 幂等审计，再交给 Context。Context 暂时不可达时，
   独立 `runtime-connector-artifact-relay` 使用租约、指数退避和 DLQ 恢复，绝不重复本机副作用。
+- Workspace 已支持文本 Artifact 在线预览、同一逻辑产物的单调版本链与有界差异比较；Console
+  已支持模型路由 Release 操作、租户/用户模型配额编辑，以及异步 WORM 审计导出作业和 DLQ 重排。
+- `controlled_scan` 的不可变结果只有经有权限的人工审批后，才由独立 Relay 幂等提交给摄取 API；
+  摄取任务进入耐久队列后由 RAG Worker 建立索引，Desktop 本身不能直接污染知识库。
 
 ## 核心设计原则
 
@@ -82,6 +86,7 @@ Workflow 不加载 Planner 或 Agent Session，支持重试、补偿、Human Sig
 6. 按调用链理解方法：阅读 [代码阅读与方法职责指南](docs/code-reading-guide.md)，它把入口、计划准入、
    Graph、Context/RAG、模型、工具、发布、治理和故障恢复映射到具体文件与方法。
 7. 规划业务产品与平台控制台：阅读 [统一 Agent Web 产品设计与现状审计](docs/unified-agent-web-product-design.md)。
+8. 从 Web、Desktop 到七服务做本机演示：阅读 [Web、Desktop 与七服务本地联调指南](docs/local-web-desktop-testing-guide.md)。
 
 ## 注释与说明文件标准
 

@@ -1,0 +1,20 @@
+route:
+  receiver: default-webhook
+  group_by: [alertname, service_name, instance]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity="critical"]
+      receiver: critical-webhook
+      repeat_interval: 30m
+
+receivers:
+  - name: default-webhook
+    webhook_configs:
+      - url: http://alert-receiver.invalid/warning
+        send_resolved: true
+  - name: critical-webhook
+    webhook_configs:
+      - url: http://alert-receiver.invalid/critical
+        send_resolved: true

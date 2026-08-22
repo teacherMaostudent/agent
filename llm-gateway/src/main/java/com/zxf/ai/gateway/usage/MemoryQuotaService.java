@@ -35,13 +35,14 @@ public class MemoryQuotaService implements QuotaService {
 
     @Override
     /** 原子预占估算 Token 与费用，防止单 JVM 内并发请求突破日限额。 */
-    public UsageReservation reserve(String userId, String requestId, long estimatedPromptTokens,
+    public UsageReservation reserve(String tenantId, String userId, String requestId, long estimatedPromptTokens,
                                     long estimatedCompletionTokens, BigDecimal estimatedCost) {
-        UsageCounter counter = counter(userId);
-        GatewayProperties.UserQuota quota = quota(userId);
+        String subject = subject(tenantId, userId);
+        UsageCounter counter = counter(subject);
+        GatewayProperties.UserQuota quota = quota(tenantId, userId);
         long estimatedTotalTokens = estimatedPromptTokens + estimatedCompletionTokens;
         String id = requestId == null || requestId.isBlank() ? UUID.randomUUID().toString() : requestId;
-        String reservationKey = reservationKey(userId, id);
+        String reservationKey = reservationKey(subject, id);
         UsageReservation reservation = new UsageReservation(id, estimatedPromptTokens,
                 estimatedCompletionTokens, estimatedCost);
 
@@ -67,10 +68,11 @@ public class MemoryQuotaService implements QuotaService {
 
     @Override
     /** 用实际用量结算预占额度；重复结算不会再次修改计数器。 */
-    public void settle(String userId, UsageReservation reservation, GatewayUsage gatewayUsage) {
-        UsageCounter counter = counter(userId);
+    public void settle(String tenantId, String userId, UsageReservation reservation, GatewayUsage gatewayUsage) {
+        String subject = subject(tenantId, userId);
+        UsageCounter counter = counter(subject);
         synchronized (counter) {
-            if (activeReservations.remove(reservationKey(userId, reservation.reservationId())) == null) return;
+            if (activeReservations.remove(reservationKey(subject, reservation.reservationId())) == null) return;
             counter.tokens.addAndGet(gatewayUsage.totalTokens() - reservation.estimatedTotalTokens());
             counter.cost = counter.cost.add(gatewayUsage.cost().subtract(reservation.estimatedCost()));
             normalize(counter);
@@ -79,10 +81,11 @@ public class MemoryQuotaService implements QuotaService {
 
     @Override
     /** 上游未产生可计费用量时释放预占额度；重复释放保持幂等。 */
-    public void release(String userId, UsageReservation reservation) {
-        UsageCounter counter = counter(userId);
+    public void release(String tenantId, String userId, UsageReservation reservation) {
+        String subject = subject(tenantId, userId);
+        UsageCounter counter = counter(subject);
         synchronized (counter) {
-            if (activeReservations.remove(reservationKey(userId, reservation.reservationId())) == null) return;
+            if (activeReservations.remove(reservationKey(subject, reservation.reservationId())) == null) return;
             counter.tokens.addAndGet(-reservation.estimatedTotalTokens());
             counter.cost = counter.cost.subtract(reservation.estimatedCost());
             normalize(counter);
@@ -91,10 +94,11 @@ public class MemoryQuotaService implements QuotaService {
 
     @Override
     /** 返回当前 JVM 的诊断快照，不可将其视为分布式授权依据。 */
-    public Map<String, Object> snapshot(String userId) {
-        UsageCounter counter = counter(userId);
+    public Map<String, Object> snapshot(String tenantId, String userId) {
+        UsageCounter counter = counter(subject(tenantId, userId));
         return Map.of(
                 "store", "memory",
+                "tenantId", tenantId,
                 "userId", userId,
                 "date", counter.date.toString(),
                 "tokens", counter.tokens.get(),
@@ -113,12 +117,20 @@ public class MemoryQuotaService implements QuotaService {
     }
 
     /** 读取用户专属限额，缺失时回退至匿名用户的默认限额。 */
-    private GatewayProperties.UserQuota quota(String userId) {
-        GatewayProperties.UserQuota quota = properties.getUserQuotas().get(userId);
+    private GatewayProperties.UserQuota quota(String tenantId, String userId) {
+        GatewayProperties.UserQuota quota = properties.getUserQuotas().get(subject(tenantId, userId));
+        if (quota == null) quota = properties.getUserQuotas().get(tenantId + ":*");
+        if (quota == null) quota = properties.getUserQuotas().get(userId);
         if (quota != null) {
             return quota;
         }
         return properties.getUserQuotas().getOrDefault("anonymous", new GatewayProperties.UserQuota());
+    }
+
+    private String subject(String tenantId, String userId) {
+        String safeTenant = tenantId == null || tenantId.isBlank() ? "default" : tenantId;
+        String safeUser = userId == null || userId.isBlank() ? "anonymous" : userId;
+        return safeTenant + ":" + safeUser;
     }
 
     /** 修正结算或释放后的负数，避免展示和后续校验出现负用量。 */

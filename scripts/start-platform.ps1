@@ -23,17 +23,21 @@ $coreServices = @(
     "redis",
     "agent-control-plane",
     "agent-governance",
+    "agent-governance-worm-worker",
     "llm-gateway",
     "rag-query-api",
     "agent-context-service",
     "ingestion-api",
+    "ingestion-worker",
     "tool-gateway",
     "agent-runtime",
+    "agent-runtime-connector-relay",
+    "agent-runtime-artifact-ingestion-relay",
     # BFF 是浏览器访问 Runtime 的同源投影层，不属于七个领域服务，但必须和 Workspace 一起启动。
     "agent-web-bff"
 )
-# 本地默认采用同步摄取，不启动必须连接 Temporal Cluster 的 ingestion-worker。
-# 生产环境的 Worker 由独立部署清单随 Temporal 一起扩缩容，不能以失败重启冒充就绪。
+# 本地使用共享开发卷上的轮询 Worker；生产模板构建独立 Temporal Worker Target，
+# 两种入口不会因同名镜像而在缺少 Temporal 时反复重启。
 $labServices = @("model-lab", "agent-lab")
 $managedServices = if ($WithLabs) { $coreServices + $labServices } else { $coreServices }
 
@@ -303,14 +307,6 @@ try {
         }
     }
 
-    # 清理由旧版脚本启动的本地 Temporal Worker。当前本地配置明确使用同步摄取，
-    # Worker 在没有 Temporal Cluster 时只会持续重启；生产 Worker 不由此脚本管理。
-    # Docker Compose 将正常的 stop/remove 进度写入 stderr；Windows PowerShell 5 在
-    # ErrorAction=Stop 时会把这类进度包装成 NativeCommandError，因此在此静默处理。
-    $savedErrorAction = $ErrorActionPreference
-    $ErrorActionPreference = "SilentlyContinue"
-    & docker compose --project-name $projectName -f $composeFile rm --force --stop ingestion-worker *> $null
-    $ErrorActionPreference = $savedErrorAction
     Assert-HostPortsAvailable
     Warn-MissingModelCredential
     Initialize-BaseImages

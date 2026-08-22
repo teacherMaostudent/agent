@@ -43,6 +43,8 @@ Run；若模型供应商未遵从结构化输出，Governance 会本地 fail-clo
 - 管理每个租户的治理策略；处置发现保留处理人、处理时间和说明。
 - 策略变更同样作为 `governance.policy.updated` 事件写入审计日志。
 - 输出按事件来源、风险等级和未处理发现汇总的合规报告。
+- 以持久化作业执行 WORM 导出：先验证租户哈希链，再流式生成 Merkle 承诺和签名包，写入启用
+  Object Lock 的对象桶；作业支持租约、多 Worker、指数重试、DLQ、显式重排和证明查询。
 
 ## 事件契约
 
@@ -94,6 +96,12 @@ uvicorn app.main:app --reload --port 8081
 | `POST` | `/v1/governance/findings/{id}/resolve` | 记录发现处置 |
 | `GET/PUT` | `/v1/governance/tenant-policy` | 查询或更新治理策略 |
 | `GET` | `/v1/governance/reports/compliance` | 查询租户合规汇总 |
+| `POST/GET` | `/v1/governance/audit-exports` | 创建或列出租户 WORM 导出作业 |
+| `GET` | `/v1/governance/audit-exports/{job_id}` | 查询对象键、摘要、Merkle Root 和签名身份 |
+| `POST` | `/v1/governance/audit-exports/{job_id}/requeue` | 对 DLQ 作业执行显式审计重排 |
+
+生产必须使用 `GOVERNANCE_WORM_SIGNING_MODE=kms`、独立 KMS 签名密钥和开启 Compliance Object
+Lock 的专用桶。本地 Compose 的 MinIO + HMAC 只用于验证协议，不能作为监管级不可抵赖证明。
 
 ## 验证
 

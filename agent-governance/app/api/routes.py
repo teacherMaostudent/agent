@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from app.api.dependencies import auditor_identity, get_container, validate_event_key
 from app.application.evaluation_service import (
@@ -103,6 +103,55 @@ async def list_run_audit_events_for_runtime(
 async def verify_audit_chain(identity: Auditor, container: Container) -> dict[str, Any]:
     """验证指定租户哈希链完整性，用于审计导出前的防篡改检查。"""
     return await container.repository.verify_audit_chain(identity.tenant_id)
+
+
+@router.post(
+    "/v1/governance/audit-exports",
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["audit-export"],
+)
+async def create_audit_export(identity: Auditor, container: Container) -> dict[str, Any]:
+    """Persist an asynchronous WORM export request without blocking on KMS or storage."""
+    return await container.worm_exports.create(identity.tenant_id, identity.user_id)
+
+
+@router.get("/v1/governance/audit-exports", tags=["audit-export"])
+async def list_audit_exports(
+    identity: Auditor,
+    container: Container,
+    limit: int = Query(default=100, ge=1, le=1_000),
+) -> dict[str, Any]:
+    """List this tenant's export progress, retention proof and bounded failure details."""
+    return {"items": await container.worm_exports.list(identity.tenant_id, limit)}
+
+
+@router.get("/v1/governance/audit-exports/{job_id}", tags=["audit-export"])
+async def get_audit_export(
+    job_id: str, identity: Auditor, container: Container
+) -> dict[str, Any]:
+    """Return one tenant-isolated export job; object data is never proxied through Web."""
+    job = await container.worm_exports.get(identity.tenant_id, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="audit export job not found")
+    return job
+
+
+@router.post(
+    "/v1/governance/audit-exports/{job_id}/requeue",
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["audit-export"],
+)
+async def requeue_audit_export(
+    job_id: str, identity: Auditor, container: Container
+) -> dict[str, Any]:
+    """Requeue a failed export only through an explicit auditor action."""
+    try:
+        job = await container.worm_exports.requeue(identity.tenant_id, job_id, identity.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not job:
+        raise HTTPException(status_code=404, detail="audit export job not found")
+    return job
 
 
 @router.get("/v1/governance/findings", response_model=FindingList, tags=["findings"])

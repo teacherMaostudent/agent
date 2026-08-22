@@ -1,0 +1,48 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/*.yaml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:9464"]
+
+  - job_name: platform-health
+    metrics_path: /probe
+    params:
+      module: [http_platform_mtls]
+    static_configs:
+      - targets:
+          - https://agent-control-plane:8080/health/ready
+          - https://agent-governance:8081/health/ready
+          - https://agent-runtime:8001/api/v1/health/ready
+          - https://agent-context-service:8002/api/v1/health/ready
+          - https://rag-query-api:8003/api/v1/health/ready
+          - https://ingestion-api:8004/api/v1/health/ready
+          - https://tool-gateway:8090/api/v1/health/ready
+          - https://llm-gateway:8080/actuator/health
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: llm-gateway
+    scheme: https
+    metrics_path: /actuator/prometheus
+    tls_config:
+      ca_file: /run/secrets/agent_ca_pem
+      cert_file: /run/secrets/prometheus_cert
+      key_file: /run/secrets/prometheus_key
+    static_configs:
+      - targets: ["llm-gateway:8080"]

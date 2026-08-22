@@ -20,6 +20,7 @@ dependencies = [
 [project.scripts]
 governance-kafka-consumer = "app.infrastructure.kafka_consumer:main"
 governance-worm-export = "app.infrastructure.worm_exporter:main"
+governance-worm-export-worker = "app.infrastructure.worm_export_worker:main"
 governance-kafka-replay = "app.infrastructure.kafka_replay:main"
 
 [project.optional-dependencies]

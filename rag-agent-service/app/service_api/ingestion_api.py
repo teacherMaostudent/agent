@@ -1,9 +1,90 @@
+import hashlib
+from pathlib import Path
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
+from platform_sdk.contracts.ingestion import ApprovedArtifactIngestion, ArtifactIngestionReceipt
 
 from app.contracts.ingestion import IngestionJob, JobCreateRequest
 from app.domain.models import Document
 
 router = APIRouter(prefix="/ingestion", tags=["knowledge-ingestion"])
+
+
+@router.post("/artifacts", response_model=ArtifactIngestionReceipt, status_code=202)
+def ingest_approved_artifact(
+    payload: ApprovedArtifactIngestion,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> ArtifactIngestionReceipt:
+    """Promote one approved Context Artifact into the durable ingestion queue.
+
+    The endpoint accepts only an object in this service's configured bucket/prefix.
+    Deterministic document/job IDs make Runtime relay retries safe and preserve the
+    human approval identity in knowledge provenance.
+    """
+    container = request.app.state.container
+    storage = container.storage
+    objects = getattr(storage, "objects", None)
+    if objects is None:
+        raise HTTPException(status_code=409, detail="artifact ingestion requires S3 storage")
+    reference = urlparse(payload.content_ref)
+    object_key = reference.path.lstrip("/")
+    allowed_prefix = str(getattr(objects, "prefix", "")).strip("/")
+    if (
+        reference.scheme != "s3"
+        or reference.netloc != str(objects.bucket)
+        or not object_key
+        or (allowed_prefix and not object_key.startswith(f"{allowed_prefix}/"))
+    ):
+        raise HTTPException(status_code=422, detail="artifact object is outside ingestion storage")
+    stable = hashlib.sha256(f"{x_tenant_id}:{payload.artifact_id}".encode()).hexdigest()[:20]
+    document_id = f"doc_artifact_{stable}"
+    job_id = f"job_artifact_{stable}"
+    existing_job = container.job_store.get(job_id, x_tenant_id)
+    if existing_job is None:
+        existing_document = container.repository.get_document(document_id)
+        if existing_document is not None and (
+            existing_document.metadata.get("tenant_id") != x_tenant_id
+            or existing_document.metadata.get("artifact_id") != payload.artifact_id
+        ):
+            raise HTTPException(status_code=409, detail="artifact document identity collision")
+        safe_name = Path(payload.logical_name or payload.artifact_id).name[:120] or "artifact"
+        document = existing_document or container.repository.save_document(
+            Document(
+                document_id=document_id,
+                filename=f"{safe_name}.json",
+                content_type=payload.media_type,
+                file_path=container.settings.upload_dir / f"{payload.content_sha256[:16]}_{safe_name}",
+                sha256=payload.content_sha256,
+                metadata={
+                    "tenant_id": x_tenant_id,
+                    "uploaded_by": x_user_id,
+                    "source": "desktop-approved-artifact",
+                    "object_key": object_key,
+                    "artifact_id": payload.artifact_id,
+                    "root_task_id": payload.root_task_id,
+                    "approval_id": payload.approval_id,
+                    "approved_by": payload.approved_by,
+                },
+            )
+        )
+        existing_job = container.job_store.create(
+            IngestionJob(
+                job_id=job_id,
+                job_type="PARSE",
+                document_id=document.document_id,
+                tenant_id=x_tenant_id,
+                requested_by=x_user_id,
+            )
+        )
+    return ArtifactIngestionReceipt(
+        artifact_id=payload.artifact_id,
+        document_id=document_id,
+        job_id=job_id,
+        status=existing_job.status.value,
+    )
 
 
 @router.post("/documents", status_code=202)

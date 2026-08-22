@@ -24,8 +24,11 @@ class RuntimeSettings(BaseSettings):
     temporal_runtime_task_queue: str = "agent-runtime"
     temporal_region_targets: str = ""
     temporal_worker_region: str = ""
+    temporal_worker_target_override: str = ""
+    temporal_global_namespace_enabled: bool = False
     context_service_base_url: str = "http://localhost:8002"
     rag_query_base_url: str = "http://localhost:8003"
+    ingestion_base_url: str = "http://localhost:8004"
     tool_gateway_base_url: str = "http://localhost:8090"
     tool_gateway_api_key: str = Field(default="", repr=False)
     tool_gateway_startup_check: bool = False
@@ -53,6 +56,10 @@ class RuntimeSettings(BaseSettings):
     connector_artifact_relay_lease_seconds: int = Field(default=60, ge=10, le=600)
     connector_artifact_relay_max_attempts: int = Field(default=8, ge=1, le=100)
     connector_artifact_relay_max_backoff_seconds: int = Field(default=300, ge=1, le=3_600)
+    artifact_ingestion_relay_poll_seconds: float = Field(default=2.0, ge=0.2, le=60.0)
+    artifact_ingestion_relay_batch_size: int = Field(default=20, ge=1, le=100)
+    artifact_ingestion_relay_lease_seconds: int = Field(default=120, ge=30, le=3_600)
+    artifact_ingestion_relay_max_attempts: int = Field(default=8, ge=1, le=100)
     session_archive_enabled: bool = False
     session_archive_bucket: str = ""
     session_archive_prefix: str = "agent-runtime"
@@ -114,6 +121,10 @@ class RuntimeSettings(BaseSettings):
             unsafe.append("RUNTIME_SNAPSHOT_REQUIRED must be true")
         if not self.temporal_enabled:
             unsafe.append("RUNTIME_TEMPORAL_ENABLED must be true")
+        if self.temporal_region_targets and not self.temporal_global_namespace_enabled:
+            unsafe.append(
+                "RUNTIME_TEMPORAL_GLOBAL_NAMESPACE_ENABLED must be true for cross-cluster targets"
+            )
         if not self.oidc_enabled or not self.oidc_issuer or not self.oidc_jwks_url:
             unsafe.append("RUNTIME OIDC issuer and JWKS configuration are required")
         if not self.workload_token_url or not self.workload_client_secret:

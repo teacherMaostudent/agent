@@ -48,7 +48,12 @@ class Settings(BaseSettings):
     worm_endpoint_url: str = ""
     worm_region: str = ""
     worm_kms_key_id: str = Field(default="", repr=False)
+    worm_signing_mode: str = "kms"
+    worm_local_signing_key: str = Field(default="", repr=False)
     worm_retention_days: int = Field(default=2555, ge=1)
+    worm_export_max_attempts: int = Field(default=5, ge=1, le=20)
+    worm_export_lease_seconds: int = Field(default=120, ge=30, le=3600)
+    worm_export_poll_seconds: float = Field(default=2, ge=0.2, le=60)
     otel_enabled: bool = False
     otel_endpoint: str = "http://localhost:4318/v1/traces"
     enforce_auditor_role: bool = False
@@ -119,7 +124,11 @@ class Settings(BaseSettings):
                 unsafe.append("GOVERNANCE_CDC_REQUIRED must be true")
             if not self.judge_calibration_required:
                 unsafe.append("GOVERNANCE_JUDGE_CALIBRATION_REQUIRED must be true")
-            if not self.worm_bucket or not self.worm_kms_key_id:
+            if (
+                not self.worm_bucket
+                or self.worm_signing_mode != "kms"
+                or not self.worm_kms_key_id
+            ):
                 unsafe.append("GOVERNANCE_WORM_BUCKET and WORM_KMS_KEY_ID are required")
             if unsafe:
                 raise ValueError("Unsafe production configuration: " + "; ".join(unsafe))

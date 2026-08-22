@@ -8,6 +8,7 @@ from uuid import uuid4
 from platform_sdk.contracts.artifacts import TaskArtifact, TaskArtifactCreate
 
 _KIND = "task_artifact"
+_SERIES_KIND = "task_artifact_series"
 
 
 class TaskArtifactStore:
@@ -21,25 +22,73 @@ class TaskArtifactStore:
 
     def create(self, tenant_id: str, user_id: str, request: TaskArtifactCreate) -> TaskArtifact:
         """创建不可变引用；服务生成 ID，调用方不能覆盖已有工件。"""
-        artifact = TaskArtifact(
-            artifact_id=f"art_{uuid4().hex}",
-            tenant_id=tenant_id,
-            root_task_id=request.root_task_id,
-            artifact_type=request.artifact_type,
-            content_ref=request.content_ref,
-            content_sha256=request.content_sha256,
-            media_type=request.media_type,
-            metadata=request.metadata,
-            created_by=user_id,
-        )
-        key = self._key(tenant_id, request.root_task_id, artifact.artifact_id)
+        artifact_id = f"art_{uuid4().hex}"
+        logical_name = request.logical_name.strip() or request.artifact_type
         with self._lock:
+            # Keep allocation and insert atomic in memory mode. In distributed mode the
+            # series-head CAS below supplies the cross-replica ordering guarantee.
+            version, previous_artifact_id = self._allocate_version(
+                tenant_id, request.root_task_id, logical_name, artifact_id
+            )
+            artifact = TaskArtifact(
+                artifact_id=artifact_id,
+                tenant_id=tenant_id,
+                root_task_id=request.root_task_id,
+                artifact_type=request.artifact_type,
+                content_ref=request.content_ref,
+                content_sha256=request.content_sha256,
+                media_type=request.media_type,
+                logical_name=logical_name,
+                version=version,
+                previous_artifact_id=previous_artifact_id,
+                metadata=request.metadata,
+                created_by=user_id,
+            )
+            key = self._key(tenant_id, request.root_task_id, artifact.artifact_id)
             if self._db is not None:
                 if not self._db.put_if_version(_KIND, key, artifact.model_dump(mode="json"), 0):
                     raise RuntimeError("task artifact ID collision")
             else:
                 self._memory[key] = artifact
         return artifact
+
+    def _allocate_version(
+        self,
+        tenant_id: str,
+        root_task_id: str,
+        logical_name: str,
+        artifact_id: str,
+    ) -> tuple[int, str | None]:
+        """CAS-allocate a monotonic version across concurrent Context replicas.
+
+        The series head is a separate coordination record because Task Artifacts remain
+        immutable. A failed create can leave a version gap, which is auditable and safer than
+        assigning a duplicate version under concurrency.
+        """
+        series_key = f"{tenant_id}:{root_task_id}:{logical_name}"
+        with self._lock:
+            if self._db is None:
+                siblings = [
+                    item
+                    for item in self._memory.values()
+                    if item.tenant_id == tenant_id
+                    and item.root_task_id == root_task_id
+                    and (item.logical_name or item.artifact_type) == logical_name
+                ]
+                latest = max(siblings, key=lambda item: item.version, default=None)
+                return (latest.version + 1, latest.artifact_id) if latest else (1, None)
+            for _ in range(8):
+                current, revision = self._db.get_with_version(_SERIES_KIND, series_key)
+                next_version = int(current.get("version", 0)) + 1 if current else 1
+                previous = (str(current.get("artifact_id", "")) or None) if current else None
+                if self._db.put_if_version(
+                    _SERIES_KIND,
+                    series_key,
+                    {"version": next_version, "artifact_id": artifact_id},
+                    revision,
+                ):
+                    return next_version, previous
+        raise RuntimeError("artifact version allocation conflict")
 
     def get(self, tenant_id: str, root_task_id: str, artifact_id: str) -> TaskArtifact | None:
         """按 tenant/root/artifact 三元键读取，防止猜测 ID 跨任务访问。"""

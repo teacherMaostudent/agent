@@ -151,6 +151,11 @@ def _control_plane_headers(request: Request) -> dict[str, str]:
     因而用户不能借由页面请求直接获得或复用该凭据。
     """
     headers = _identity_headers(request)
+    roles = {item.strip() for item in headers.get("X-Roles", "").split(",") if item.strip()}
+    # The BFF is the authenticated management workload. Browser users still need an independent
+    # fine-grained action permission before any route reaches this helper.
+    roles.add("agent-admin")
+    headers["X-Roles"] = ",".join(sorted(roles))
     if settings.control_plane_admin_key:
         headers["X-Control-Plane-Admin-Key"] = settings.control_plane_admin_key
     return headers
@@ -196,6 +201,30 @@ async def _control_plane(request: Request, method: str, path: str, **kwargs: Any
             )
     except httpx.RequestError as exc:
         raise HTTPException(status_code=503, detail="control plane is unavailable") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=response.text[:2_000])
+    return {} if response.status_code == 204 else response.json()
+
+
+async def _governance(request: Request, method: str, path: str, **kwargs: Any) -> Any:
+    """Call Governance with the BFF workload credential and browser's verified tenant.
+
+    Governance remains the owner of export jobs and audit data. The BFF only applies
+    action permissions/MFA and shapes the same-origin response; it never handles WORM
+    object credentials or proxies exported audit content into the browser.
+    """
+    try:
+        async with httpx.AsyncClient(
+            timeout=settings.request_timeout_seconds, **_mtls_options()
+        ) as client:
+            response = await client.request(
+                method,
+                f"{settings.governance_base_url.rstrip('/')}{path}",
+                headers=_governance_headers(request),
+                **kwargs,
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail="governance is unavailable") from exc
     if response.status_code >= 400:
         raise HTTPException(status_code=response.status_code, detail=response.text[:2_000])
     return {} if response.status_code == 204 else response.json()
@@ -616,6 +645,142 @@ async def console_requeue_connector_artifact(request: Request, outbox_id: str) -
     )
 
 
+@app.get("/api/console/model-route-releases")
+async def console_model_route_releases(request: Request) -> dict[str, Any]:
+    """List Control Plane-owned canary releases; Gateway runtime overrides remain hidden."""
+    _require_permission(request, "model:route:read")
+    items = await _control_plane(request, "GET", "/v1/model-route-releases")
+    return {"items": items if isinstance(items, list) else []}
+
+
+@app.post("/api/console/model-route-releases")
+async def console_create_model_route_release(request: Request) -> dict[str, Any]:
+    """Start a quality-gated model canary instead of mutating Gateway routes directly."""
+    _require_permission(request, "model:route:release")
+    _require_high_risk_authentication(request)
+    payload = await request.json()
+    route_name = str(payload.get("routeName", "")).strip()
+    if not route_name or str(payload.get("confirmRouteName", "")) != route_name:
+        raise HTTPException(status_code=422, detail="confirmRouteName must match routeName")
+    return await _control_plane(
+        request,
+        "POST",
+        "/v1/model-route-releases",
+        json={
+            "routeName": route_name,
+            "canaryTarget": str(payload.get("canaryTarget", ""))[:200],
+            "judgeRunId": str(payload.get("judgeRunId", ""))[:200],
+            "canaryPercent": int(payload.get("canaryPercent", 5)),
+            "modelLabExperimentId": str(payload.get("modelLabExperimentId", ""))[:200],
+        },
+    )
+
+
+@app.post("/api/console/model-route-releases/{release_id}/monitor")
+async def console_monitor_model_route_release(request: Request, release_id: str) -> dict[str, Any]:
+    """Request one governed canary observation without bypassing Control Plane decisions."""
+    _require_permission(request, "model:route:monitor")
+    return await _control_plane(
+        request, "POST", f"/v1/model-route-releases/{release_id}/monitor", json={}
+    )
+
+
+@app.post("/api/console/model-route-releases/{release_id}/rollback")
+async def console_rollback_model_route_release(request: Request, release_id: str) -> dict[str, Any]:
+    """Restore the recorded pre-canary route after ID confirmation and strong authentication."""
+    _require_permission(request, "model:route:rollback")
+    _require_high_risk_authentication(request)
+    payload = await request.json()
+    if str(payload.get("confirmReleaseId", "")) != release_id:
+        raise HTTPException(status_code=422, detail="confirmReleaseId must match release_id")
+    return await _control_plane(
+        request,
+        "POST",
+        f"/v1/model-route-releases/{release_id}/rollback",
+        json={"reason": str(payload.get("reason", "manual rollback"))[:2_000]},
+    )
+
+
+@app.get("/api/console/llm-quotas")
+async def console_llm_quotas(request: Request) -> dict[str, Any]:
+    """Read the Control Plane tenant policy and expose only its LLM quota projection."""
+    _require_permission(request, "quota:read")
+    policy = await _control_plane(request, "GET", "/v1/tenant-policy")
+    return {
+        "items": [
+            {"subject": subject, **quota}
+            for subject, quota in (policy.get("llm_quotas", {}) or {}).items()
+        ],
+        "policy_updated_at": policy.get("updated_at", ""),
+    }
+
+
+@app.put("/api/console/llm-quotas/{subject}")
+async def console_update_llm_quota(request: Request, subject: str) -> dict[str, Any]:
+    """Update one desired quota through a full Control Plane policy snapshot and Gateway Saga."""
+    _require_permission(request, "quota:write")
+    _require_high_risk_authentication(request)
+    if not subject or len(subject) > 160 or ":" in subject:
+        raise HTTPException(status_code=422, detail="subject must be '*' or a local user ID")
+    payload = await request.json()
+    if str(payload.get("confirmSubject", "")) != subject:
+        raise HTTPException(status_code=422, detail="confirmSubject must match subject")
+    policy = await _control_plane(request, "GET", "/v1/tenant-policy")
+    quotas = dict(policy.get("llm_quotas", {}) or {})
+    quotas[subject] = {
+        "daily_token_limit": int(payload.get("dailyTokenLimit", 0)),
+        "daily_cost_limit_usd": float(payload.get("dailyCostLimitUsd", 0)),
+        "currency": "USD",
+    }
+    updated = await _control_plane(
+        request,
+        "PUT",
+        "/v1/tenant-policy",
+        json={
+            "allowed_models": policy.get("allowed_models", []),
+            "allowed_data_regions": policy.get("allowed_data_regions", []),
+            "max_canary_percentage": policy.get("max_canary_percentage", 100),
+            "require_approval_for_high_risk_tools": policy.get(
+                "require_approval_for_high_risk_tools", True
+            ),
+            "llm_quotas": quotas,
+        },
+    )
+    return {"subject": subject, "quota": updated.get("llm_quotas", {}).get(subject, {})}
+
+
+@app.get("/api/console/audit-exports")
+async def console_audit_exports(request: Request) -> dict[str, Any]:
+    """List current-tenant WORM jobs without revealing credentials or export bodies."""
+    _require_permission(request, "audit:export")
+    return await _governance(request, "GET", "/v1/governance/audit-exports")
+
+
+@app.post("/api/console/audit-exports")
+async def console_create_audit_export(request: Request) -> dict[str, Any]:
+    """Queue a retention-locked audit export after explicit strong authentication."""
+    _require_permission(request, "audit:export")
+    _require_high_risk_authentication(request)
+    payload = await request.json()
+    tenant_id = request.headers.get("X-Tenant-Id", "")
+    if str(payload.get("confirmTenantId", "")) != tenant_id:
+        raise HTTPException(status_code=422, detail="confirmTenantId must match current tenant")
+    return await _governance(request, "POST", "/v1/governance/audit-exports", json={})
+
+
+@app.post("/api/console/audit-exports/{job_id}/requeue")
+async def console_requeue_audit_export(request: Request, job_id: str) -> dict[str, Any]:
+    """Explicitly replay one failed export; silent automatic DLQ replay is forbidden."""
+    _require_permission(request, "audit:export:requeue")
+    _require_high_risk_authentication(request)
+    payload = await request.json()
+    if str(payload.get("confirmJobId", "")) != job_id:
+        raise HTTPException(status_code=422, detail="confirmJobId must match target job")
+    return await _governance(
+        request, "POST", f"/v1/governance/audit-exports/{job_id}/requeue", json={}
+    )
+
+
 @app.post("/api/workspace/runs")
 async def create_workspace_run(request: Request) -> dict[str, Any]:
     """Submit an interactive Workspace task while preserving Runtime's release resolution."""
@@ -631,6 +796,22 @@ async def workspace_run(request: Request, run_id: str) -> dict[str, Any]:
     try:
         artifact_index = await _runtime(request, "GET", f"/agent/runs/{run_id}/artifacts")
         artifacts = artifact_index.get("items", [])
+        ingestion_index = await _runtime(
+            request, "GET", f"/agent/runs/{run_id}/artifact-ingestions"
+        )
+        ingestion_by_artifact = {}
+        for item in ingestion_index.get("items", []):
+            projected = dict(item)
+            projected["approval_status"] = str(item.get("status") or "")
+            if item.get("downstream_status"):
+                projected["status"] = (
+                    f"{projected['approval_status']} / INDEX_{item['downstream_status']}"
+                )
+            ingestion_by_artifact[item.get("artifact_id")] = projected
+        artifacts = [
+            {**item, "rag_ingestion": ingestion_by_artifact.get(item.get("artifact_id"))}
+            for item in artifacts
+        ]
     except HTTPException as exc:
         # A Context outage must not hide the Run result. The UI can distinguish an empty index
         # from an unavailable one without learning any upstream infrastructure details.
@@ -639,6 +820,26 @@ async def workspace_run(request: Request, run_id: str) -> dict[str, Any]:
         run,
         user_id=request.headers.get("X-User-Id", ""),
         artifacts=artifacts,
+    )
+
+
+@app.post(
+    "/api/workspace/runs/{run_id}/artifacts/{artifact_id}/ingestion-decision"
+)
+async def workspace_artifact_ingestion_decision(
+    request: Request, run_id: str, artifact_id: str
+) -> dict[str, Any]:
+    """Forward a permissioned, ID-confirmed decision; Web never submits RAG content."""
+    _require_permission(request, "rag:ingest:approve")
+    _require_high_risk_authentication(request)
+    payload = await request.json()
+    if str(payload.get("confirm_artifact_id", "")) != artifact_id:
+        raise HTTPException(status_code=422, detail="confirm_artifact_id must match artifact_id")
+    return await _runtime(
+        request,
+        "POST",
+        f"/agent/runs/{run_id}/artifact-ingestions/{artifact_id}/decision",
+        json=payload,
     )
 
 
@@ -654,6 +855,38 @@ async def workspace_artifact_download(
     if not url.startswith(("https://", "http://")):
         raise HTTPException(status_code=503, detail="artifact delivery returned an invalid URL")
     return RedirectResponse(url=url, status_code=307)
+
+
+@app.get("/api/workspace/runs/{run_id}/artifacts/{artifact_id}/preview")
+async def workspace_artifact_preview(
+    request: Request, run_id: str, artifact_id: str, max_chars: int = 50_000
+) -> dict[str, Any]:
+    """Proxy the bounded Runtime preview; object references and signed URLs stay upstream."""
+    return await _runtime(
+        request,
+        "GET",
+        f"/agent/runs/{run_id}/artifacts/{artifact_id}/preview",
+        params={"max_chars": min(max(max_chars, 256), 100_000)},
+    )
+
+
+@app.get(
+    "/api/workspace/runs/{run_id}/artifacts/{artifact_id}/compare/{base_artifact_id}"
+)
+async def workspace_artifact_compare(
+    request: Request,
+    run_id: str,
+    artifact_id: str,
+    base_artifact_id: str,
+    max_chars: int = 80_000,
+) -> dict[str, Any]:
+    """Return a bounded same-series diff after Runtime revalidates the Run relationship."""
+    return await _runtime(
+        request,
+        "GET",
+        f"/agent/runs/{run_id}/artifacts/{artifact_id}/compare/{base_artifact_id}",
+        params={"max_chars": min(max(max_chars, 1_000), 100_000)},
+    )
 
 
 @app.post("/api/workspace/runs/{run_id}/cancel")

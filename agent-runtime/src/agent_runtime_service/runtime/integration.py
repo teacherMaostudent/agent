@@ -304,6 +304,19 @@ class RuntimeStoreOperations:
                     delivered_at TEXT, delivered_artifact_id TEXT NOT NULL DEFAULT '',
                     dead_lettered_at TEXT, last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS runtime_artifact_ingestions (
+                    request_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, user_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL, root_task_id TEXT NOT NULL, source_task_id TEXT NOT NULL,
+                    artifact_id TEXT NOT NULL, status TEXT NOT NULL, approved_by TEXT,
+                    approval_reason TEXT NOT NULL DEFAULT '', approved_at TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT,
+                    lease_token TEXT NOT NULL DEFAULT '', lease_expires_at TEXT,
+                    document_id TEXT NOT NULL DEFAULT '', ingestion_job_id TEXT NOT NULL DEFAULT '',
+                    last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    UNIQUE(tenant_id, artifact_id)
+                );
+                CREATE INDEX IF NOT EXISTS runtime_artifact_ingestions_claim_idx
+                    ON runtime_artifact_ingestions(status, next_attempt_at, created_at);
                 CREATE TABLE IF NOT EXISTS runtime_run_mailbox (
                     message_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, run_id TEXT NOT NULL,
                     input_type TEXT NOT NULL, idempotency_key TEXT NOT NULL,
@@ -937,8 +950,192 @@ class RuntimeStoreOperations:
                     "UPDATE runtime_connector_tasks SET artifact_delivery_status='DELIVERED',artifact_id=? WHERE task_id=(SELECT task_id FROM runtime_connector_artifact_outbox WHERE outbox_id=?)",
                     (artifact_id, outbox_id),
                 )
+                source = self._connection.execute(
+                    """SELECT o.tenant_id,o.user_id,o.task_id,o.root_task_id,t.run_id,t.tool_name
+                    FROM runtime_connector_artifact_outbox o JOIN runtime_connector_tasks t
+                    ON t.task_id=o.task_id WHERE o.outbox_id=?""",
+                    (outbox_id,),
+                ).fetchone()
+                if source is not None:
+                    self._insert_artifact_ingestion(source, artifact_id, now)
             self._connection.commit()
             return cursor.rowcount == 1
+
+    def _insert_artifact_ingestion(self, source: Any, artifact_id: str, now: str) -> None:
+        """Register a delivered Desktop Artifact as awaiting explicit RAG approval.
+
+        This helper runs inside the caller's transaction/lock. The unique tenant/artifact
+        key keeps delivery retries from creating multiple approval decisions.
+        """
+        # sqlite3.Row exposes mapping-style indexing but deliberately has no ``get``.
+        # Both delayed outbox delivery (Row) and immediate delivery (dict) include this
+        # field, so indexing keeps the two paths behaviorally identical.
+        if str(source["tool_name"]) != "controlled_scan":
+            return
+        self._connection.execute(
+            """INSERT INTO runtime_artifact_ingestions(
+                request_id,tenant_id,user_id,run_id,root_task_id,source_task_id,artifact_id,
+                status,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,'AWAITING_APPROVAL',?,?)
+            ON CONFLICT(tenant_id,artifact_id) DO NOTHING""",
+            (
+                f"artifact_ingestion_{uuid4().hex}",
+                source["tenant_id"],
+                source["user_id"],
+                source["run_id"],
+                source["root_task_id"],
+                source["task_id"],
+                artifact_id,
+                now,
+                now,
+            ),
+        )
+
+    def register_artifact_ingestion(
+        self,
+        tenant_id: str,
+        user_id: str,
+        run_id: str,
+        root_task_id: str,
+        source_task_id: str,
+        artifact_id: str,
+    ) -> dict[str, Any]:
+        """Create the approval record for an immediately delivered Desktop result."""
+        now = datetime.now(UTC).isoformat()
+        source = {
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "run_id": run_id,
+            "root_task_id": root_task_id,
+            "task_id": source_task_id,
+            "tool_name": "controlled_scan",
+        }
+        with self._lock:
+            self._insert_artifact_ingestion(source, artifact_id, now)
+            row = self._connection.execute(
+                "SELECT * FROM runtime_artifact_ingestions WHERE tenant_id=? AND artifact_id=?",
+                (tenant_id, artifact_id),
+            ).fetchone()
+            self._connection.commit()
+        return dict(row)
+
+    def list_artifact_ingestions(
+        self, tenant_id: str, run_id: str, *, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """List approval/ingestion state only within an already authorized Run."""
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT request_id,run_id,root_task_id,source_task_id,artifact_id,status,
+                approved_by,approval_reason,approved_at,attempts,document_id,ingestion_job_id,
+                last_error,created_at,updated_at FROM runtime_artifact_ingestions
+                WHERE tenant_id=? AND run_id=? ORDER BY created_at DESC LIMIT ?""",
+                (tenant_id, run_id, min(max(limit, 1), 200)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def decide_artifact_ingestion(
+        self,
+        tenant_id: str,
+        run_id: str,
+        artifact_id: str,
+        approved_by: str,
+        *,
+        approved: bool,
+        reason: str,
+    ) -> dict[str, Any] | None:
+        """Consume the one-time approval decision and never reopen a terminal rejection."""
+        now = datetime.now(UTC).isoformat()
+        status = "APPROVED" if approved else "REJECTED"
+        with self._lock:
+            cursor = self._connection.execute(
+                """UPDATE runtime_artifact_ingestions SET status=?,approved_by=?,
+                approval_reason=?,approved_at=?,next_attempt_at=?,updated_at=?
+                WHERE tenant_id=? AND run_id=? AND artifact_id=? AND status='AWAITING_APPROVAL'""",
+                (status, approved_by, reason[:2_000], now, now if approved else None, now,
+                 tenant_id, run_id, artifact_id),
+            )
+            row = self._connection.execute(
+                "SELECT * FROM runtime_artifact_ingestions WHERE tenant_id=? AND run_id=? AND artifact_id=?",
+                (tenant_id, run_id, artifact_id),
+            ).fetchone()
+            self._connection.commit()
+        return dict(row) if cursor.rowcount == 1 and row is not None else None
+
+    def claim_artifact_ingestions(
+        self, *, limit: int = 20, lease_seconds: int = 120
+    ) -> list[dict[str, Any]]:
+        """Claim approved/retry items with expiring leases across Runtime replicas."""
+        now = datetime.now(UTC)
+        now_text = now.isoformat()
+        lease_expires = (now + timedelta(seconds=lease_seconds)).isoformat()
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT * FROM runtime_artifact_ingestions
+                WHERE status IN ('APPROVED','RETRY','PROCESSING')
+                AND (next_attempt_at IS NULL OR next_attempt_at<=?)
+                AND (lease_expires_at IS NULL OR lease_expires_at<?)
+                ORDER BY created_at ASC LIMIT ?""",
+                (now_text, now_text, min(max(limit, 1), 100)),
+            ).fetchall()
+            claimed = []
+            for row in rows:
+                token = f"artifact_ingestion_lease_{uuid4().hex}"
+                cursor = self._connection.execute(
+                    """UPDATE runtime_artifact_ingestions SET status='PROCESSING',attempts=attempts+1,
+                    lease_token=?,lease_expires_at=?,updated_at=? WHERE request_id=?
+                    AND status IN ('APPROVED','RETRY','PROCESSING')
+                    AND (lease_expires_at IS NULL OR lease_expires_at<?)""",
+                    (token, lease_expires, now_text, row["request_id"], now_text),
+                )
+                if cursor.rowcount == 1:
+                    item = dict(row)
+                    item["lease_token"] = token
+                    item["attempts"] = int(row["attempts"]) + 1
+                    claimed.append(item)
+            self._connection.commit()
+        return claimed
+
+    def complete_artifact_ingestion(
+        self, request_id: str, lease_token: str, document_id: str, ingestion_job_id: str
+    ) -> bool:
+        """Persist the downstream receipt only for the current lease owner."""
+        now = datetime.now(UTC).isoformat()
+        with self._lock:
+            cursor = self._connection.execute(
+                """UPDATE runtime_artifact_ingestions SET status='SUBMITTED',document_id=?,
+                ingestion_job_id=?,lease_token='',lease_expires_at=NULL,last_error='',updated_at=?
+                WHERE request_id=? AND status='PROCESSING' AND lease_token=?""",
+                (document_id, ingestion_job_id, now, request_id, lease_token),
+            )
+            self._connection.commit()
+        return cursor.rowcount == 1
+
+    def fail_artifact_ingestion(
+        self, request_id: str, lease_token: str, error: str, *, max_attempts: int
+    ) -> str:
+        """Retry transient submission failures and isolate exhausted items in DLQ."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT attempts FROM runtime_artifact_ingestions WHERE request_id=? AND status='PROCESSING' AND lease_token=?",
+                (request_id, lease_token),
+            ).fetchone()
+            if row is None:
+                return "LEASE_LOST"
+            attempts = int(row["attempts"])
+            exhausted = attempts >= max_attempts
+            status = "DLQ" if exhausted else "RETRY"
+            next_attempt = None if exhausted else (
+                datetime.now(UTC) + timedelta(seconds=min(300, 2**attempts))
+            ).isoformat()
+            self._connection.execute(
+                """UPDATE runtime_artifact_ingestions SET status=?,next_attempt_at=?,
+                lease_token='',lease_expires_at=NULL,last_error=?,updated_at=?
+                WHERE request_id=? AND lease_token=?""",
+                (status, next_attempt, error[:2_000], datetime.now(UTC).isoformat(),
+                 request_id, lease_token),
+            )
+            self._connection.commit()
+        return status
 
     def fail_connector_artifact_delivery(
         self, outbox_id: str, lease_token: str, error: str, *, max_attempts: int = 8,

@@ -13,6 +13,16 @@ python scripts/platform_e2e.py
 RAG Query、摄取 API 与摄取 Worker 虽共用 RAG 源码包，但在 Compose 中是独立工作负载；Runtime 使用
 独立镜像，不安装 `rag-agent-service`。
 
+需要验证真实 OIDC Authorization Code + PKCE、JWT Claim 与服务端 Session 时，叠加本地 Keycloak：
+
+```powershell
+docker compose -f compose.platform.yaml -f compose.identity.yaml up --build -d
+```
+
+Overlay 会先创建独立 `keycloak` PostgreSQL Schema，再导入 `agent-platform` Realm、权限 Claim Mapper、
+公开 PKCE Web Client 和演示用户。它验证的协议与生产一致，但 `admin/local-keycloak-admin` 及临时演示密码
+只能用于本机；生产必须接入企业 IdP、独立机密客户端、正式域名、TLS、MFA/ACR 和密钥轮换。
+
 桌面端在宿主机独立运行，不放进服务端 Compose：
 
 ```powershell
@@ -45,6 +55,10 @@ AGENT_LAB_SERVICE_API_KEY=<same-long-random-secret>
 `compose.production.yaml` 是变量和服务关系模板。实际生产应使用 Kubernetes、Nomad 或等价编排器，
 并至少完成：
 
+> `compose.production.yaml` 是完整独立模板，不要与 `compose.platform.yaml` 叠加；后者包含本地 HMAC、
+> 演示密钥和开发端口。可先用 `docker compose --env-file .env.production -f compose.production.yaml
+> config --quiet` 做结构校验，再转换为目标编排器的 Secret、Workload Identity 与网络策略。
+
 1. Runtime、LLM Gateway、Tool Gateway 多副本；Runtime Worker、RAG 摄取 Worker、Governance Consumer
    与在线 API 分开扩缩容。
 2. PostgreSQL 取代本地 SQLite；Kafka + Debezium/Kafka Connect 读取 Transactional Outbox；配置幂等消费者、
@@ -74,9 +88,43 @@ Relay 支持多副本租约、指数退避、DLQ、人工重放和失联设备�
 生产必须给 Relay 配置独立 OIDC 工作负载客户端及 mTLS 证书，不得复用 Runtime API 的身份。应对
 `connector.artifact.dead_lettered` 告警，并定期演练 Context 故障、Relay 崩溃、租约过期和 DLQ 重放。
 
+只有 `controlled_scan` 的已交付 Artifact 会生成 `AWAITING_APPROVAL` 知识晋升请求。审批接口要求
+`rag:ingest:approve`、资源 owner/明确 reviewer、目标 ID 回显和审批原因；拒绝是终态，批准由独立
+`runtime-artifact-ingestion-relay` 通过租约和稳定 ID 提交 `POST /ingestion/artifacts`。Runtime 中的
+`SUBMITTED` 表示摄取服务已经耐久接收，并不等同于完成索引；最终 `COMPLETED/FAILED` 由摄取 Job/Worker
+事实源判定。Relay、摄取 API 和摄取 Worker 必须使用三个不同工作负载身份和证书。
+
 Artifact 下载由 Runtime 先校验用户/审查 Assignment 关系，再向 Context 申请五分钟签名 URL；URL 不写入
 日志、审计或浏览器持久化，授权动作只记录 Artifact ID。对象存储应支持 Range、短时签名、KMS、版本化和
 租户前缀隔离。
+
+在线预览只对允许的文本类型读取最多 800 KB 对象前缀，并把内容限制为 200,000 字符；完整读取时校验
+Artifact SHA-256。版本比较只允许同一 RootTask、同一 `logical_name`，返回有界 unified diff，不把对象正文
+写入 Context 数据库或审计日志。
+
+## 对象存储、WORM 与告警
+
+开发 Compose 使用 MinIO：业务 Artifact/摄取对象和审计 WORM 对象位于不同桶，审计桶创建时启用 Object
+Lock。本地 HMAC 只验证导出协议；生产 Governance 强制 `kms` 签名模式，并要求独立 KMS Key、开启
+Compliance Retention 的对象桶、版本化、生命周期和删除权限隔离。WORM Worker 先验证审计 Hash Chain，
+再流式写出事件、Merkle Root、导出摘要和签名证明；API 只创建持久作业，重 I/O 不阻塞 Web 请求。
+
+生产 Compose 提供 Prometheus、Alertmanager 和 Blackbox Exporter 基线，规则覆盖平台端点不可用、遥测
+中断、Runtime 高延迟和 Gateway 拒绝突增。`deploy/observability/alertmanager.yaml` 的 `.invalid` Webhook
+是防止误通知的占位接收器，上线必须替换为企业 PagerDuty、飞书、企业微信或邮件端点，并通过 Secret
+挂载真实配置。Prometheus 与 Blackbox Exporter 各自使用独立 mTLS 叶证书，不能复用 BFF 或 Runtime
+身份。代码具备采集和规则链路不代表告警送达已验收；必须执行一轮告警触发、静默、升级和恢复演练。
+
+## Temporal 跨区域故障转移
+
+多区域 Runtime Worker 只有在 Temporal Global Namespace 下才能安全消费同一逻辑 Queue；生产配置在声明
+多个区域目标但未启用 `RUNTIME_TEMPORAL_GLOBAL_NAMESPACE_ENABLED=true` 时会 fail-closed。次区域 Worker
+使用独立 OIDC/mTLS 身份，`RUNTIME_TEMPORAL_WORKER_TARGET_OVERRIDE` 指向当地 Frontend，而 Workflow ID
+仍由 Global Namespace 保证唯一。
+
+`scripts/invoke-temporal-failover-drill.ps1` 默认只做 Dry Run 和两端 Namespace 校验；显式 `-Execute` 才会
+调用 Temporal CLI 切换 Active Cluster，并在 `finally` 中尝试回切。真实演练前必须定义 RTO/RPO、冻结发布、
+确认两区域历史复制健康，并观察 Workflow backlog、重复副作用幂等键、告警和回切后的状态对账。
 
 ## Runtime Executor Catalog
 

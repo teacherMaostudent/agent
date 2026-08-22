@@ -129,6 +129,21 @@ public class AdminController {
         return modelConfigService.deleteRoute(routeName);
     }
 
+    @GetMapping("/quotas/{tenantId}")
+    /** Read the tenant-qualified quota policy without exposing another tenant's limits. */
+    public Object quotas(@PathVariable String tenantId) {
+        return modelConfigService.quotas(tenantId);
+    }
+
+    @PutMapping("/quotas/{tenantId}")
+    /** Apply a complete tenant quota snapshot received from the Control Plane. */
+    public Object replaceQuotas(
+            @PathVariable String tenantId,
+            @RequestBody Map<String, GatewayProperties.UserQuota> quotas
+    ) {
+        return modelConfigService.replaceQuotas(tenantId, quotas);
+    }
+
     @PutMapping("/providers/{providerName}/models/{modelName}")
     /**
      * 执行 upsert model 的创建或更新，并保持运行期配置与持久化状态一致。

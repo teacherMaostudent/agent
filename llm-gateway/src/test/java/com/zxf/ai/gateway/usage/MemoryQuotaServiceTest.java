@@ -49,4 +49,17 @@ class MemoryQuotaServiceTest {
         assertThat(snapshot).containsEntry("tokens", 0L);
         assertThat((BigDecimal) snapshot.get("cost")).isEqualByComparingTo(BigDecimal.ZERO);
     }
+
+    @Test
+    void sameUserIdMustHaveIndependentCountersAcrossTenants() {
+        GatewayProperties properties = new GatewayProperties();
+        MemoryQuotaService quotaService = new MemoryQuotaService(properties);
+
+        quotaService.reserve("tenant-a", "shared-user", "req-1", 10, 5, new BigDecimal("0.20"));
+
+        assertThat(quotaService.snapshot("tenant-a", "shared-user"))
+                .containsEntry("tokens", 15L);
+        assertThat(quotaService.snapshot("tenant-b", "shared-user"))
+                .containsEntry("tokens", 0L);
+    }
 }

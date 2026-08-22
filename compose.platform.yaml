@@ -21,6 +21,16 @@ x-rag-env: &rag-env
   # 本地演示只把专用工作区作为固定 scope 以只读方式提供给 RAG Query。桌面端选择的
   # 任意目录仍只会变成有界清单，绝不会借此获得容器文件读取权限。
   RAG_SCAN_ROOTS: '{"workspace":"/workspace"}'
+  # Local MinIO makes Artifact delivery/preview and ingestion use the same S3 contract as
+  # production. Credentials are demo-only and the service is never exposed as a trust boundary.
+  RAG_OBJECT_STORAGE_BACKEND: s3
+  RAG_S3_BUCKET: agent-platform-local
+  RAG_S3_PREFIX: agent-platform
+  RAG_S3_ENDPOINT_URL: http://minio:9000
+  RAG_S3_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: agent-local
+  AWS_SECRET_ACCESS_KEY: agent-local-secret
+  AWS_DEFAULT_REGION: us-east-1
 
 x-rag-service: &rag-service
   build:
@@ -56,6 +66,7 @@ x-runtime-env: &runtime-env
   RUNTIME_LLM_GATEWAY_API_KEY: ${RUNTIME_LLM_GATEWAY_API_KEY:-runtime-service-key}
   RUNTIME_CONTEXT_SERVICE_BASE_URL: http://agent-context-service:8002
   RUNTIME_RAG_QUERY_BASE_URL: http://rag-query-api:8003
+  RUNTIME_INGESTION_BASE_URL: http://ingestion-api:8004
   RUNTIME_TOOL_GATEWAY_BASE_URL: http://tool-gateway:8090
   RUNTIME_TOOL_GATEWAY_API_KEY: local-tool-gateway-key
   RUNTIME_CONTROL_PLANE_BASE_URL: http://agent-control-plane:8080
@@ -86,6 +97,7 @@ services:
       CONTROL_PLANE_RUNTIME_API_KEY: local-control-plane-key
       CONTROL_PLANE_GOVERNANCE_AUDITOR_API_KEY: local-governance-auditor-key
       CONTROL_PLANE_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
+      CONTROL_PLANE_LLM_QUOTA_SYNC_ENABLED: "true"
       CONTROL_PLANE_GOVERNANCE_BASE_URL: http://agent-governance:8081
       CONTROL_PLANE_AGENT_LAB_BASE_URL: http://agent-lab:8092
       CONTROL_PLANE_AGENT_LAB_SERVICE_API_KEY: local-agent-lab-key
@@ -104,8 +116,31 @@ services:
       GOVERNANCE_EVENT_INGESTION_KEY: local-governance-key
       GOVERNANCE_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
       GOVERNANCE_LLM_GATEWAY_API_KEY: governance-service-key
+      # Local-only proof path: MinIO bucket has object lock and HMAC identifies the
+      # envelope as a demo artifact. Production Compose rejects this signing mode.
+      GOVERNANCE_WORM_BUCKET: agent-platform-audit-local
+      GOVERNANCE_WORM_PREFIX: governance-audit
+      GOVERNANCE_WORM_ENDPOINT_URL: http://minio:9000
+      GOVERNANCE_WORM_REGION: us-east-1
+      GOVERNANCE_WORM_SIGNING_MODE: hmac-local
+      GOVERNANCE_WORM_LOCAL_SIGNING_KEY: local-demo-worm-signing-key
+      AWS_ACCESS_KEY_ID: agent-local
+      AWS_SECRET_ACCESS_KEY: agent-local-secret
     ports: ["9001:8081"]
     volumes: ["governance-data:/data"]
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+  # Slow signing/storage I/O is isolated from the Governance API. Multiple replicas
+  # compete through database CAS leases and exhausted retries remain as visible DLQ jobs.
+  agent-governance-worm-worker:
+    extends:
+      service: agent-governance
+    command: ["governance-worm-export-worker"]
+    # Compose extends merges sequences unless they are explicitly reset; without this
+    # tag the Worker would contend with the API for host port 9001.
+    ports: !reset []
 
   llm-gateway:
     build: ./llm-gateway
@@ -164,6 +199,17 @@ services:
       agent-context-service:
         condition: service_started
 
+  # Approved Desktop scan artifacts are submitted by a separate lease-based workload;
+  # the API/desktop never receives ingestion storage credentials.
+  agent-runtime-artifact-ingestion-relay:
+    <<: *runtime-service
+    command: ["runtime-artifact-ingestion-relay"]
+    depends_on:
+      agent-context-service:
+        condition: service_started
+      ingestion-api:
+        condition: service_started
+
   # Browser-facing projection layer. It owns neither Agent state nor authorization decisions;
   # Runtime remains the source of truth for Run ownership and state transitions.
   agent-web-bff:
@@ -202,7 +248,11 @@ services:
       dockerfile: rag-agent-service/Dockerfile
       target: context-service
     ports: ["8002:8002"]
-    depends_on: [rag-query-api]
+    depends_on:
+      rag-query-api:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
 
   rag-query-api:
     <<: *rag-service
@@ -281,6 +331,27 @@ services:
   redis:
     image: redis:7-alpine
 
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-06T17-38-46Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: agent-local
+      MINIO_ROOT_PASSWORD: agent-local-secret
+    ports: ["9100:9000", "9101:9001"]
+    volumes: ["minio-data:/data"]
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on: [minio]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        until mc alias set local http://minio:9000 agent-local agent-local-secret; do sleep 1; done;
+        mc mb --ignore-existing local/agent-platform-local;
+        mc mb --ignore-existing --with-lock local/agent-platform-audit-local;
+        mc anonymous set none local/agent-platform-local
+        mc anonymous set none local/agent-platform-audit-local
+
 volumes:
   control-plane-data:
   governance-data:
@@ -289,3 +360,4 @@ volumes:
   tool-gateway-data:
   agent-lab-data:
   postgres-data:
+  minio-data:

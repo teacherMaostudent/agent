@@ -98,11 +98,11 @@ public class RedisQuotaService implements QuotaService {
 
     @Override
     /** 通过 Lua 脚本原子预占当日额度，并以请求标识保证重试幂等。 */
-    public UsageReservation reserve(String userId, String requestId, long estimatedPromptTokens,
+    public UsageReservation reserve(String tenantId, String userId, String requestId, long estimatedPromptTokens,
                                     long estimatedCompletionTokens, BigDecimal estimatedCost) {
-        GatewayProperties.UserQuota quota = quota(userId);
+        GatewayProperties.UserQuota quota = quota(tenantId, userId);
         String id = requestId == null || requestId.isBlank() ? java.util.UUID.randomUUID().toString() : requestId;
-        List<String> keys = keys(userId, id);
+        List<String> keys = keys(tenantId, userId, id);
         long estimatedTotalTokens = estimatedPromptTokens + estimatedCompletionTokens;
         List result = redisTemplate.execute(
                 RESERVE_SCRIPT,
@@ -132,10 +132,10 @@ public class RedisQuotaService implements QuotaService {
 
     @Override
     /** 将预占用量与实际账单差额原子记入 Redis，并把预占状态标为已结算。 */
-    public void settle(String userId, UsageReservation reservation, GatewayUsage gatewayUsage) {
+    public void settle(String tenantId, String userId, UsageReservation reservation, GatewayUsage gatewayUsage) {
         redisTemplate.execute(
                 RECORD_SCRIPT,
-                keys(userId, reservation.reservationId()),
+                keys(tenantId, userId, reservation.reservationId()),
                 String.valueOf(gatewayUsage.totalTokens() - reservation.estimatedTotalTokens()),
                 String.valueOf(toMicrosSigned(gatewayUsage.cost().subtract(reservation.estimatedCost()))),
                 String.valueOf(secondsUntilTomorrow()),
@@ -145,10 +145,10 @@ public class RedisQuotaService implements QuotaService {
 
     @Override
     /** 将尚未结算的预占额度原子归还，并标记为已释放以阻止重复扣减。 */
-    public void release(String userId, UsageReservation reservation) {
+    public void release(String tenantId, String userId, UsageReservation reservation) {
         redisTemplate.execute(
                 RECORD_SCRIPT,
-                keys(userId, reservation.reservationId()),
+                keys(tenantId, userId, reservation.reservationId()),
                 String.valueOf(-reservation.estimatedTotalTokens()),
                 String.valueOf(toMicrosSigned(reservation.estimatedCost().negate())),
                 String.valueOf(secondsUntilTomorrow()),
@@ -158,12 +158,13 @@ public class RedisQuotaService implements QuotaService {
 
     @Override
     /** 读取 Redis 中当前计费日的额度快照，用于监控而非授权。 */
-    public Map<String, Object> snapshot(String userId) {
-        List<String> keys = keys(userId);
+    public Map<String, Object> snapshot(String tenantId, String userId) {
+        List<String> keys = keys(tenantId, userId);
         String tokens = redisTemplate.opsForValue().get(keys.get(0));
         String costMicros = redisTemplate.opsForValue().get(keys.get(1));
         return Map.of(
                 "store", "redis",
+                "tenantId", tenantId,
                 "userId", userId,
                 "date", LocalDate.now().toString(),
                 "tokens", tokens == null ? 0L : Long.parseLong(tokens),
@@ -172,23 +173,26 @@ public class RedisQuotaService implements QuotaService {
     }
 
     /** 生成用户当日 Token 与成本计数键，并对空用户使用匿名隔离命名空间。 */
-    private List<String> keys(String userId) {
+    private List<String> keys(String tenantId, String userId) {
         String date = LocalDate.now().toString();
+        String safeTenantId = tenantId == null || tenantId.isBlank() ? "default" : tenantId;
         String safeUserId = userId == null || userId.isBlank() ? "anonymous" : userId;
-        String prefix = "llm-gateway:quota:" + date + ":" + safeUserId;
+        String prefix = "llm-gateway:quota:" + date + ":" + safeTenantId + ":" + safeUserId;
         return List.of(prefix + ":tokens", prefix + ":costMicros");
     }
 
     /** 在用户日限额键后附加经过净化的预占标识，避免键注入。 */
-    private List<String> keys(String userId, String reservationId) {
-        List<String> quotaKeys = keys(userId);
+    private List<String> keys(String tenantId, String userId, String reservationId) {
+        List<String> quotaKeys = keys(tenantId, userId);
         String safeReservationId = reservationId == null ? "unknown" : reservationId.replaceAll("[^a-zA-Z0-9._-]", "_");
         return List.of(quotaKeys.get(0), quotaKeys.get(1), quotaKeys.get(0) + ":reservation:" + safeReservationId);
     }
 
     /** 获取用户定制限额，未配置时使用匿名默认限额。 */
-    private GatewayProperties.UserQuota quota(String userId) {
-        GatewayProperties.UserQuota quota = properties.getUserQuotas().get(userId);
+    private GatewayProperties.UserQuota quota(String tenantId, String userId) {
+        GatewayProperties.UserQuota quota = properties.getUserQuotas().get(tenantId + ":" + userId);
+        if (quota == null) quota = properties.getUserQuotas().get(tenantId + ":*");
+        if (quota == null) quota = properties.getUserQuotas().get(userId);
         if (quota != null) {
             return quota;
         }

@@ -36,4 +36,9 @@ ENV PLATFORM_ASGI_APP=apps.ingestion_api.main:app \
 CMD ["python", "-m", "platform_infra.asgi_runner"]
 
 FROM service-base AS ingestion-worker
+CMD ["ingestion-worker"]
+
+# Production dispatch is durable Temporal + PostgreSQL. Keeping it as a distinct
+# image target prevents a local deployment without Temporal from entering a restart loop.
+FROM service-base AS ingestion-temporal-worker
 CMD ["ingestion-temporal-worker"]

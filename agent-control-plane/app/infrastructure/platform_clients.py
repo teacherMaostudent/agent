@@ -60,6 +60,30 @@ class GatewayPolicyClient:
             response.raise_for_status()
             return response.json()
 
+    async def quotas(self, tenant_id: str) -> dict[str, Any]:
+        """Read one tenant's effective quota snapshot for CAS-style management workflows."""
+        async with httpx.AsyncClient(
+            base_url=self._settings.llm_gateway_base_url,
+            auth=self._auth(),
+            timeout=30,
+            **self._client_options(),
+        ) as client:
+            response = await client.get(f"/admin/quotas/{tenant_id}")
+            response.raise_for_status()
+            return response.json()
+
+    async def replace_quotas(self, tenant_id: str, quotas: dict[str, Any]) -> dict[str, Any]:
+        """Apply a complete tenant quota projection; lifecycle ownership stays in Control Plane."""
+        async with httpx.AsyncClient(
+            base_url=self._settings.llm_gateway_base_url,
+            auth=self._auth(),
+            timeout=30,
+            **self._client_options(),
+        ) as client:
+            response = await client.put(f"/admin/quotas/{tenant_id}", json=quotas)
+            response.raise_for_status()
+            return response.json()
+
     async def performance_summary(
         self, since: datetime, route_name: str, target: str
     ) -> dict[str, Any]:

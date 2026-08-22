@@ -241,6 +241,11 @@ Tool Gateway 的完成收据，再原子保存任务结果和 Artifact Outbox。
 重放与失联 Connector 对账。`GET /agent/connectors/artifacts/dead-letters` 和对应 requeue 路由只供具备
 `connector:artifact:admin` 的平台身份使用，所有重放都写 Governance 事件。
 
+`controlled_scan` Artifact 交付完成后只登记 `AWAITING_APPROVAL`，不会自动污染知识库。Run owner 或明确
+Reviewer 必须具备 `rag:ingest:approve` 并提交一次性决定；批准后
+`runtime-artifact-ingestion-relay` 以租约、稳定文档/Job ID、指数重试和 DLQ 调用摄取 API。本地一键启动
+使用独立轮询摄取 Worker，生产镜像使用独立 Temporal Worker Target，二者都在摄取服务事实源中完成索引。
+
 Workspace Artifact 下载不返回永久对象地址。Runtime 先验证 Run 所有权或 Review Assignment，再向
 Context 申请短时签名 URL，并记录不含 URL/Object Key 的 `artifact.download.authorized` 审计事实。
 

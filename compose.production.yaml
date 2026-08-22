@@ -88,6 +88,7 @@ x-runtime-env: &runtime-env
   RUNTIME_TEMPORAL_TARGET: temporal:7233
   RUNTIME_TEMPORAL_REGION_TARGETS: ${RUNTIME_TEMPORAL_REGION_TARGETS:-}
   RUNTIME_TEMPORAL_WORKER_REGION: ${RUNTIME_TEMPORAL_WORKER_REGION:-}
+  RUNTIME_TEMPORAL_GLOBAL_NAMESPACE_ENABLED: ${RUNTIME_TEMPORAL_GLOBAL_NAMESPACE_ENABLED:-false}
   RUNTIME_OIDC_ENABLED: "true"
   RUNTIME_OIDC_ISSUER: ${OIDC_ISSUER}
   RUNTIME_OIDC_AUDIENCE: ${OIDC_AUDIENCE}
@@ -112,6 +113,7 @@ x-runtime-env: &runtime-env
   RUNTIME_GOVERNANCE_DELIVERY_MODE: cdc
   RUNTIME_CONTEXT_SERVICE_BASE_URL: https://agent-context-service:8002
   RUNTIME_RAG_QUERY_BASE_URL: https://rag-query-api:8003
+  RUNTIME_INGESTION_BASE_URL: https://ingestion-api:8004
   RUNTIME_TOOL_GATEWAY_BASE_URL: https://tool-gateway:8090
   RUNTIME_TOOL_GATEWAY_API_KEY: ${TOOL_GATEWAY_SERVICE_API_KEY}
   RUNTIME_LLM_GATEWAY_BASE_URL: https://llm-gateway:8080
@@ -139,6 +141,14 @@ secrets:
     file: ${RUNTIME_CONNECTOR_RELAY_MTLS_CERT_FILE:-deploy/tls/runtime-connector-relay.crt}
   runtime_connector_relay_key:
     file: ${RUNTIME_CONNECTOR_RELAY_MTLS_KEY_FILE:-deploy/tls/runtime-connector-relay.key}
+  runtime_artifact_ingestion_relay_cert:
+    file: ${RUNTIME_ARTIFACT_INGESTION_RELAY_MTLS_CERT_FILE:-deploy/tls/runtime-artifact-ingestion-relay.crt}
+  runtime_artifact_ingestion_relay_key:
+    file: ${RUNTIME_ARTIFACT_INGESTION_RELAY_MTLS_KEY_FILE:-deploy/tls/runtime-artifact-ingestion-relay.key}
+  runtime_secondary_worker_cert:
+    file: ${RUNTIME_SECONDARY_WORKER_MTLS_CERT_FILE:-deploy/tls/runtime-secondary-worker.crt}
+  runtime_secondary_worker_key:
+    file: ${RUNTIME_SECONDARY_WORKER_MTLS_KEY_FILE:-deploy/tls/runtime-secondary-worker.key}
   web_bff_cert:
     file: ${WEB_BFF_MTLS_CERT_FILE:-deploy/tls/agent-web-bff.crt}
   web_bff_key:
@@ -167,6 +177,10 @@ secrets:
     file: ${GOVERNANCE_MTLS_CERT_FILE:-deploy/tls/agent-governance.crt}
   governance_key:
     file: ${GOVERNANCE_MTLS_KEY_FILE:-deploy/tls/agent-governance.key}
+  governance_worm_worker_cert:
+    file: ${GOVERNANCE_WORM_WORKER_MTLS_CERT_FILE:-deploy/tls/governance-worm-worker.crt}
+  governance_worm_worker_key:
+    file: ${GOVERNANCE_WORM_WORKER_MTLS_KEY_FILE:-deploy/tls/governance-worm-worker.key}
   tool_gateway_cert:
     file: ${TOOL_GATEWAY_MTLS_CERT_FILE:-deploy/tls/tool-gateway.crt}
   tool_gateway_key:
@@ -183,6 +197,14 @@ secrets:
     file: ${MODEL_LAB_MTLS_CERT_FILE:-deploy/tls/model-lab.crt}
   model_lab_key:
     file: ${MODEL_LAB_MTLS_KEY_FILE:-deploy/tls/model-lab.key}
+  prometheus_cert:
+    file: ${PROMETHEUS_MTLS_CERT_FILE:-deploy/tls/prometheus.crt}
+  prometheus_key:
+    file: ${PROMETHEUS_MTLS_KEY_FILE:-deploy/tls/prometheus.key}
+  blackbox_exporter_cert:
+    file: ${BLACKBOX_EXPORTER_MTLS_CERT_FILE:-deploy/tls/blackbox-exporter.crt}
+  blackbox_exporter_key:
+    file: ${BLACKBOX_EXPORTER_MTLS_KEY_FILE:-deploy/tls/blackbox-exporter.key}
 
 services:
   postgres:
@@ -283,6 +305,35 @@ services:
       OTEL_BACKEND_ENDPOINT: ${OTEL_BACKEND_ENDPOINT}
       OTEL_BACKEND_INSECURE: ${OTEL_BACKEND_INSECURE:-false}
     volumes: [./deploy/otel-collector.yaml:/etc/otel/config.yaml:ro]
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yaml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    volumes:
+      - ./deploy/observability/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - ./deploy/observability/alerts:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    secrets: [agent_ca_pem, prometheus_cert, prometheus_key]
+    depends_on: [otel-collector, blackbox-exporter, alertmanager]
+
+  alertmanager:
+    image: ${ALERTMANAGER_IMAGE}
+    command: ["--config.file=/etc/alertmanager/alertmanager.yaml", "--storage.path=/alertmanager"]
+    volumes:
+      # Replace this sample receiver file with a Secret-managed PagerDuty/WeCom/Slack
+      # configuration before production cutover; routing/rules remain versioned here.
+      - ${ALERTMANAGER_CONFIG_FILE:-./deploy/observability/alertmanager.yaml}:/etc/alertmanager/alertmanager.yaml:ro
+      - alertmanager-data:/alertmanager
+
+  blackbox-exporter:
+    image: ${BLACKBOX_EXPORTER_IMAGE}
+    command: ["--config.file=/etc/blackbox/blackbox.yaml"]
+    volumes:
+      - ./deploy/observability/blackbox.yaml:/etc/blackbox/blackbox.yaml:ro
+    secrets: [agent_ca_pem, blackbox_exporter_cert, blackbox_exporter_key]
 
   model-lab:
     build:
@@ -396,6 +447,7 @@ services:
       CONTROL_PLANE_AGENT_LAB_REQUIRED: "true"
       CONTROL_PLANE_LLM_GATEWAY_ADMIN_PASSWORD: ${LLM_ADMIN_PASSWORD}
       CONTROL_PLANE_LLM_GATEWAY_BASE_URL: https://llm-gateway:8080
+      CONTROL_PLANE_LLM_QUOTA_SYNC_ENABLED: "true"
       CONTROL_PLANE_GOVERNANCE_BASE_URL: https://agent-governance:8081
       CONTROL_PLANE_OTEL_ENABLED: "true"
       CONTROL_PLANE_OTEL_ENDPOINT: http://otel-collector:4318/v1/traces
@@ -443,6 +495,7 @@ services:
       GOVERNANCE_WORM_BUCKET: ${AUDIT_BUCKET}
       GOVERNANCE_WORM_REGION: ${S3_REGION}
       GOVERNANCE_WORM_KMS_KEY_ID: ${WORM_KMS_KEY_ID}
+      GOVERNANCE_WORM_SIGNING_MODE: kms
       GOVERNANCE_EVENT_INGESTION_KEY: ${GOVERNANCE_EVENT_INGESTION_KEY}
       GOVERNANCE_AUDITOR_API_KEY: ${GOVERNANCE_AUDITOR_API_KEY}
       GOVERNANCE_ENFORCE_AUDITOR_ROLE: "true"
@@ -475,6 +528,25 @@ services:
       debezium-register:
         condition: service_completed_successfully
 
+  # This worker shares Governance's validated database, KMS, WORM and workload identity
+  # configuration but owns no HTTP port. Scale it separately from API/consumer replicas.
+  governance-worm-export-worker:
+    extends:
+      service: agent-governance
+    command: governance-worm-export-worker
+    environment:
+      GOVERNANCE_WORKLOAD_CLIENT_ID: governance-worm-export-worker
+      GOVERNANCE_WORKLOAD_CLIENT_SECRET: ${GOVERNANCE_WORM_WORKER_WORKLOAD_CLIENT_SECRET}
+      GOVERNANCE_MTLS_CERT_FILE: /run/secrets/governance_worm_worker_cert
+      GOVERNANCE_MTLS_KEY_FILE: /run/secrets/governance_worm_worker_key
+      PLATFORM_MTLS_CERT_FILE: /run/secrets/governance_worm_worker_cert
+      PLATFORM_MTLS_KEY_FILE: /run/secrets/governance_worm_worker_key
+    secrets:
+      - agent_ca_pem
+      - governance_worm_worker_cert
+      - governance_worm_worker_key
+    depends_on: [postgres, otel-collector]
+
   agent-runtime:
     <<: *runtime-service
     environment:
@@ -491,6 +563,25 @@ services:
     <<: *runtime-service
     command: runtime-temporal-worker
     depends_on: [agent-runtime, temporal]
+
+  # Optional worker attached to the standby Temporal cluster but listening on the
+  # same region queue. It is safe only with a replicated Global Namespace.
+  runtime-worker-secondary:
+    profiles: ["cross-region"]
+    <<: *runtime-service
+    command: runtime-temporal-worker
+    environment:
+      <<: *runtime-env
+      RUNTIME_TEMPORAL_WORKER_TARGET_OVERRIDE: ${RUNTIME_TEMPORAL_SECONDARY_TARGET}
+      RUNTIME_WORKLOAD_CLIENT_ID: runtime-worker-secondary
+      RUNTIME_WORKLOAD_CLIENT_SECRET: ${RUNTIME_SECONDARY_WORKER_WORKLOAD_CLIENT_SECRET}
+      RUNTIME_MTLS_CERT_FILE: /run/secrets/runtime_secondary_worker_cert
+      RUNTIME_MTLS_KEY_FILE: /run/secrets/runtime_secondary_worker_key
+    secrets:
+      - agent_ca_pem
+      - runtime_secondary_worker_cert
+      - runtime_secondary_worker_key
+    depends_on: [postgres]
 
   runtime-connector-artifact-relay:
     <<: *runtime-service
@@ -509,6 +600,21 @@ services:
       - runtime_connector_relay_cert
       - runtime_connector_relay_key
     depends_on: [postgres, agent-context-service, agent-governance]
+
+  runtime-artifact-ingestion-relay:
+    <<: *runtime-service
+    command: runtime-artifact-ingestion-relay
+    environment:
+      <<: *runtime-env
+      RUNTIME_WORKLOAD_CLIENT_ID: runtime-artifact-ingestion-relay
+      RUNTIME_WORKLOAD_CLIENT_SECRET: ${RUNTIME_ARTIFACT_INGESTION_RELAY_WORKLOAD_CLIENT_SECRET}
+      RUNTIME_MTLS_CERT_FILE: /run/secrets/runtime_artifact_ingestion_relay_cert
+      RUNTIME_MTLS_KEY_FILE: /run/secrets/runtime_artifact_ingestion_relay_key
+    secrets:
+      - agent_ca_pem
+      - runtime_artifact_ingestion_relay_cert
+      - runtime_artifact_ingestion_relay_key
+    depends_on: [postgres, agent-context-service, ingestion-api, agent-governance]
 
   agent-web-bff:
     build:
@@ -615,7 +721,7 @@ services:
     build:
       <<: *python-build
       dockerfile: rag-agent-service/Dockerfile
-      target: ingestion-worker
+      target: ingestion-temporal-worker
     environment:
       <<: *rag-env
       RAG_WORKLOAD_CLIENT_ID: ingestion-worker
@@ -721,3 +827,5 @@ volumes:
   kafka-data:
   opensearch-data:
   agent-lab-data:
+  prometheus-data:
+  alertmanager-data:

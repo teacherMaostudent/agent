@@ -1,0 +1,112 @@
+{
+  "realm": "agent-platform",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "bruteForceProtected": true,
+  "roles": {
+    "realm": [
+      {"name": "agent-user"},
+      {"name": "agent-reviewer"},
+      {"name": "platform-operator"},
+      {"name": "governance-auditor"},
+      {"name": "platform-workload"}
+    ]
+  },
+  "clientScopes": [
+    {
+      "name": "agent-platform-claims",
+      "protocol": "openid-connect",
+      "attributes": {"include.in.token.scope": "true"},
+      "protocolMappers": [
+        {
+          "name": "tenant-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "tenant_id",
+            "claim.name": "tenant_id",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "true"
+          }
+        },
+        {
+          "name": "permissions",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "permissions",
+            "claim.name": "permissions",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true"
+          }
+        },
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true"
+          }
+        },
+        {
+          "name": "platform-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "agent-platform",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "agent-platform",
+      "enabled": true,
+      "bearerOnly": true,
+      "protocol": "openid-connect"
+    },
+    {
+      "clientId": "agent-web-bff",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://127.0.0.1:9010/auth/callback"],
+      "webOrigins": ["http://127.0.0.1:9010"],
+      "attributes": {"pkce.code.challenge.method": "S256"},
+      "defaultClientScopes": ["web-origins", "profile", "email", "roles", "agent-platform-claims"]
+    }
+  ],
+  "users": [
+    {
+      "username": "demo-operator",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Demo",
+      "lastName": "Operator",
+      "attributes": {
+        "tenant_id": ["demo"],
+        "permissions": [
+          "rag:read", "rag:ingest:approve", "file:scan", "tool:invoke", "ops:read",
+          "release:read", "model:route:read", "model:route:release",
+          "model:route:monitor", "model:route:rollback", "quota:read", "quota:write",
+          "audit:export", "audit:export:requeue"
+        ]
+      },
+      "realmRoles": ["agent-user", "platform-operator", "governance-auditor"],
+      "credentials": [{"type": "password", "value": "demo-operator-change-me", "temporary": true}]
+    }
+  ]
+}

@@ -60,6 +60,7 @@ class AppContainer:
                 timeout=settings.runtime_executor_catalog_timeout_seconds,
                 service_key=settings.runtime_executor_catalog_service_api_key,
             ),
+            gateway_policy=self.gateway_policy if settings.llm_quota_sync_enabled else None,
         )
         self.model_releases = ModelReleaseService(
             self.repository, settings, self.gateway_policy, self.governance_quality, self.model_lab

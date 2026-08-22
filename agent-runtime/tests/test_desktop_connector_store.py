@@ -107,3 +107,60 @@ def test_connector_artifact_outbox_retries_then_enters_and_leaves_dlq(tmp_path) 
     assert not store.requeue_connector_artifact_dead_letter("tenant-b", first["outbox_id"])
     assert store.requeue_connector_artifact_dead_letter("tenant-a", first["outbox_id"])
     assert store.list_connector_artifact_dead_letters("tenant-a") == []
+
+
+def test_controlled_scan_artifact_requires_one_time_approval_before_relay(tmp_path) -> None:
+    """扫描产物未经决策不可领取，批准后才进入有租约的摄取队列。"""
+    store = RuntimeStoreOperations(tmp_path / "runtime.db")
+    request = store.register_artifact_ingestion(
+        "tenant-a", "user-a", "run-a", "root-a", "task-a", "artifact-a"
+    )
+    assert request["status"] == "AWAITING_APPROVAL"
+    assert store.claim_artifact_ingestions() == []
+    assert store.decide_artifact_ingestion(
+        "tenant-a",
+        "run-a",
+        "artifact-a",
+        "reviewer-a",
+        approved=True,
+        reason="scope and classification verified",
+    )["status"] == "APPROVED"
+    # A consumed approval cannot be overwritten by a second decision.
+    assert (
+        store.decide_artifact_ingestion(
+            "tenant-a",
+            "run-a",
+            "artifact-a",
+            "reviewer-b",
+            approved=False,
+            reason="late rejection",
+        )
+        is None
+    )
+    claimed = store.claim_artifact_ingestions(limit=1)
+    assert len(claimed) == 1
+    assert claimed[0]["artifact_id"] == "artifact-a"
+    assert store.complete_artifact_ingestion(
+        claimed[0]["request_id"], claimed[0]["lease_token"], "document-a", "job-a"
+    )
+    final = store.list_artifact_ingestions("tenant-a", "run-a")[0]
+    assert final["status"] == "SUBMITTED"
+    assert final["document_id"] == "document-a"
+
+
+def test_rejected_scan_artifact_never_becomes_claimable(tmp_path) -> None:
+    """拒绝是终态，Relay 不能在重启或重复轮询后重新摄取。"""
+    store = RuntimeStoreOperations(tmp_path / "runtime.db")
+    store.register_artifact_ingestion(
+        "tenant-a", "user-a", "run-a", "root-a", "task-a", "artifact-a"
+    )
+    decision = store.decide_artifact_ingestion(
+        "tenant-a",
+        "run-a",
+        "artifact-a",
+        "reviewer-a",
+        approved=False,
+        reason="contains data outside approved domain",
+    )
+    assert decision and decision["status"] == "REJECTED"
+    assert store.claim_artifact_ingestions() == []

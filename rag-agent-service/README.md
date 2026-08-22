@@ -13,6 +13,11 @@ Control Plane 发布快照绑定知识源、模型、工具、预算与审批策
 - `apps/rag_query_api`：ACL 检索与受控文本扫描。
 - `apps/ingestion_api`、`apps/ingestion_worker`：文档解析、OCR 与索引更新。
 
+Context 的 Task Artifact 是不可变对象引用。同一 `root_task_id + logical_name` 使用 CAS 分配单调版本，
+预览接口只读取允许的文本媒体类型和受限字节前缀，版本比较只接受同一逻辑序列。`POST
+/ingestion/artifacts` 仅接收 Runtime 已审批且位于本服务对象桶/前缀内的引用，以稳定文档和任务 ID
+实现重试幂等，并把审批人、审批 ID、RootTask 和 Artifact ID 写入知识来源元数据。
+
 Runtime 只能经 `platform-sdk` 的 HTTP 客户端调用 Context/RAG 稳定 API，不能 import 本服务的
 仓储、切块器或索引实现。拆分细节见 [Runtime 与 RAG 服务拆分说明](../docs/runtime-rag-service-split.md)。
 

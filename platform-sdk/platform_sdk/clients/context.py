@@ -6,7 +6,12 @@ import httpx
 from opentelemetry import trace
 from platform_infra.identity import WorkloadTokenProvider
 
-from platform_sdk.contracts.artifacts import TaskArtifact, TaskArtifactTextCreate
+from platform_sdk.contracts.artifacts import (
+    TaskArtifact,
+    TaskArtifactComparison,
+    TaskArtifactPreview,
+    TaskArtifactTextCreate,
+)
 from platform_sdk.contracts.context import (
     ContextAssembleRequest,
     ContextPackage,
@@ -58,6 +63,24 @@ class ContextClient(Protocol):
         self, root_task_id: str, content: str, *, tenant_id: str, user_id: str
     ) -> TaskArtifact:
         """写入受控文本交付物；失败由 Runtime 按可选交付策略记录，不能影响主结果。"""
+        ...
+
+    def artifact_preview(
+        self, root_task_id: str, artifact_id: str, *, tenant_id: str, max_chars: int = 50_000
+    ) -> TaskArtifactPreview:
+        """Read a bounded text projection after Runtime has authorized the Run relation."""
+        ...
+
+    def compare_artifacts(
+        self,
+        root_task_id: str,
+        artifact_id: str,
+        base_artifact_id: str,
+        *,
+        tenant_id: str,
+        max_chars: int = 80_000,
+    ) -> TaskArtifactComparison:
+        """Return a bounded diff for two immutable versions in one logical series."""
         ...
 
 
@@ -115,6 +138,26 @@ class LocalContextClient:
         """本地适配器没有对象存储，不模拟成功的交付物。"""
         del root_task_id, content, tenant_id, user_id
         raise RuntimeError("artifact delivery is not available in local context adapter")
+
+    def artifact_preview(
+        self, root_task_id: str, artifact_id: str, *, tenant_id: str, max_chars: int = 50_000
+    ) -> TaskArtifactPreview:
+        """Local adapter has no artifact data plane and must not fabricate preview content."""
+        del root_task_id, artifact_id, tenant_id, max_chars
+        raise RuntimeError("artifact preview is not available in local context adapter")
+
+    def compare_artifacts(
+        self,
+        root_task_id: str,
+        artifact_id: str,
+        base_artifact_id: str,
+        *,
+        tenant_id: str,
+        max_chars: int = 80_000,
+    ) -> TaskArtifactComparison:
+        """Local adapter has no immutable object versions to compare."""
+        del root_task_id, artifact_id, base_artifact_id, tenant_id, max_chars
+        raise RuntimeError("artifact comparison is not available in local context adapter")
 
 
 class HttpContextClient:
@@ -251,6 +294,38 @@ class HttpContextClient:
         )
         response.raise_for_status()
         return TaskArtifact.model_validate(response.json())
+
+    def artifact_preview(
+        self, root_task_id: str, artifact_id: str, *, tenant_id: str, max_chars: int = 50_000
+    ) -> TaskArtifactPreview:
+        """Request the Context-owned bounded text projection; never follow a browser URL."""
+        response = self.client.get(
+            f"{self.base_url}/api/v1/context/tasks/{root_task_id}/artifacts/{artifact_id}/preview",
+            params={"max_chars": min(max(max_chars, 256), 200_000)},
+            headers={**self._headers(), "X-Tenant-Id": tenant_id},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return TaskArtifactPreview.model_validate(response.json())
+
+    def compare_artifacts(
+        self,
+        root_task_id: str,
+        artifact_id: str,
+        base_artifact_id: str,
+        *,
+        tenant_id: str,
+        max_chars: int = 80_000,
+    ) -> TaskArtifactComparison:
+        """Delegate bounded object reads and diff generation to the Context ownership boundary."""
+        response = self.client.get(
+            f"{self.base_url}/api/v1/context/tasks/{root_task_id}/artifacts/{artifact_id}/compare/{base_artifact_id}",
+            params={"max_chars": min(max(max_chars, 1_000), 200_000)},
+            headers={**self._headers(), "X-Tenant-Id": tenant_id},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return TaskArtifactComparison.model_validate(response.json())
 
     def close(self) -> None:
         """释放连接池和 TLS 资源，容器关闭时必须调用。"""

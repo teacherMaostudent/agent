@@ -12,8 +12,7 @@ import boto3
 
 
 class S3ObjectStorage:
-    """Write tenant-prefixed objects with optional retention-lock semantics."""
-    """Content-addressed S3 storage with optional WORM retention."""
+    """Write content-addressed tenant objects with optional WORM retention semantics."""
 
     def __init__(
         self,
@@ -121,3 +120,21 @@ class S3ObjectStorage:
             Params={"Bucket": self.bucket, "Key": normalized_key},
             ExpiresIn=min(max(expires_seconds, 30), 900),
         )
+
+    def read_bounded(self, key: str, *, max_bytes: int) -> tuple[bytes, bool]:
+        """Read a bounded leading range for preview without becoming an object proxy."""
+        normalized_key = key.strip().lstrip("/")
+        if not normalized_key or ".." in Path(normalized_key).parts:
+            raise ValueError("invalid object storage key")
+        bounded = min(max(max_bytes, 1), 1_048_576)
+        response = self.client.get_object(
+            Bucket=self.bucket,
+            Key=normalized_key,
+            Range=f"bytes=0-{bounded}",
+        )
+        body = response["Body"]
+        try:
+            payload = body.read(bounded + 1)
+        finally:
+            body.close()
+        return payload[:bounded], len(payload) > bounded

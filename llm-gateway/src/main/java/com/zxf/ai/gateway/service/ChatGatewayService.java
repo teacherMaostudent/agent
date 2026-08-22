@@ -172,7 +172,7 @@ public class ChatGatewayService {
             Throwable lastError
     ) {
         if (index >= endpoints.size()) {
-            quotaService.release(context.userId(), plan.reservation());
+            quotaService.release(context.tenantId(), context.userId(), plan.reservation());
             if (lastError instanceof GatewayException gatewayError
                     && (gatewayError.status() == HttpStatus.TOO_MANY_REQUESTS
                     || gatewayError.status() == HttpStatus.SERVICE_UNAVAILABLE)) {
@@ -216,7 +216,7 @@ public class ChatGatewayService {
                             costCalculator.estimate(endpoint, response, actualPromptTokens, completionTokens),
                             costCalculator.baseCurrency(), providerReported ? "PROVIDER_RESPONSE" : "LOCAL_TOKENIZER",
                             providerReported ? "REPORTED" : "ESTIMATED");
-                    quotaService.settle(context.userId(), plan.reservation(), usage);
+                    quotaService.settle(context.tenantId(), context.userId(), plan.reservation(), usage);
                     outputTokenPredictor.observe(endpoint, request, completionTokens);
                     policyService.recordSuccess(endpoint);
                     logSuccess(context, endpoint, usage, plan.prediction(), started);
@@ -254,7 +254,7 @@ public class ChatGatewayService {
             Throwable lastError
     ) {
         if (index >= endpoints.size()) {
-            quotaService.release(context.userId(), plan.reservation());
+            quotaService.release(context.tenantId(), context.userId(), plan.reservation());
             if (lastError instanceof GatewayException gatewayError
                     && (gatewayError.status() == HttpStatus.TOO_MANY_REQUESTS
                     || gatewayError.status() == HttpStatus.SERVICE_UNAVAILABLE)) {
@@ -316,7 +316,7 @@ public class ChatGatewayService {
                             costCalculator.estimate(endpoint, syntheticResponse, actualPromptTokens, actualCompletionTokens),
                             costCalculator.baseCurrency(), reported ? "PROVIDER_STREAM" : "LOCAL_TOKENIZER",
                             reported ? "REPORTED" : "ESTIMATED");
-                    quotaService.settle(context.userId(), plan.reservation(), usage);
+                    quotaService.settle(context.tenantId(), context.userId(), plan.reservation(), usage);
                     outputTokenPredictor.observe(endpoint, request, actualCompletionTokens);
                     policyService.recordSuccess(endpoint);
                     logSuccess(context, endpoint, usage, plan.prediction(), started, ttftMs.get());
@@ -339,7 +339,7 @@ public class ChatGatewayService {
                     log.warn("llm_gateway_stream_fallback requestId={} user={} failedRoute={} reason={}",
                             context.requestId(), context.userId(), endpoint.key(), error.getMessage());
                     if (responseStarted.get()) {
-                        quotaService.release(context.userId(), plan.reservation());
+                        quotaService.release(context.tenantId(), context.userId(), plan.reservation());
                         return Flux.error(new GatewayException(
                                 HttpStatus.BAD_GATEWAY,
                                 "Upstream stream failed after response started; fallback was suppressed"
@@ -486,7 +486,7 @@ public class ChatGatewayService {
                     "Predicted request cost " + estimatedCost
                             + " exceeds X-Cost-Budget " + context.costBudget());
         }
-        UsageReservation reservation = quotaService.reserve(context.userId(), context.requestId(),
+        UsageReservation reservation = quotaService.reserve(context.tenantId(), context.userId(), context.requestId(),
                 promptTokens, prediction.selected(), estimatedCost);
         return new ReservationPlan(reservation, prediction);
     }

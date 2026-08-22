@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     llm_gateway_base_url: str = "http://localhost:8080"
     llm_gateway_admin_username: str = "admin"
     llm_gateway_admin_password: str = Field(default="admin123", repr=False)
+    llm_quota_sync_enabled: bool = False
     governance_base_url: str = "http://localhost:8081"
     governance_user_id: str = "control-plane"
     governance_auditor_api_key: str | None = Field(default=None, repr=False)
@@ -89,6 +90,8 @@ class Settings(BaseSettings):
                 unsafe.append("CONTROL_PLANE_GOVERNANCE_AUDITOR_API_KEY is required")
             if self.llm_gateway_admin_password == "admin123":
                 unsafe.append("CONTROL_PLANE_LLM_GATEWAY_ADMIN_PASSWORD must be rotated")
+            if not self.llm_quota_sync_enabled:
+                unsafe.append("CONTROL_PLANE_LLM_QUOTA_SYNC_ENABLED must be true")
             if not self.agent_release_quality_gate_required:
                 unsafe.append("CONTROL_PLANE_AGENT_RELEASE_QUALITY_GATE_REQUIRED must be true")
             if not self.agent_release_knowledge_contract_required:

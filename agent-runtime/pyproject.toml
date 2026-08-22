@@ -20,6 +20,7 @@ dependencies = [
 [project.scripts]
 runtime-temporal-worker = "agent_runtime_service.runtime_worker:main"
 runtime-connector-artifact-relay = "agent_runtime_service.runtime.connector_artifact_relay:main"
+runtime-artifact-ingestion-relay = "agent_runtime_service.runtime.artifact_ingestion_relay:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

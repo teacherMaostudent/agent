@@ -12,6 +12,7 @@ from platform_infra.mtls import mtls_httpx_options
 from platform_infra.object_storage import S3ObjectStorage
 from platform_infra.schema_registry import SchemaRegistry
 from platform_sdk.clients.context import HttpContextClient
+from platform_sdk.clients.ingestion import IngestionClient
 from platform_sdk.clients.llm_gateway import LlmGatewayClient
 from platform_sdk.clients.rag import HttpRagQueryClient
 from platform_sdk.clients.tool_gateway import ToolGatewayClient
@@ -133,6 +134,13 @@ class AgentRuntimeContainer:
         )
         rag_client = HttpRagQueryClient(
             self.settings.rag_query_base_url,
+            self.settings.internal_service_api_key,
+            self.settings.service_http_timeout,
+            self.workload_identity,
+            mtls=self._mtls_options(),
+        )
+        self.ingestion = IngestionClient(
+            self.settings.ingestion_base_url,
             self.settings.internal_service_api_key,
             self.settings.service_http_timeout,
             self.workload_identity,
@@ -286,6 +294,7 @@ class AgentRuntimeContainer:
 
     def close(self) -> None:
         """按依赖反向顺序关闭队列、客户端、存储和检查点连接。"""
+        self.ingestion.close()
         self.capabilities.close()
         self.run_store.close()
         if self._checkpoint_context is not None:

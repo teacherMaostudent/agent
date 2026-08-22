@@ -1,0 +1,51 @@
+# Optional local IdP overlay. It exercises the same Authorization Code + PKCE,
+# HttpOnly BFF session and verified JWT claims used in production; Header identity
+# inputs disappear when this file is enabled.
+services:
+  keycloak-db-init:
+    image: postgres:16.8-alpine
+    environment:
+      PGPASSWORD: local-postgres-password
+    command:
+      - sh
+      - -ec
+      - |
+        psql -h postgres -U platform -d agent_platform -v ON_ERROR_STOP=1 \
+          -c 'CREATE SCHEMA IF NOT EXISTS keycloak AUTHORIZATION platform;'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.1
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/agent_platform
+      KC_DB_SCHEMA: keycloak
+      KC_DB_USERNAME: platform
+      KC_DB_PASSWORD: local-postgres-password
+      KC_HOSTNAME: http://127.0.0.1:9110
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: local-keycloak-admin
+    ports: ["9110:8080"]
+    volumes:
+      - ./deploy/keycloak/agent-platform-realm.json:/opt/keycloak/data/import/agent-platform-realm.json:ro
+    depends_on:
+      keycloak-db-init:
+        condition: service_completed_successfully
+
+  agent-web-bff:
+    environment:
+      WEB_BFF_OIDC_ENABLED: "true"
+      WEB_BFF_OIDC_ISSUER: http://127.0.0.1:9110/realms/agent-platform
+      WEB_BFF_OIDC_AUDIENCE: agent-platform
+      WEB_BFF_OIDC_JWKS_URL: http://keycloak:8080/realms/agent-platform/protocol/openid-connect/certs
+      WEB_BFF_OIDC_AUTHORIZATION_URL: http://127.0.0.1:9110/realms/agent-platform/protocol/openid-connect/auth
+      WEB_BFF_OIDC_TOKEN_URL: http://keycloak:8080/realms/agent-platform/protocol/openid-connect/token
+      WEB_BFF_OIDC_CLIENT_ID: agent-web-bff
+      WEB_BFF_OIDC_REDIRECT_URI: http://127.0.0.1:9010/auth/callback
+      WEB_BFF_PUBLIC_ORIGIN: http://127.0.0.1:9010
+      WEB_BFF_CSRF_ENFORCED: "true"
+    depends_on: [keycloak, redis]

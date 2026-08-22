@@ -95,6 +95,7 @@ class ControlPlaneService:
         require_agent_lab: bool = False,
         tool_catalog_validator=None,
         runtime_executor_catalog=None,
+        gateway_policy=None,
     ) -> None:
         """注入持久化和发布前置校验依赖；依赖失效时拒绝产生不可审计发布。"""
         self._repository = repository
@@ -105,6 +106,7 @@ class ControlPlaneService:
         self._require_agent_lab = require_agent_lab
         self._tool_catalog_validator = tool_catalog_validator
         self._runtime_executor_catalog = runtime_executor_catalog
+        self._gateway_policy = gateway_policy
 
     async def create_agent(
         self,
@@ -1422,9 +1424,30 @@ class ControlPlaneService:
                 "allowed_models": policy.allowed_models,
                 "allowed_data_regions": policy.allowed_data_regions,
                 "max_canary_percentage": policy.max_canary_percentage,
+                "llm_quota_subjects": sorted(policy.llm_quotas),
             },
         )
-        await self._repository.upsert_tenant_policy(policy, event)
+        previous_gateway_quotas: dict[str, Any] | None = None
+        if self._gateway_policy is not None:
+            # Apply a complete tenant snapshot, not a partial browser patch. If the authoritative
+            # DB transaction fails, compensate Gateway with the exact prior snapshot.
+            previous_gateway_quotas = await self._gateway_policy.quotas(identity.tenant_id)
+            gateway_quotas = {
+                subject: {
+                    "dailyTokenLimit": quota.daily_token_limit,
+                    "dailyCostLimit": quota.daily_cost_limit_usd,
+                }
+                for subject, quota in policy.llm_quotas.items()
+            }
+            await self._gateway_policy.replace_quotas(identity.tenant_id, gateway_quotas)
+        try:
+            await self._repository.upsert_tenant_policy(policy, event)
+        except Exception:
+            if self._gateway_policy is not None and previous_gateway_quotas is not None:
+                await self._gateway_policy.replace_quotas(
+                    identity.tenant_id, previous_gateway_quotas
+                )
+            raise
         return policy
 
     async def list_outbox(

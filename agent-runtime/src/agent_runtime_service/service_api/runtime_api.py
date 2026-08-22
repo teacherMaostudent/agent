@@ -409,6 +409,15 @@ def complete_connector_task(
             result["artifact_id"] = artifact.artifact_id
             artifact_id = str(artifact.artifact_id)
             artifact_delivery_status = "DELIVERED"
+            if str(task["tool_name"]) == "controlled_scan":
+                request.app.state.container.run_store.register_artifact_ingestion(
+                    x_tenant_id,
+                    x_user_id,
+                    str(task["run_id"]),
+                    run.context.root_task_id or run.run_id,
+                    task_id,
+                    artifact_id,
+                )
         except Exception as exc:
             result["artifact_delivery_status"] = "PENDING"
             artifact_delivery_status = "PENDING"
@@ -1786,6 +1795,9 @@ def list_run_artifacts(
             {
                 "artifact_id": artifact.artifact_id,
                 "artifact_type": artifact.artifact_type,
+                "logical_name": artifact.logical_name or artifact.artifact_type,
+                "version": artifact.version,
+                "previous_artifact_id": artifact.previous_artifact_id,
                 "media_type": artifact.media_type,
                 "content_sha256": artifact.content_sha256,
                 "created_at": artifact.created_at.isoformat(),
@@ -1793,6 +1805,231 @@ def list_run_artifacts(
             for artifact in artifacts
         ]
     }
+
+
+def _record_artifact_read(
+    container,
+    run,
+    *,
+    user_id: str,
+    event_type: RuntimeEventType,
+    governance_type: str,
+    metadata: dict[str, object],
+) -> None:
+    """Append content-access evidence without persisting preview text or object locations."""
+    access_event = container.run_store.append_session_event(
+        run.context,
+        event_type,
+        status=run.status,
+        metadata={**metadata, "authorized_user_id": user_id},
+    )
+    container.publish_session_event(access_event)
+    container.run_store.enqueue_governance(
+        {
+            "event_id": f"gov_{access_event.event_id}",
+            "source_service": "agent-runtime",
+            "event_type": governance_type,
+            "trace_id": run.context.trace_id,
+            "tenant_id": run.context.tenant_id,
+            "occurred_at": access_event.occurred_at.isoformat(),
+            "payload": {
+                "run_id": run.run_id,
+                "authorized_user_id": user_id,
+                "session_event_id": access_event.event_id,
+                **metadata,
+            },
+        }
+    )
+    container.governance.flush()
+
+
+@router.get("/runs/{run_id}/artifact-ingestions")
+def list_run_artifact_ingestions(
+    run_id: str,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> dict:
+    """List controlled-scan promotion state for the owner or assigned reviewer."""
+    tenant_id, user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    store = request.app.state.container.run_store
+    run = store.get(tenant_id, run_id)
+    if run is None or not (
+        run.user_id == user_id or store.is_assigned_reviewer(tenant_id, run_id, user_id)
+    ):
+        raise HTTPException(status_code=404, detail="run not found")
+    items = store.list_artifact_ingestions(tenant_id, run_id)
+    # Runtime owns approval/submission; ingestion owns parsing/indexing. This bounded live
+    # projection avoids copying the downstream state into a second database.
+    ingestion = request.app.state.container.ingestion
+    for item in items:
+        job_id = str(item.get("ingestion_job_id") or "")
+        if not job_id:
+            continue
+        try:
+            job = ingestion.get_job(job_id, tenant_id=tenant_id, user_id=user_id)
+            item["downstream_status"] = str(job.get("status") or "UNKNOWN")
+            item["downstream_error"] = str(job.get("error") or "")[:1_000]
+        except Exception:
+            # Approval history remains readable during an ingestion outage; unavailable is
+            # explicit and is never rewritten as a successful index operation.
+            item["downstream_status"] = "UNAVAILABLE"
+            item["downstream_error"] = "ingestion status is temporarily unavailable"
+    return {"items": items}
+
+
+@router.post("/runs/{run_id}/artifact-ingestions/{artifact_id}/decision")
+def decide_run_artifact_ingestion(
+    run_id: str,
+    artifact_id: str,
+    payload: dict,
+    request: Request,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
+) -> dict:
+    """Consume one explicit decision before Desktop scan content may enter RAG."""
+    tenant_id, user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if "rag:ingest:approve" not in permissions:
+        raise HTTPException(status_code=403, detail="rag:ingest:approve permission is required")
+    if str(payload.get("confirm_artifact_id", "")) != artifact_id:
+        raise HTTPException(status_code=422, detail="confirm_artifact_id must match artifact_id")
+    store = request.app.state.container.run_store
+    run = store.get(tenant_id, run_id)
+    if run is None or not (
+        run.user_id == user_id or store.is_assigned_reviewer(tenant_id, run_id, user_id)
+    ):
+        raise HTTPException(status_code=404, detail="run not found")
+    approved = bool(payload.get("approved"))
+    reason = str(payload.get("reason", "")).strip()
+    if not reason:
+        raise HTTPException(status_code=422, detail="approval reason is required")
+    decision = store.decide_artifact_ingestion(
+        tenant_id,
+        run_id,
+        artifact_id,
+        user_id,
+        approved=approved,
+        reason=reason,
+    )
+    if decision is None:
+        raise HTTPException(status_code=409, detail="artifact approval is unavailable or consumed")
+    session_event = store.append_session_event(
+        run.context,
+        RuntimeEventType.ARTIFACT_INGESTION_DECIDED,
+        status=run.status,
+        metadata={
+            "artifact_id": artifact_id,
+            "approved": approved,
+            "approved_by": user_id,
+            "request_id": decision["request_id"],
+        },
+    )
+    request.app.state.container.publish_session_event(session_event)
+    store.enqueue_governance(
+        {
+            "event_id": f"gov_{session_event.event_id}",
+            "source_service": "agent-runtime",
+            "event_type": "artifact.ingestion.decided",
+            "trace_id": run.context.trace_id,
+            "tenant_id": tenant_id,
+            "occurred_at": session_event.occurred_at.isoformat(),
+            "payload": {
+                "run_id": run_id,
+                "artifact_id": artifact_id,
+                "approved": approved,
+                "approved_by": user_id,
+                "request_id": decision["request_id"],
+            },
+        }
+    )
+    request.app.state.container.governance.flush()
+    return decision
+
+
+@router.get("/runs/{run_id}/artifacts/{artifact_id}/preview")
+def get_run_artifact_preview(
+    run_id: str,
+    artifact_id: str,
+    request: Request,
+    max_chars: int = 50_000,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> dict:
+    """Return a bounded text preview after Run owner/share authorization and audit it."""
+    tenant_id, user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    container = request.app.state.container
+    run = container.run_store.get(tenant_id, run_id)
+    if run is None or not _can_read_run(container.run_store, tenant_id, run, user_id):
+        raise HTTPException(status_code=404, detail="run not found")
+    try:
+        preview = container.runtime_context.context.artifact_preview(
+            run.context.root_task_id or run.run_id,
+            artifact_id,
+            tenant_id=tenant_id,
+            max_chars=min(max(max_chars, 256), 100_000),
+        )
+    except httpx.HTTPStatusError as exc:
+        mapped = 404 if exc.response.status_code == 404 else exc.response.status_code
+        raise HTTPException(status_code=mapped, detail="artifact preview is unavailable") from exc
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="artifact preview is unavailable") from exc
+    _record_artifact_read(
+        container,
+        run,
+        user_id=user_id,
+        event_type=RuntimeEventType.ARTIFACT_PREVIEWED,
+        governance_type="artifact.previewed",
+        metadata={"artifact_id": artifact_id, "version": preview.version},
+    )
+    return preview.model_dump(mode="json")
+
+
+@router.get("/runs/{run_id}/artifacts/{artifact_id}/compare/{base_artifact_id}")
+def compare_run_artifacts(
+    run_id: str,
+    artifact_id: str,
+    base_artifact_id: str,
+    request: Request,
+    max_chars: int = 80_000,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+) -> dict:
+    """Compare immutable versions from the same Run without exposing their object references."""
+    tenant_id, user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    container = request.app.state.container
+    run = container.run_store.get(tenant_id, run_id)
+    if run is None or not _can_read_run(container.run_store, tenant_id, run, user_id):
+        raise HTTPException(status_code=404, detail="run not found")
+    try:
+        comparison = container.runtime_context.context.compare_artifacts(
+            run.context.root_task_id or run.run_id,
+            artifact_id,
+            base_artifact_id,
+            tenant_id=tenant_id,
+            max_chars=min(max(max_chars, 1_000), 100_000),
+        )
+    except httpx.HTTPStatusError as exc:
+        mapped = 404 if exc.response.status_code == 404 else exc.response.status_code
+        raise HTTPException(status_code=mapped, detail="artifact comparison is unavailable") from exc
+    except (httpx.HTTPError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="artifact comparison is unavailable") from exc
+    _record_artifact_read(
+        container,
+        run,
+        user_id=user_id,
+        event_type=RuntimeEventType.ARTIFACT_COMPARED,
+        governance_type="artifact.compared",
+        metadata={
+            "artifact_id": artifact_id,
+            "base_artifact_id": base_artifact_id,
+            "target_version": comparison.target_version,
+            "base_version": comparison.base_version,
+        },
+    )
+    return comparison.model_dump(mode="json")
 
 
 @router.get("/runs/{run_id}/artifacts/{artifact_id}/download")

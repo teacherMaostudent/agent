@@ -1,16 +1,78 @@
+import difflib
+import hashlib
 from io import BytesIO
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from platform_sdk.contracts.artifacts import (
     TaskArtifact,
+    TaskArtifactComparison,
     TaskArtifactCreate,
+    TaskArtifactPreview,
     TaskArtifactTextCreate,
 )
 
 from app.contracts.context import ContextAssembleRequest, ContextPackage, ConversationMessage
 
 router = APIRouter(prefix="/context", tags=["agent-context"])
+
+_PREVIEW_MEDIA_TYPES = {
+    "application/json",
+    "application/xml",
+    "application/yaml",
+    "application/x-yaml",
+    "text/csv",
+    "text/markdown",
+    "text/plain",
+}
+
+
+def _artifact_storage_key(container, artifact: TaskArtifact) -> str:
+    """Validate that Context owns the object's bucket and configured prefix."""
+    storage = container.artifact_delivery
+    if storage is None:
+        raise HTTPException(status_code=409, detail="artifact delivery is not configured")
+    parsed = urlparse(artifact.content_ref)
+    required_prefix = storage.prefix.strip("/")
+    key = parsed.path.lstrip("/")
+    if (
+        parsed.scheme != "s3"
+        or parsed.netloc != storage.bucket
+        or (required_prefix and not key.startswith(f"{required_prefix}/"))
+    ):
+        raise HTTPException(status_code=409, detail="artifact is not deliverable by this storage domain")
+    return key
+
+
+def _preview(container, artifact: TaskArtifact, max_chars: int) -> TaskArtifactPreview:
+    """Read and decode only an allow-listed, bounded textual prefix from object storage."""
+    media_type = artifact.media_type.split(";", 1)[0].strip().lower()
+    if not (media_type.startswith("text/") or media_type in _PREVIEW_MEDIA_TYPES):
+        raise HTTPException(status_code=415, detail="artifact media type is not previewable")
+    key = _artifact_storage_key(container, artifact)
+    bounded_chars = min(max(max_chars, 256), 200_000)
+    try:
+        payload, byte_truncated = container.artifact_delivery.read_bounded(
+            key, max_bytes=min(bounded_chars * 4, 800_000)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="artifact storage key is invalid") from exc
+    decoded = payload.decode("utf-8", errors="replace")
+    char_truncated = len(decoded) > bounded_chars
+    content = decoded[:bounded_chars]
+    truncated = byte_truncated or char_truncated
+    return TaskArtifactPreview(
+        artifact_id=artifact.artifact_id,
+        logical_name=artifact.logical_name or artifact.artifact_type,
+        version=artifact.version,
+        media_type=artifact.media_type,
+        content=content,
+        truncated=truncated,
+        content_sha256=artifact.content_sha256,
+        sha256_verified=(hashlib.sha256(payload).hexdigest() == artifact.content_sha256)
+        if not truncated
+        else None,
+    )
 
 
 @router.post("/tasks/{root_task_id}/artifacts", response_model=TaskArtifact, status_code=201)
@@ -67,19 +129,7 @@ def artifact_download_url(
     if artifact is None:
         raise HTTPException(status_code=404, detail="task artifact not found")
     storage = container.artifact_delivery
-    if storage is None:
-        raise HTTPException(status_code=409, detail="artifact delivery is not configured")
-    parsed = urlparse(artifact.content_ref)
-    required_prefix = storage.prefix.strip("/")
-    key = parsed.path.lstrip("/")
-    if (
-        parsed.scheme != "s3"
-        or parsed.netloc != storage.bucket
-        or (required_prefix and not key.startswith(f"{required_prefix}/"))
-    ):
-        # TaskArtifact 可以引用其他业务域内容，但 Context 绝不能为它们签名；应由该
-        # 业务域提供自己的授权下载器。
-        raise HTTPException(status_code=409, detail="artifact is not deliverable by this storage domain")
+    key = _artifact_storage_key(container, artifact)
     try:
         return {
             "url": storage.presign_download(key),
@@ -90,6 +140,70 @@ def artifact_download_url(
         }
     except ValueError as exc:
         raise HTTPException(status_code=409, detail="artifact storage key is invalid") from exc
+
+
+@router.get(
+    "/tasks/{root_task_id}/artifacts/{artifact_id}/preview",
+    response_model=TaskArtifactPreview,
+)
+def artifact_preview(
+    root_task_id: str,
+    artifact_id: str,
+    request: Request,
+    max_chars: int = 50_000,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+) -> TaskArtifactPreview:
+    """Return a bounded text preview after the caller's Runtime-level resource check."""
+    container = request.app.state.container
+    artifact = container.artifacts.get(x_tenant_id, root_task_id, artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="task artifact not found")
+    return _preview(container, artifact, max_chars)
+
+
+@router.get(
+    "/tasks/{root_task_id}/artifacts/{artifact_id}/compare/{base_artifact_id}",
+    response_model=TaskArtifactComparison,
+)
+def compare_artifacts(
+    root_task_id: str,
+    artifact_id: str,
+    base_artifact_id: str,
+    request: Request,
+    max_chars: int = 80_000,
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+) -> TaskArtifactComparison:
+    """Compare two textual versions from one logical series using a bounded unified diff."""
+    container = request.app.state.container
+    target = container.artifacts.get(x_tenant_id, root_task_id, artifact_id)
+    base = container.artifacts.get(x_tenant_id, root_task_id, base_artifact_id)
+    if target is None or base is None:
+        raise HTTPException(status_code=404, detail="task artifact not found")
+    target_name = target.logical_name or target.artifact_type
+    base_name = base.logical_name or base.artifact_type
+    if target_name != base_name:
+        raise HTTPException(status_code=409, detail="artifacts do not belong to the same series")
+    bounded = min(max(max_chars, 1_000), 200_000)
+    target_preview = _preview(container, target, bounded)
+    base_preview = _preview(container, base, bounded)
+    diff = "".join(
+        difflib.unified_diff(
+            base_preview.content.splitlines(keepends=True),
+            target_preview.content.splitlines(keepends=True),
+            fromfile=f"{base_name}@v{base.version}",
+            tofile=f"{target_name}@v{target.version}",
+        )
+    )
+    diff_truncated = len(diff) > bounded
+    return TaskArtifactComparison(
+        base_artifact_id=base.artifact_id,
+        target_artifact_id=target.artifact_id,
+        logical_name=target_name,
+        base_version=base.version,
+        target_version=target.version,
+        diff=diff[:bounded],
+        truncated=base_preview.truncated or target_preview.truncated or diff_truncated,
+    )
 
 
 @router.post("/tasks/{root_task_id}/artifacts/text", response_model=TaskArtifact, status_code=201)
@@ -120,6 +234,7 @@ def create_text_artifact(
             content_ref=f"s3://{storage.bucket}/{key}",
             content_sha256=checksum,
             media_type=payload.media_type,
+            logical_name=payload.logical_name,
         ),
     )
 

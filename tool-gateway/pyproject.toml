@@ -31,6 +31,7 @@ packages = ["app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["../platform-sdk", "../platform-infra"]
 addopts = "-ra --strict-markers"
 asyncio_mode = "auto"
 

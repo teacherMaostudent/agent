@@ -1,0 +1,39 @@
+groups:
+  - name: agent-platform-availability
+    rules:
+      - alert: AgentPlatformEndpointUnavailable
+        expr: probe_success{job="platform-health"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          owner: platform
+        annotations:
+          summary: "Agent Platform endpoint unavailable"
+          description: "{{ $labels.instance }} has failed mTLS readiness probes for two minutes."
+
+      - alert: AgentPlatformTelemetryPipelineUnavailable
+        expr: up{job="otel-collector"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          owner: observability
+        annotations:
+          summary: "OpenTelemetry metrics pipeline unavailable"
+
+      - alert: AgentRuntimeHighP95Latency
+        expr: max_over_time(probe_duration_seconds{job="platform-health", instance=~".*agent-runtime.*"}[10m]) > 5
+        for: 10m
+        labels:
+          severity: warning
+          owner: runtime
+        annotations:
+          summary: "Runtime p95 latency above five seconds"
+
+      - alert: LlmGatewayRateLimitAmplification
+        expr: sum(rate(llm_gateway_admission_total{outcome="rejected", reason=~".*RATE.*|.*QUOTA.*"}[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+          owner: llm-platform
+        annotations:
+          summary: "LLM admission rejects remain elevated"

@@ -7,6 +7,7 @@ from platform_infra.schema_registry import SchemaRegistry
 from app.application.compliance_service import ComplianceService
 from app.application.evaluation_service import EvaluationService
 from app.application.governance_service import GovernanceService
+from app.application.worm_export_service import WormExportService
 from app.core.config import Settings
 from app.infrastructure.llm_gateway_client import LlmGatewayClient
 from app.infrastructure.postgres_repository import PostgresRepository
@@ -35,6 +36,7 @@ class AppContainer:
         self.compliance = ComplianceService(
             self.repository, self.llm_gateway, settings.judge_primary_model
         )
+        self.worm_exports = WormExportService(self.repository, settings)
 
     async def start(self) -> None:
         """在接收审计或评测请求前初始化唯一持久化边界。"""
