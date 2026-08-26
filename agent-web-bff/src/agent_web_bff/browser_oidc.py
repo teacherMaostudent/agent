@@ -94,7 +94,9 @@ class BrowserOidcSessionMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
-        if path in {"/health/ready", "/auth/login", "/auth/callback"}:
+        # Do not inject a known-bad legacy token into logout.  This gives a user a deterministic
+        # recovery path after IdP claims, signing keys, or audience rules change.
+        if path in {"/health/ready", "/auth/login", "/auth/callback", "/auth/logout", "/auth/relogin"}:
             await self.app(scope, receive, send)
             return
         request = Request(scope)
@@ -203,11 +205,29 @@ def build_auth_router(settings: WebBffSettings, store: BrowserSessionStore) -> A
         )
         return response
 
-    @router.post("/auth/logout", status_code=204)
-    async def logout(request: Request) -> Response:
-        """Revoke the local session and expire its cookie without exposing the stored access token."""
+    @router.get("/auth/relogin")
+    async def relogin(request: Request) -> RedirectResponse:
+        """Clear an unverifiable browser session, then restart the PKCE login redirect.
+
+        This is intentionally limited to cookie revocation: cross-site navigation can at most
+        sign a user out, never mutate a business resource or elevate an identity.  Keeping the
+        recovery as a server-side redirect also avoids relying on blocked inline scripts/forms
+        under the BFF's strict Content Security Policy.
+        """
         await store.revoke(request.cookies.get(settings.session_cookie_name, ""))
-        response = Response(status_code=204)
+        response = RedirectResponse("/", status_code=303)
+        response.delete_cookie(settings.session_cookie_name, path="/")
+        return response
+
+    @router.post("/auth/logout", status_code=204)
+    async def logout(request: Request, return_to: str = "") -> Response:
+        """Revoke the local session and optionally return the browser to a fresh login flow."""
+        await store.revoke(request.cookies.get(settings.session_cookie_name, ""))
+        response: Response = (
+            RedirectResponse(_safe_return_path(return_to), status_code=303)
+            if return_to
+            else Response(status_code=204)
+        )
         response.delete_cookie(settings.session_cookie_name, path="/")
         return response
 

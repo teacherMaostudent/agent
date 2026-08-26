@@ -13,6 +13,7 @@ _ACTIVE = {"QUEUED", "RETRY", "RUNNING"}
 
 
 def _now() -> datetime:
+    """统一生成带 UTC 时区的当前时间，避免租约和重试在不同时区下产生歧义。"""
     return datetime.now(UTC)
 
 
@@ -25,11 +26,12 @@ class WormExportService:
     """
 
     def __init__(self, repository: Any, settings: Settings) -> None:
+        """保存作业仓储与导出限制配置；实际签名、验证和上传由独立 Worker 执行。"""
         self._repository = repository
         self._settings = settings
 
     async def create(self, tenant_id: str, requested_by: str) -> dict[str, Any]:
-        """Create one queued export, deduplicating concurrent active requests."""
+        """创建一个排队导出，并对同租户并发活动请求去重，避免重复 WORM 对象。"""
         existing = await self._repository.list_documents(tenant_id, WORM_EXPORT_JOB, 1_000)
         active = next((item for item in existing if item.get("status") in _ACTIVE), None)
         if active:
@@ -55,17 +57,17 @@ class WormExportService:
         )
 
     async def list(self, tenant_id: str, limit: int = 100) -> list[dict[str, Any]]:
-        """List only the caller tenant's export requests and storage references."""
+        """仅列出调用租户的导出请求和存储引用，保留租户数据边界。"""
         return await self._repository.list_documents(tenant_id, WORM_EXPORT_JOB, limit)
 
     async def get(self, tenant_id: str, job_id: str) -> dict[str, Any] | None:
-        """Read a single export without allowing a caller-supplied tenant override."""
+        """读取单个导出作业且不接受调用方覆盖租户，防止 ID 枚举越权。"""
         return await self._repository.get_document(tenant_id, WORM_EXPORT_JOB, job_id)
 
     async def requeue(
         self, tenant_id: str, job_id: str, requested_by: str
     ) -> dict[str, Any] | None:
-        """Explicitly requeue a failed/DLQ export and reset its retry budget."""
+        """显式重新排队失败或死信导出，并重置其重试预算与旧租约。"""
         current = await self.get(tenant_id, job_id)
         if not current:
             return None
@@ -88,7 +90,7 @@ class WormExportService:
         return replacement if swapped else await self.get(tenant_id, job_id)
 
     async def claim(self, worker_id: str) -> dict[str, Any] | None:
-        """Acquire one due job using a database CAS lease across worker replicas."""
+        """在多个 Worker 副本间用数据库 CAS 租约领取一个到期作业。"""
         now = _now()
         candidates = await self._repository.list_documents_all_tenants(WORM_EXPORT_JOB, 1_000)
         for current in candidates:
@@ -121,7 +123,7 @@ class WormExportService:
         return None
 
     async def complete(self, job: dict[str, Any], result: dict[str, Any]) -> None:
-        """Persist the final WORM reference only while this worker still owns the lease."""
+        """仅在本 Worker 仍持有租约时持久化最终 WORM 引用，防止陈旧执行者写入。"""
         current = await self.get(str(job["tenant_id"]), str(job["job_id"]))
         if not current or current.get("lease_owner") != job.get("lease_owner"):
             return
@@ -139,7 +141,7 @@ class WormExportService:
         )
 
     async def fail(self, job: dict[str, Any], error: Exception) -> None:
-        """Schedule bounded exponential retry, then isolate exhausted jobs in DLQ."""
+        """按上限执行指数退避重试，并将耗尽尝试次数的作业隔离到死信队列。"""
         current = await self.get(str(job["tenant_id"]), str(job["job_id"]))
         if not current or current.get("lease_owner") != job.get("lease_owner"):
             return
@@ -161,7 +163,7 @@ class WormExportService:
 
 
 def _parse_time(value: Any) -> datetime | None:
-    """Parse stored UTC timestamps; malformed scheduling data fails closed as absent."""
+    """解析已存 UTC 时间；格式异常的调度值按不存在处理，避免错误作业被提前执行。"""
     if not value:
         return None
     try:

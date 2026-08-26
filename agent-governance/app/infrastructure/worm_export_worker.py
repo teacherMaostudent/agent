@@ -13,7 +13,7 @@ from app.infrastructure.worm_exporter import export_tenant
 
 
 async def run_worker(settings: Settings) -> None:
-    """Continuously claim durable jobs and isolate exhausted exports in DLQ."""
+    """持续领取持久导出作业，并将耗尽重试预算的导出隔离至死信队列。"""
     container = AppContainer(settings)
     await container.start()
     worker_id = f"{socket.gethostname()}-{os.getpid()}-{uuid4().hex[:8]}"
@@ -30,5 +30,5 @@ async def run_worker(settings: Settings) -> None:
 
 
 def main() -> None:
-    """Start the worker process using the same validated Governance configuration."""
+    """使用同一份已校验 Governance 配置启动 WORM 导出 Worker 进程。"""
     asyncio.run(run_worker(Settings()))

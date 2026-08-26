@@ -5,11 +5,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /service
 COPY platform-infra /platform-infra
+# Tool Gateway consumes the shared desktop connector contract at runtime. Keep the
+# dependency explicit in the image instead of relying on the source-tree PYTHONPATH
+# used by tests, otherwise the production container fails during module import.
+COPY platform-sdk /platform-sdk
 COPY platform-contracts /platform-contracts
 COPY tool-gateway/pyproject.toml tool-gateway/README.md ./
 COPY tool-gateway/app ./app
 COPY tool-gateway/config ./config
-RUN python -m pip install --no-cache-dir /platform-infra .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install /platform-infra /platform-sdk .
 
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /service/data \

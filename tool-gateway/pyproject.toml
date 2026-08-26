@@ -9,6 +9,7 @@ description = "Governed execution gateway for enterprise Agent tools."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "agent-platform-sdk>=0.1.0",
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
   "jsonschema>=4.25,<5",

@@ -407,7 +407,7 @@ class GovernanceRepositoryOperations:
     async def list_documents_all_tenants(
         self, kind: str, limit: int = 1_000
     ) -> list[dict[str, Any]]:
-        """List service-owned work items across tenants for background workers only.
+        """仅为后台工作负载列出跨租户的服务自有作业，绝不暴露给请求入口。
 
         This method is deliberately absent from request-facing services. Tenant-scoped
         APIs must continue to use :meth:`list_documents`; the cross-tenant read exists
@@ -415,6 +415,7 @@ class GovernanceRepositoryOperations:
         """
 
         def operation(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+            """在单一 SQLite 连接中读取受限跨租户后台作业，HTTP 请求路径不可调用。"""
             rows = connection.execute(
                 """
                 SELECT payload_json FROM governance_documents
@@ -434,7 +435,7 @@ class GovernanceRepositoryOperations:
         expected: dict[str, Any],
         replacement: dict[str, Any],
     ) -> bool:
-        """Atomically replace a work item only if its complete payload is unchanged.
+        """仅在完整载荷未变化时原子替换作业，用载荷比较实现跨副本可移植 CAS。
 
         The payload comparison is the repository's portable CAS token. It prevents
         two worker replicas from acquiring the same export without relying on a
@@ -443,6 +444,7 @@ class GovernanceRepositoryOperations:
         from datetime import UTC, datetime
 
         def operation(connection: sqlite3.Connection) -> bool:
+            """在同一写事务中比较旧载荷并写入新载荷，返回是否成功获得 CAS。"""
             cursor = connection.execute(
                 """
                 UPDATE governance_documents SET payload_json = ?, updated_at = ?

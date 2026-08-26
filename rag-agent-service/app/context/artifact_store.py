@@ -59,7 +59,7 @@ class TaskArtifactStore:
         logical_name: str,
         artifact_id: str,
     ) -> tuple[int, str | None]:
-        """CAS-allocate a monotonic version across concurrent Context replicas.
+        """在并发 Context 副本之间以 CAS 分配单调递增版本号，保持 Artifact 不可变。
 
         The series head is a separate coordination record because Task Artifacts remain
         immutable. A failed create can leave a version gap, which is auditable and safer than

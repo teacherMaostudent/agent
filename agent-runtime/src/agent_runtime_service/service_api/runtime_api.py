@@ -120,9 +120,19 @@ def _public_result(result: dict) -> dict:
     return {key: value for key, value in result.items() if not key.startswith("_")}
 
 
-def _can_read_run(store, tenant_id: str, run, user_id: str) -> bool:
-    """Owner 或明确 share 才能读取 Run；Review 走独立端点，不混入 Workspace 规则。"""
-    return run.user_id == user_id or store.is_shared_with(tenant_id, run.run_id, user_id)
+def _can_read_run(
+    store, tenant_id: str, run, user_id: str, permissions: frozenset[str] = frozenset()
+) -> bool:
+    """判定单个 Run 的读取资格，不能把普通角色误解释成租户范围的数据旁路。
+
+    ``run:tenant:read`` is an explicit, audited administrator-read capability.  It grants only
+    observation of Runs in the caller's own tenant; owner-only control actions remain unchanged.
+    """
+    return (
+        "run:tenant:read" in permissions
+        or run.user_id == user_id
+        or store.is_shared_with(tenant_id, run.run_id, user_id)
+    )
 
 
 def _review_projection(run, assignment: dict[str, str]) -> dict:
@@ -859,6 +869,10 @@ def _trusted_identity(
     OIDC 启用时 Middleware 已覆盖请求 Header；此处再要求验证声明存在，防止某个
     路由被错误挂到中间件之外。关闭 OIDC 仅是本地开发兼容路径，不能作为部署身份根。
     """
+    # FastAPI resolves ``Header`` defaults before production calls reach this helper.  Unit tests
+    # invoke endpoint functions directly, where an omitted optional Header remains a descriptor;
+    # normalize it to the same empty-permission meaning instead of weakening authorization.
+    permissions_value = permissions_header if isinstance(permissions_header, str) else ""
     settings = request.app.state.container.settings
     claims = request.scope.get("auth.claims")
     if settings.oidc_enabled and not isinstance(claims, dict):
@@ -867,9 +881,9 @@ def _trusted_identity(
         # OIDC middleware has already deleted caller values and rebuilt these
         # headers from configurable claim mappings. Reading the rebuilt values
         # keeps Runtime compatible with enterprise-specific tenant/user claims.
-        permissions = {item.strip() for item in permissions_header.split(",") if item.strip()}
+            permissions = {item.strip() for item in permissions_value.split(",") if item.strip()}
     else:
-        permissions = {item.strip() for item in permissions_header.split(",") if item.strip()}
+        permissions = {item.strip() for item in permissions_value.split(",") if item.strip()}
     if not tenant_id or not user_id:
         raise HTTPException(status_code=401, detail="trusted tenant and user identity are required")
     return tenant_id, user_id, permissions
@@ -1683,11 +1697,16 @@ def get_run(
     request: Request,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
 ) -> dict:
     """读取租户范围内的运行或异步队列状态，不返回其他租户的检查点/提交内容。"""
-    x_tenant_id, x_user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    x_tenant_id, x_user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
     run = request.app.state.container.run_store.get(x_tenant_id, run_id)
-    if run is not None and not _can_read_run(request.app.state.container.run_store, x_tenant_id, run, x_user_id):
+    if run is not None and not _can_read_run(
+        request.app.state.container.run_store, x_tenant_id, run, x_user_id, permissions
+    ):
         raise HTTPException(status_code=404, detail="run not found")
     if run is None:
         queued = _capability(request.app.state.container, RuntimeCapability.WORKFLOW).get(
@@ -1707,19 +1726,25 @@ def list_my_runs(
     limit: int = 30,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
 ) -> dict:
-    """返回当前身份拥有的任务列表，而不是暴露可枚举的租户全量运行。
+    """Return owned/shared runs, or a tenant-admin observation projection when explicitly allowed.
 
     Workspace 只能基于该端点构建“我的任务”。Review 的团队队列必须等待显式的
     assignment/share 数据模型和单独 permission 后再提供，不能通过放宽 owner 条件实现。
     """
-    tenant_id, user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    tenant_id, user_id, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
     # Limit is bounded at the API boundary as well as in the repository so a future storage
     # implementation cannot accidentally turn one Workspace request into a tenant-wide scan.
-    runs = request.app.state.container.run_store.list_for_user(
-        tenant_id, user_id, limit=min(max(limit, 1), 100)
+    bounded_limit = min(max(limit, 1), 100)
+    tenant_wide = "run:tenant:read" in permissions
+    runs = (
+        request.app.state.container.run_store.list_for_tenant(tenant_id, limit=bounded_limit)
+        if tenant_wide
+        else request.app.state.container.run_store.list_for_user(tenant_id, user_id, limit=bounded_limit)
     )
     return {
+        "scope": "tenant-admin" if tenant_wide else "owned-or-shared",
         "items": [
             {
                 "run_id": run.run_id,
@@ -1774,16 +1799,17 @@ def list_run_artifacts(
     limit: int = 100,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
 ) -> dict:
     """投影已授权 Run 的 Artifact 索引，绝不把 content_ref 或对象存储位置交给浏览器。
 
     Artifact 的原文和下载授权属于其数据域；Workspace 只获得可审计的类型、哈希和
     创建时间。共享读者可以查看相同索引，但不能由此推导对象存储路径或凭据。
     """
-    tenant_id, user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    tenant_id, user_id, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
     container = request.app.state.container
     run = container.run_store.get(tenant_id, run_id)
-    if run is None or not _can_read_run(container.run_store, tenant_id, run, user_id):
+    if run is None or not _can_read_run(container.run_store, tenant_id, run, user_id, permissions):
         raise HTTPException(status_code=404, detail="run not found")
     artifacts = container.runtime_context.context.list_task_artifacts(
         run.context.root_task_id or run.run_id,
@@ -1816,7 +1842,7 @@ def _record_artifact_read(
     governance_type: str,
     metadata: dict[str, object],
 ) -> None:
-    """Append content-access evidence without persisting preview text or object locations."""
+    """追加内容访问证据，但不把预览正文或对象存储位置写入 Runtime 审计事件。"""
     access_event = container.run_store.append_session_event(
         run.context,
         event_type,
@@ -1849,13 +1875,16 @@ def list_run_artifact_ingestions(
     request: Request,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
 ) -> dict:
-    """List controlled-scan promotion state for the owner or assigned reviewer."""
-    tenant_id, user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    """向所有者、分配审查者或显式租户观察员返回 Artifact 摄取与晋升状态。"""
+    tenant_id, user_id, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
     store = request.app.state.container.run_store
     run = store.get(tenant_id, run_id)
     if run is None or not (
-        run.user_id == user_id or store.is_assigned_reviewer(tenant_id, run_id, user_id)
+        "run:tenant:read" in permissions
+        or run.user_id == user_id
+        or store.is_assigned_reviewer(tenant_id, run_id, user_id)
     ):
         raise HTTPException(status_code=404, detail="run not found")
     items = store.list_artifact_ingestions(tenant_id, run_id)
@@ -1888,7 +1917,7 @@ def decide_run_artifact_ingestion(
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
     x_permissions: str = Header(default="", alias="X-Permissions"),
 ) -> dict:
-    """Consume one explicit decision before Desktop scan content may enter RAG."""
+    """在桌面扫描内容进入 RAG 前消费一次显式审批决定，并固定审批理由。"""
     tenant_id, user_id, permissions = _trusted_identity(
         request, x_tenant_id, x_user_id, x_permissions
     )
@@ -1957,12 +1986,13 @@ def get_run_artifact_preview(
     max_chars: int = 50_000,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
 ) -> dict:
-    """Return a bounded text preview after Run owner/share authorization and audit it."""
-    tenant_id, user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    """经 Run 所有者/共享授权后返回受限文本预览，并记录每次内容访问审计。"""
+    tenant_id, user_id, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
     container = request.app.state.container
     run = container.run_store.get(tenant_id, run_id)
-    if run is None or not _can_read_run(container.run_store, tenant_id, run, user_id):
+    if run is None or not _can_read_run(container.run_store, tenant_id, run, user_id, permissions):
         raise HTTPException(status_code=404, detail="run not found")
     try:
         preview = container.runtime_context.context.artifact_preview(
@@ -1996,12 +2026,13 @@ def compare_run_artifacts(
     max_chars: int = 80_000,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
 ) -> dict:
-    """Compare immutable versions from the same Run without exposing their object references."""
-    tenant_id, user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    """比较同一 Run 的不可变工件版本，不向浏览器泄露底层对象存储引用。"""
+    tenant_id, user_id, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
     container = request.app.state.container
     run = container.run_store.get(tenant_id, run_id)
-    if run is None or not _can_read_run(container.run_store, tenant_id, run, user_id):
+    if run is None or not _can_read_run(container.run_store, tenant_id, run, user_id, permissions):
         raise HTTPException(status_code=404, detail="run not found")
     try:
         comparison = container.runtime_context.context.compare_artifacts(
@@ -2039,12 +2070,13 @@ def get_run_artifact_download(
     request: Request,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
 ) -> dict[str, str | int | bool]:
     """签发短期下载授权并记录不含 URL/对象键的访问事实。"""
-    tenant_id, user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    tenant_id, user_id, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
     container = request.app.state.container
     run = container.run_store.get(tenant_id, run_id)
-    if run is None or not _can_read_run(container.run_store, tenant_id, run, user_id):
+    if run is None or not _can_read_run(container.run_store, tenant_id, run, user_id, permissions):
         raise HTTPException(status_code=404, detail="run not found")
     try:
         context_client = container.runtime_context.context
@@ -2331,12 +2363,13 @@ def get_run_audit_events(
     request: Request,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
 ) -> dict:
-    """以 Run 所有权为边界代理读取 Governance 审计事实，桌面端不接触审计员密钥。"""
-    tenant_id, user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    """为所有者或显式租户观察员读取 Governance 审计事实，治理不可用时明确失败。"""
+    tenant_id, user_id, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
     container = request.app.state.container
     run = container.run_store.get(tenant_id, run_id)
-    if run is None or run.user_id != user_id:
+    if run is None or not _can_read_run(container.run_store, tenant_id, run, user_id, permissions):
         raise HTTPException(status_code=404, detail="run not found")
     if not container.settings.governance_base_url:
         return {"items": [], "status": "unconfigured"}
@@ -2359,16 +2392,17 @@ async def stream_run_events(
     after_sequence: int = 0,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="", alias="X-Permissions"),
 ) -> StreamingResponse:
     """以 SSE 从已提交 Session Ledger 流式输出单个 Run 事件，不依赖单进程 Event Bus。"""
     if after_sequence < 0:
         raise HTTPException(status_code=422, detail="after_sequence must be non-negative")
-    x_tenant_id, x_user_id, _ = _trusted_identity(request, x_tenant_id, x_user_id, "")
+    x_tenant_id, x_user_id, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
     store = request.app.state.container.run_store
     run = store.get(x_tenant_id, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
-    if run.user_id != x_user_id:
+    if not _can_read_run(store, x_tenant_id, run, x_user_id, permissions):
         raise HTTPException(status_code=404, detail="run not found")
 
     async def event_stream():

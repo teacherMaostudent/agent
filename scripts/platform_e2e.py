@@ -43,8 +43,19 @@ def spec() -> dict[str, Any]:
                 {"node_id": "answer", "kind": "answer", "config": {}},
             ],
             "edges": [
-                {"from_node": "decide", "to_node": "retrieve"},
-                {"from_node": "retrieve", "to_node": "answer"},
+                # 真实模型可以先检索，也可以在无知识绑定时直接回答；两条转移均须在
+                # Release 中显式声明，不能依赖离线引擎总会选择 RETRIEVE 的偶然行为。
+                {
+                    "from_node": "decide",
+                    "to_node": "retrieve",
+                    "condition": 'decision.action == "RETRIEVE"',
+                },
+                {
+                    "from_node": "decide",
+                    "to_node": "answer",
+                    "condition": 'decision.action == "ANSWER"',
+                },
+                {"from_node": "retrieve", "to_node": "decide"},
             ],
         },
         "prompt": {"prompt_id": "e2e-prompt", "system_template": "Answer from evidence.", "variables": []},
@@ -109,7 +120,17 @@ def desktop_spec() -> dict[str, Any]:
                     "required_permissions": ["file:scan"],
                 }
             ],
-            "labels": {"desktop_baseline": "v4", "fixture": "desktop-local"},
+            # 外部模型单次调用在网络抖动时可超过 30 秒。桌面基线的上限必须覆盖一次
+            # 规划、一次工具决策和一次最终回答；仍由成本、调用次数及步骤上限共同约束。
+            "runtime_limits": {
+                "max_steps": 8,
+                "max_llm_calls": 4,
+                "max_tool_calls": 3,
+                "max_retrieval_rounds": 3,
+                "max_execution_seconds": 180,
+                "max_cost_usd": 1.0,
+            },
+            "labels": {"desktop_baseline": "v6", "fixture": "desktop-local"},
         }
     )
     return value
@@ -158,7 +179,7 @@ def ensure_desktop_release(client: httpx.Client) -> None:
     else:
         agent_response.raise_for_status()
         agent = agent_response.json()
-        if agent.get("draft", {}).get("labels", {}).get("desktop_baseline") != "v4":
+        if agent.get("draft", {}).get("labels", {}).get("desktop_baseline") != "v6":
             request(
                 client,
                 "PUT",
@@ -177,7 +198,7 @@ def ensure_desktop_release(client: httpx.Client) -> None:
         headers=manage,
     )
     version = next(
-        (item for item in versions if item["semantic_version"] == "1.3.0"),
+        (item for item in versions if item["semantic_version"] == "1.5.0"),
         None,
     )
     if version is None:
@@ -187,8 +208,8 @@ def ensure_desktop_release(client: httpx.Client) -> None:
             f"{BASE['control']}/v1/agents/{DESKTOP_AGENT}/versions",
             headers=manage,
             json={
-                "semantic_version": "1.3.0",
-                "change_summary": "Add audited decision conditions to the desktop controlled scan graph",
+                "semantic_version": "1.5.0",
+                "change_summary": "Separate hosted-model timeout from the end-to-end desktop deadline",
             },
         )
 
@@ -224,7 +245,9 @@ def ensure_desktop_release(client: httpx.Client) -> None:
 
 
 def main() -> int:
-    with httpx.Client(timeout=15) as client:
+    # 真实模型模式一次 Run 可以包含多次上游调用；15 秒只适合离线确定性路径，
+    # 会把仍在执行的正常 Run 错判为联调失败。
+    with httpx.Client(timeout=90) as client:
         for target in (f"{BASE['control']}/health/ready", f"{BASE['governance']}/health/ready",
                        f"{BASE['runtime']}/api/v1/health/ready", f"{BASE['tool']}/api/v1/health/ready"):
             wait_for(client, target)

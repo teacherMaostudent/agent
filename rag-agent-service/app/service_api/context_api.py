@@ -28,7 +28,7 @@ _PREVIEW_MEDIA_TYPES = {
 
 
 def _artifact_storage_key(container, artifact: TaskArtifact) -> str:
-    """Validate that Context owns the object's bucket and configured prefix."""
+    """校验对象属于 Context 配置的桶与前缀，禁止任意 s3 引用借下载接口越权。"""
     storage = container.artifact_delivery
     if storage is None:
         raise HTTPException(status_code=409, detail="artifact delivery is not configured")
@@ -45,7 +45,7 @@ def _artifact_storage_key(container, artifact: TaskArtifact) -> str:
 
 
 def _preview(container, artifact: TaskArtifact, max_chars: int) -> TaskArtifactPreview:
-    """Read and decode only an allow-listed, bounded textual prefix from object storage."""
+    """仅读取白名单文本类型的有限前缀并解码，防止预览接口变成通用对象代理。"""
     media_type = artifact.media_type.split(";", 1)[0].strip().lower()
     if not (media_type.startswith("text/") or media_type in _PREVIEW_MEDIA_TYPES):
         raise HTTPException(status_code=415, detail="artifact media type is not previewable")
@@ -153,7 +153,7 @@ def artifact_preview(
     max_chars: int = 50_000,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
 ) -> TaskArtifactPreview:
-    """Return a bounded text preview after the caller's Runtime-level resource check."""
+    """在 Runtime 已完成资源授权后返回受限文本预览，媒体类型与字符数均受控。"""
     container = request.app.state.container
     artifact = container.artifacts.get(x_tenant_id, root_task_id, artifact_id)
     if artifact is None:
@@ -173,7 +173,7 @@ def compare_artifacts(
     max_chars: int = 80_000,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
 ) -> TaskArtifactComparison:
-    """Compare two textual versions from one logical series using a bounded unified diff."""
+    """仅比较同一逻辑序列的两个文本版本，并限制 unified diff 的读取和输出长度。"""
     container = request.app.state.container
     target = container.artifacts.get(x_tenant_id, root_task_id, artifact_id)
     base = container.artifacts.get(x_tenant_id, root_task_id, base_artifact_id)

@@ -56,7 +56,7 @@ class ContextClient(Protocol):
     def artifact_download_authorization(
         self, root_task_id: str, artifact_id: str, *, tenant_id: str
     ) -> dict[str, object]:
-        """Return URL expiry and range support after the caller's resource authorization."""
+        """在调用方完成资源授权后返回短期 URL 的过期时间与分段下载能力。"""
         ...
 
     def create_text_artifact(
@@ -68,7 +68,7 @@ class ContextClient(Protocol):
     def artifact_preview(
         self, root_task_id: str, artifact_id: str, *, tenant_id: str, max_chars: int = 50_000
     ) -> TaskArtifactPreview:
-        """Read a bounded text projection after Runtime has authorized the Run relation."""
+        """在 Runtime 授权 Run 关联后读取受限文本投影，禁止客户端自行读取对象。"""
         ...
 
     def compare_artifacts(
@@ -80,7 +80,7 @@ class ContextClient(Protocol):
         tenant_id: str,
         max_chars: int = 80_000,
     ) -> TaskArtifactComparison:
-        """Return a bounded diff for two immutable versions in one logical series."""
+        """返回同一逻辑序列中两个不可变版本的受限差异结果。"""
         ...
 
 
@@ -128,7 +128,7 @@ class LocalContextClient:
     def artifact_download_authorization(
         self, root_task_id: str, artifact_id: str, *, tenant_id: str
     ) -> dict[str, object]:
-        """Local tests have no data plane and therefore cannot manufacture signed authorization."""
+        """本地测试适配器没有数据面，不能伪造任何签名下载授权。"""
         del root_task_id, artifact_id, tenant_id
         raise RuntimeError("artifact delivery is not available in local context adapter")
 
@@ -142,7 +142,7 @@ class LocalContextClient:
     def artifact_preview(
         self, root_task_id: str, artifact_id: str, *, tenant_id: str, max_chars: int = 50_000
     ) -> TaskArtifactPreview:
-        """Local adapter has no artifact data plane and must not fabricate preview content."""
+        """本地适配器没有 Artifact 数据面，不能伪造预览正文。"""
         del root_task_id, artifact_id, tenant_id, max_chars
         raise RuntimeError("artifact preview is not available in local context adapter")
 
@@ -155,7 +155,7 @@ class LocalContextClient:
         tenant_id: str,
         max_chars: int = 80_000,
     ) -> TaskArtifactComparison:
-        """Local adapter has no immutable object versions to compare."""
+        """本地适配器没有不可变对象版本，不能伪造版本比较结果。"""
         del root_task_id, artifact_id, base_artifact_id, tenant_id, max_chars
         raise RuntimeError("artifact comparison is not available in local context adapter")
 
@@ -265,7 +265,7 @@ class HttpContextClient:
     def artifact_download_authorization(
         self, root_task_id: str, artifact_id: str, *, tenant_id: str
     ) -> dict[str, object]:
-        """Return the full short-lived data-plane authorization without logging its URL."""
+        """返回完整短期数据面授权但不记录 URL，避免签名凭据进入日志。"""
         response = self.client.get(
             f"{self.base_url}/api/v1/context/tasks/{root_task_id}/artifacts/{artifact_id}/download-url",
             headers={**self._headers(), "X-Tenant-Id": tenant_id},
@@ -298,7 +298,7 @@ class HttpContextClient:
     def artifact_preview(
         self, root_task_id: str, artifact_id: str, *, tenant_id: str, max_chars: int = 50_000
     ) -> TaskArtifactPreview:
-        """Request the Context-owned bounded text projection; never follow a browser URL."""
+        """请求由 Context 持有的受限文本投影，客户端绝不跟随浏览器下载 URL。"""
         response = self.client.get(
             f"{self.base_url}/api/v1/context/tasks/{root_task_id}/artifacts/{artifact_id}/preview",
             params={"max_chars": min(max(max_chars, 256), 200_000)},
@@ -317,7 +317,7 @@ class HttpContextClient:
         tenant_id: str,
         max_chars: int = 80_000,
     ) -> TaskArtifactComparison:
-        """Delegate bounded object reads and diff generation to the Context ownership boundary."""
+        """将受限对象读取和差异生成委托给 Context 数据所有权边界。"""
         response = self.client.get(
             f"{self.base_url}/api/v1/context/tasks/{root_task_id}/artifacts/{artifact_id}/compare/{base_artifact_id}",
             params={"max_chars": min(max(max_chars, 1_000), 200_000)},

@@ -18,11 +18,12 @@ class ArtifactIngestionRelay:
     """Submit approval-bound immutable artifacts with leases and bounded retries."""
 
     def __init__(self, container) -> None:
+        """绑定 Runtime 容器和摄取 Relay 配置；Relay 不拥有新的执行状态机。"""
         self.container = container
         self.settings = container.settings
 
     def run_once(self) -> dict[str, int]:
-        """Process one claimed batch; no Desktop action is ever repeated by this relay."""
+        """交付一批已审批 Artifact；Context 失败只重试交付，绝不要求桌面端重新扫描。"""
         claimed = self.container.run_store.claim_artifact_ingestions(
             limit=self.settings.artifact_ingestion_relay_batch_size,
             lease_seconds=self.settings.artifact_ingestion_relay_lease_seconds,
@@ -122,7 +123,7 @@ class ArtifactIngestionRelay:
 
 
 async def run_worker() -> None:
-    """Poll until process shutdown while always releasing shared clients and stores."""
+    """持续轮询审批后的摄取任务，并在进程退出时关闭共享客户端和状态存储。"""
     from agent_runtime_service.runtime.container import AgentRuntimeContainer
 
     container = AgentRuntimeContainer(build_async_queue=False)
@@ -148,5 +149,5 @@ async def run_worker() -> None:
 
 
 def main() -> None:
-    """Entry point for the independently scalable Runtime relay workload."""
+    """作为可独立扩缩容的 Runtime Artifact 摄取 Relay 进程入口。"""
     asyncio.run(run_worker())

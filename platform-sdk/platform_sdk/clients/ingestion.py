@@ -23,6 +23,7 @@ class IngestionClient:
         *,
         mtls: dict | None = None,
     ) -> None:
+        """创建摄取 API 客户端并固定工作负载身份、超时与可选 mTLS 配置。"""
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.service_api_key = service_api_key
@@ -36,7 +37,7 @@ class IngestionClient:
         tenant_id: str,
         user_id: str,
     ) -> ArtifactIngestionReceipt:
-        """Create or return the idempotent document/job pair for one approved artifact."""
+        """为一个已审批 Artifact 创建或返回幂等的文档/作业对，避免 Relay 重试重复入队。"""
         headers = {
             "X-Tenant-Id": tenant_id,
             "X-User-Id": user_id,
@@ -57,7 +58,7 @@ class IngestionClient:
         return ArtifactIngestionReceipt.model_validate(response.json())
 
     def get_job(self, job_id: str, *, tenant_id: str, user_id: str) -> dict:
-        """Read the ingestion service's authoritative job state for UI projection only."""
+        """读取摄取服务的权威作业状态，仅供 Runtime/Web 投影而不在本地复制状态机。"""
         headers = {
             "X-Tenant-Id": tenant_id,
             "X-User-Id": user_id,
@@ -78,5 +79,5 @@ class IngestionClient:
         return payload if isinstance(payload, dict) else {}
 
     def close(self) -> None:
-        """Release the pooled HTTP connections owned by this workload."""
+        """释放该工作负载拥有的 HTTP 连接池，容器退出时必须调用。"""
         self.client.close()

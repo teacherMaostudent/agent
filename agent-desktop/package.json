@@ -1,6 +1,6 @@
 {
   "name": "agent-desktop",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "author": "teacherMaostudent",
   "description": "Secure Electron client for the Enterprise Agent Execution Platform.",
@@ -8,7 +8,7 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm run build && node scripts/dev.mjs",
-    "build": "node scripts/clean.mjs && vite build && tsc -p tsconfig.main.json",
+    "build": "node scripts/clean.mjs && vite build && node scripts/fix-file-protocol-html.mjs && tsc -p tsconfig.main.json",
     "dist": "pnpm run build && electron-builder --publish never",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
     "test": "vitest run --config vitest.config.ts"

@@ -122,7 +122,7 @@ class S3ObjectStorage:
         )
 
     def read_bounded(self, key: str, *, max_bytes: int) -> tuple[bytes, bool]:
-        """Read a bounded leading range for preview without becoming an object proxy."""
+        """为预览读取对象的受限前缀，避免基础设施层成为无边界对象代理。"""
         normalized_key = key.strip().lstrip("/")
         if not normalized_key or ".." in Path(normalized_key).parts:
             raise ValueError("invalid object storage key")

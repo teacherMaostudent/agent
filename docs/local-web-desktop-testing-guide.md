@@ -30,6 +30,10 @@ Set-Location "C:\Users\Administrator\Documents\AI工作\agent"
 .\scripts\start-platform.ps1 -Action Start
 ```
 
+脚本会先串行验证并缓存构建基础镜像和固定版本的 MinIO/`mc` 镜像。若此阶段失败，报错对象就是
+尚未缓存的具体镜像；不要反复删除业务容器或数据卷。MinIO 使用官方已发布的
+`RELEASE.2025-09-07T16-13-09Z`，`mc` 使用 `RELEASE.2025-08-13T08-35-41Z`。
+
 脚本会启动七服务、Web/BFF、MinIO、摄取 Worker、Connector Artifact Relay、Artifact Ingestion
 Relay 和 WORM Worker，并准备 `demo / general-agent / local` Release。默认还运行跨服务 E2E；只有排查
 启动问题时才使用 `-SkipE2E`，不能把“服务能启动”等同于“联调通过”。
@@ -61,6 +65,10 @@ Relay 和 WORM Worker，并准备 `demo / general-agent / local` Release。默�
 4. 查看引用和 Evidence ID；离线模式没有证据时应明确显示不足，不能生成伪引用。
 5. 打开文本 Artifact 在线预览；完整对象应显示 SHA-256 已验证，超限内容应显示已截断。
 6. 同一逻辑产物存在上一版本时点击“对比上一版”，确认只显示同一版本序列的 unified diff。
+
+本地 `admin` 还具有显式的 `run:tenant:read` 观察权限，因此 Workspace 会标注“管理员视图”，并显示
+`demo` 租户内由 Desktop `desktop-user` 创建的任务。该权限只扩大读取范围：非本人任务仍不能取消、
+Steering、共享、审批或改写其 Artifact 摄取决定。
 
 ## 4. Review 测试
 
@@ -119,6 +127,16 @@ pnpm run dev
 
 ## 7. Keycloak OIDC 联调
 
+默认启动只提供本地 Header 身份，因此不会监听 `9110`。需要验证真实登录时，使用统一脚本启动身份覆盖层：
+
+```powershell
+.\scripts\start-platform.ps1 -Action Start -WithIdentity
+```
+
+该参数会启动 Keycloak、导入本地 Realm，并让 Agent Web BFF 强制使用 OIDC/PKCE；此时 `9010` 会跳转到登录页。
+本地 Realm 仅请求 `openid agent-platform-claims`，后者包含租户、权限与角色 Claim；它不依赖企业 IdP 中
+常见但本地未导入的 `profile`、`email` Scope。
+
 需要验证真实浏览器登录时，停止普通本地拓扑后使用 Overlay：
 
 ```powershell
@@ -126,11 +144,18 @@ docker compose -f compose.platform.yaml -f compose.identity.yaml up --build -d
 python scripts/platform_e2e.py
 ```
 
-Keycloak 地址是 `http://127.0.0.1:9110`。本地管理账号为 `admin / local-keycloak-admin`；演示用户
-`demo-operator` 首次登录必须修改临时密码。它只用于本机协议验证，不能复制到生产。
+Keycloak 地址是 `http://127.0.0.1:9110`。本地 Keycloak 的管理账号仅用于 Realm 管理；不要把它和
+Web 平台用户混用。平台管理员应使用已在 Keycloak 中创建的 `admin` 平台账号登录 `9010`。该账号拥有
+`agent-user`、`agent-reviewer`、`platform-operator`、`governance-auditor` 四类人类角色，因此可进入
+**我的任务、审查中心、平台控制台**；它不拥有 `platform-workload`，后者是服务间委托身份，绝不能发给人类。
+账号密码只应保存在本机 Keycloak 数据卷或企业密钥系统，不能写入 Realm JSON、Compose 文件或 Git。演示用户
+`demo-operator` 首次登录必须修改临时密码。它们只用于本机协议验证，不能复制到生产。
 
 应检查浏览器只保存随机 HttpOnly Session Cookie，Access Token 位于 BFF 的 Redis Session；退出后 Session
 失效，伪造 `X-Tenant-Id`、角色或权限 Header 不能覆盖已验证 JWT Claim。
+若浏览器保留了旧 Realm、旧 Scope 或旧签名密钥的会话并显示 401，请打开
+`http://127.0.0.1:9010/auth/relogin`；它会在服务端撤销 BFF 的旧 HttpOnly Session 并自动回到新的
+PKCE 登录流程，不依赖页面脚本或表单提交。
 
 ## 8. 自动化回归
 

@@ -67,3 +67,46 @@ def test_worm_export_requires_current_tenant_confirmation(monkeypatch) -> None:
 
     assert response.status_code == 422
     assert invoked is False
+
+
+def test_identity_user_update_accepts_only_catalog_dropdown_values(monkeypatch) -> None:
+    """The Console submits selected option values; unknown strings must fail before the IdP call."""
+    calls: list[tuple[str, str]] = []
+
+    async def identity_admin(method, path, **_kwargs):
+        calls.append((method, path))
+        if method == "GET" and path.endswith("/role-mappings/realm"):
+            return [{"id": "role-user", "name": "agent-user"}]
+        if method == "GET" and path == "/roles":
+            return [{"id": "role-user", "name": "agent-user"}]
+        if method == "GET":
+            return {"id": "user-1", "enabled": True, "attributes": {}}
+        return {}
+
+    monkeypatch.setattr(main, "_identity_admin", identity_admin)
+    client = TestClient(main.app)
+    allowed = client.put(
+        "/api/console/identity/users/user-1",
+        headers=_headers("identity:users:write"),
+        json={
+            "tenant_id": "tenant-a",
+            "enabled": True,
+            "roles": ["agent-user"],
+            "permissions": ["rag:read", "run:tenant:read"],
+            "reason": "assign reviewed access",
+        },
+    )
+    rejected = client.put(
+        "/api/console/identity/users/user-1",
+        headers=_headers("identity:users:write"),
+        json={
+            "tenant_id": "tenant-a",
+            "roles": ["arbitrary-role"],
+            "permissions": ["root:everything"],
+            "reason": "should be rejected",
+        },
+    )
+
+    assert allowed.status_code == 200
+    assert ("PUT", "/users/user-1") in calls
+    assert rejected.status_code == 422

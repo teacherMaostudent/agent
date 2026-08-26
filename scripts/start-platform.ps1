@@ -5,6 +5,8 @@ param(
     [switch]$NoBuild,
     [switch]$SkipE2E,
     [switch]$WithLabs,
+    # 本地身份联调是可选覆盖层：启用后 BFF 使用真实 OIDC/PKCE，而不再信任开发 Header。
+    [switch]$WithIdentity,
     [ValidateRange(30, 900)]
     [int]$TimeoutSeconds = 240
 )
@@ -14,7 +16,15 @@ $ProgressPreference = "SilentlyContinue"
 
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $composeFile = Join-Path $repositoryRoot "compose.platform.yaml"
+$identityComposeFile = Join-Path $repositoryRoot "compose.identity.yaml"
 $projectName = "agent-platform"
+$composeFileArguments = @("-f", $composeFile)
+if ($WithIdentity) {
+    if (-not (Test-Path -LiteralPath $identityComposeFile)) {
+        throw "未找到本地身份覆盖文件：$identityComposeFile"
+    }
+    $composeFileArguments += @("-f", $identityComposeFile)
+}
 
 # 七个逻辑服务之外，PostgreSQL、Redis 和摄取工作负载属于其运行依赖，必须一起启动，
 # 但不会被误计为新的平台治理服务。实验室默认不进入在线联调链路。
@@ -39,7 +49,8 @@ $coreServices = @(
 # 本地使用共享开发卷上的轮询 Worker；生产模板构建独立 Temporal Worker Target，
 # 两种入口不会因同名镜像而在缺少 Temporal 时反复重启。
 $labServices = @("model-lab", "agent-lab")
-$managedServices = if ($WithLabs) { $coreServices + $labServices } else { $coreServices }
+$identityServices = if ($WithIdentity) { @("keycloak") } else { @() }
+$managedServices = if ($WithLabs) { $coreServices + $labServices + $identityServices } else { $coreServices + $identityServices }
 
 $healthChecks = [ordered]@{
     "Control Plane"   = "http://127.0.0.1:9002/health/ready"
@@ -50,6 +61,9 @@ $healthChecks = [ordered]@{
     "RAG Query"       = "http://127.0.0.1:8003/api/v1/health/ready"
     "Tool Gateway"    = "http://127.0.0.1:9090/api/v1/health/ready"
     "Agent Web BFF"   = "http://127.0.0.1:9010/health/ready"
+}
+if ($WithIdentity) {
+    $healthChecks["Keycloak"] = "http://127.0.0.1:9110/realms/agent-platform"
 }
 
 # 宿主端口只服务于浏览器、桌面端和本地验收；容器间始终使用 Compose 服务名及原始端口。
@@ -67,6 +81,7 @@ $hostPorts = [ordered]@{
     "Model Lab"     = 9091
     "Agent Lab"     = 9092
     "Agent Web BFF" = 9010
+    "Keycloak"      = 9110
 }
 
 # Compose 首次构建会并行请求多个 Docker Hub token；部分 Windows 网络环境在 DNS、
@@ -77,8 +92,11 @@ $baseImages = @(
     "maven:3.9-eclipse-temurin-21",
     "eclipse-temurin:21-jre",
     "postgres:17-alpine",
-    "redis:7-alpine"
+    "redis:7-alpine",
+    "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z",
+    "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
 )
+if ($WithIdentity) { $baseImages += "quay.io/keycloak/keycloak:26.7.1" }
 
 function Resolve-DockerCli {
     if (Get-Command docker -ErrorAction SilentlyContinue) { return }
@@ -119,7 +137,7 @@ function Initialize-BaseImages {
 function Invoke-Compose {
     param([Parameter(Mandatory = $true)][string[]]$ComposeArguments)
 
-    & docker compose --project-name $projectName -f $composeFile @ComposeArguments
+    & docker compose --project-name $projectName @composeFileArguments @ComposeArguments
     if ($LASTEXITCODE -ne 0) {
         throw "docker compose 执行失败，退出码：$LASTEXITCODE"
     }
@@ -168,13 +186,13 @@ function Wait-DockerEngine {
 
 function Assert-HostPortsAvailable {
     # 已由本 Compose 项目运行的服务可以原地复用，不能把自身端口误判成外部冲突。
-    $runningServices = @(& docker compose --project-name $projectName -f $composeFile ps --status running --services)
+    $runningServices = @(& docker compose --project-name $projectName @composeFileArguments ps --status running --services)
     $serviceByName = @{
         "LLM Gateway" = "llm-gateway"; "Governance" = "agent-governance"
         "Control Plane" = "agent-control-plane"; "Tool Gateway" = "tool-gateway"
         "Agent Runtime" = "agent-runtime"; "Context" = "agent-context-service"
         "RAG Query" = "rag-query-api"; "Ingestion" = "ingestion-api"
-        "Model Lab" = "model-lab"; "Agent Lab" = "agent-lab"
+        "Model Lab" = "model-lab"; "Agent Lab" = "agent-lab"; "Keycloak" = "keycloak"
     }
     foreach ($entry in $hostPorts.GetEnumerator()) {
         $composeService = $serviceByName[$entry.Key]
@@ -280,6 +298,9 @@ function Show-Endpoints {
     Write-Host "  Control Plane API http://127.0.0.1:9002/docs"
     Write-Host "  Runtime API       http://127.0.0.1:8001/docs"
     Write-Host "  Agent Web BFF     http://127.0.0.1:9010/health/ready"
+    if ($WithIdentity) {
+        Write-Host "  Keycloak          http://127.0.0.1:9110（本地 OIDC 管理入口）"
+    }
     Write-Host ""
     Write-Host "桌面端连接地址：http://127.0.0.1:8001/api/v1（默认 demo/general-agent/local 已发布）" -ForegroundColor Green
 }
@@ -326,7 +347,7 @@ try {
     }
     catch {
         Write-Host "启动验收失败，输出最近容器日志：" -ForegroundColor Red
-        & docker compose --project-name $projectName -f $composeFile logs --tail 120 @managedServices
+        & docker compose --project-name $projectName @composeFileArguments logs --tail 120 @managedServices
         throw
     }
 }

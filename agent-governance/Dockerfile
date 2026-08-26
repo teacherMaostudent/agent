@@ -22,6 +22,8 @@ RUN pip install /platform-infra . \
 USER governance
 
 ENV GOVERNANCE_DATABASE_PATH=/data/governance.db
+ENV GOVERNANCE_SCHEMA_PATH=/service/db/schema.sql \
+    GOVERNANCE_POSTGRES_SCHEMA_PATH=/service/db/postgres.sql
 ENV PLATFORM_ASGI_APP=app.main:app \
     PLATFORM_ASGI_PORT=8081 \
     PLATFORM_HEALTHCHECK_URL=http://127.0.0.1:8081/health/ready

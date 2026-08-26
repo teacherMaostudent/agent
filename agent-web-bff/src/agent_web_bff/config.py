@@ -26,6 +26,10 @@ class WebBffSettings(BaseSettings):
     oidc_client_secret: str = Field(default="", repr=False)
     oidc_redirect_uri: str = ""
     oidc_scopes: str = "openid profile email"
+    identity_admin_base_url: str = ""
+    identity_admin_realm: str = ""
+    identity_admin_client_id: str = ""
+    identity_admin_client_secret: str = Field(default="", repr=False)
     session_redis_url: str = Field(default="", repr=False)
     session_cookie_name: str = "agent_web_session"
     session_ttl_seconds: int = 28_800

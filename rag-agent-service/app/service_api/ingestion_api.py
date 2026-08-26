@@ -18,7 +18,7 @@ def ingest_approved_artifact(
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
 ) -> ArtifactIngestionReceipt:
-    """Promote one approved Context Artifact into the durable ingestion queue.
+    """将一个已审批的 Context Artifact 晋升到持久摄取队列。
 
     The endpoint accepts only an object in this service's configured bucket/prefix.
     Deterministic document/job IDs make Runtime relay retries safe and preserve the

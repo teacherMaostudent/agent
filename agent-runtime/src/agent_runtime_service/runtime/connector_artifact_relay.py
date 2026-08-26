@@ -26,11 +26,12 @@ class ConnectorArtifactRelay:
     """Deliver claimed outbox records to Context with bounded retries and DLQ transition."""
 
     def __init__(self, container: AgentRuntimeContainer) -> None:
+        """绑定运行容器及连接器交付配置，保持 Relay 与主执行 Worker 的资源边界。"""
         self.container = container
         self.settings = container.settings
 
     def run_once(self, *, tenant_id: str | None = None, limit: int | None = None) -> dict[str, int]:
-        """Process one finite batch and return counters suitable for metrics or an admin API."""
+        """处理一个有限交付批次，返回可用于指标和运维接口的成功、重试与死信计数。"""
         disconnected = self.container.run_store.reconcile_stale_connectors(
             self.settings.connector_heartbeat_timeout_seconds
         )
@@ -108,7 +109,7 @@ class ConnectorArtifactRelay:
 
 
 async def run_worker() -> None:
-    """Poll continuously until SIGINT/SIGTERM, closing shared clients on every exit path."""
+    """持续领取 Connector Artifact，收到终止信号后在所有退出路径关闭共享客户端。"""
     # Import lazily so the relay abstraction can be imported by Runtime API tests without
     # making the execution store depend on the application's composition root.
     from agent_runtime_service.runtime.container import AgentRuntimeContainer
@@ -137,7 +138,7 @@ async def run_worker() -> None:
 
 
 def main() -> None:
-    """Console entry point used by Compose/Kubernetes as an independent workload."""
+    """供 Compose/Kubernetes 启动独立 Connector Artifact Relay 工作负载的入口。"""
     asyncio.run(run_worker())
 
 

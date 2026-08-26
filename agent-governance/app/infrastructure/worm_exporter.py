@@ -38,7 +38,7 @@ def _merkle_root(hashes: list[str]) -> str:
 
 
 async def export_tenant(settings: Settings, tenant_id: str, repository=None) -> dict:
-    """Stream a verified tenant ledger into a signed retention-locked envelope.
+    """将已验证租户账本流式写入带签名、保留锁定的导出封套。
 
     Large event bodies spill from memory to private temporary files. Only the list of
     fixed-size event hashes stays resident for Merkle construction, so export memory is

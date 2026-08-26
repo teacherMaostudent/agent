@@ -59,6 +59,10 @@ x-runtime-env: &runtime-env
   RUNTIME_LLM_ENABLED: ${RUNTIME_LLM_ENABLED:-false}
   # 启动时先检查 Gateway 可达性；供应商调用仍由每次请求的路由/预算/熔断器决定。
   RUNTIME_LLM_STARTUP_CHECK: ${RUNTIME_LLM_STARTUP_CHECK:-false}
+  # 发布快照可允许 180 秒；Runtime 自身的硬截止必须更高，避免 hosted LLM 的一次
+  # 正常慢响应被进程默认值提前截断。单次 HTTP 超时也必须独立配置，不能只提高总预算。
+  RUNTIME_AGENT_DEADLINE_SECONDS: 240
+  RUNTIME_LLM_TIMEOUT: 120
   # 容器内 localhost 指向 Runtime 自身；必须使用 Compose 服务名访问独立 LLM Gateway。
   RUNTIME_LLM_GATEWAY_BASE_URL: http://llm-gateway:8080
   # Runtime 以 Gateway 已登记的本地服务凭据发起调用；它不是 DeepSeek 的上游 Key。
@@ -141,6 +145,10 @@ services:
     # Compose extends merges sequences unless they are explicitly reset; without this
     # tag the Worker would contend with the API for host port 9001.
     ports: !reset []
+    # 该进程消费租约队列，不提供 ASGI HTTP 端口；继承 API 的 /health/ready 探针会产生
+    # 假阴性。其存活由主进程和 restart policy 表达，队列/积压由独立指标告警。
+    healthcheck:
+      disable: true
 
   llm-gateway:
     build: ./llm-gateway
@@ -196,6 +204,9 @@ services:
     <<: *runtime-service
     command: ["runtime-connector-artifact-relay"]
     depends_on:
+      # Relay 使用与 Runtime API 相同的组合根；启用模型启动检查时不能早于 Gateway。
+      llm-gateway:
+        condition: service_healthy
       agent-context-service:
         condition: service_started
 
@@ -205,6 +216,8 @@ services:
     <<: *runtime-service
     command: ["runtime-artifact-ingestion-relay"]
     depends_on:
+      llm-gateway:
+        condition: service_healthy
       agent-context-service:
         condition: service_started
       ingestion-api:
@@ -327,12 +340,22 @@ services:
       POSTGRES_PASSWORD: local-postgres-password
       POSTGRES_DB: agent_platform
     volumes: ["postgres-data:/var/lib/postgresql/data"]
+    # Keycloak overlay and other dependent workloads wait for a real SQL-ready state,
+    # not merely an already-created container. This check does not mutate the database.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d agent_platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
 
   redis:
     image: redis:7-alpine
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-06T17-38-46Z
+    # This exact signed upstream release exists for amd64/arm64/ppc64le. The previous
+    # 2025-09-06 timestamp was never published and caused an opaque Compose pull failure.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: agent-local
@@ -341,7 +364,8 @@ services:
     volumes: ["minio-data:/data"]
 
   minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    # Use the same Quay registry as the server to avoid a second Docker Hub token path.
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on: [minio]
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -349,8 +373,11 @@ services:
         until mc alias set local http://minio:9000 agent-local agent-local-secret; do sleep 1; done;
         mc mb --ignore-existing local/agent-platform-local;
         mc mb --ignore-existing --with-lock local/agent-platform-audit-local;
-        mc anonymous set none local/agent-platform-local
-        mc anonymous set none local/agent-platform-audit-local
+        # YAML folds these lines into one shell command, so every statement must end
+        # with a separator. Without the semicolons mc receives the second command as
+        # trailing arguments and the one-shot initializer exits non-zero.
+        mc anonymous set none local/agent-platform-local;
+        mc anonymous set none local/agent-platform-audit-local;
 
 volumes:
   control-plane-data:

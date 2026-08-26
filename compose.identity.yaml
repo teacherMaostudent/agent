@@ -46,6 +46,15 @@ services:
       WEB_BFF_OIDC_TOKEN_URL: http://keycloak:8080/realms/agent-platform/protocol/openid-connect/token
       WEB_BFF_OIDC_CLIENT_ID: agent-web-bff
       WEB_BFF_OIDC_REDIRECT_URI: http://127.0.0.1:9010/auth/callback
+      # 本地 Realm 只导入最小 OIDC + 平台 Claim Scope，不声明 profile/email 默认 Scope。
+      # 显式使用其 discovery 文档中支持的 Scope，避免授权服务器在回调前拒绝请求。
+      WEB_BFF_OIDC_SCOPES: "openid agent-platform-claims"
+      # BFF uses this local confidential service account for Console user management. Browser
+      # sessions never receive this credential; production replaces it with an IdP/SCIM account.
+      WEB_BFF_IDENTITY_ADMIN_BASE_URL: http://keycloak:8080
+      WEB_BFF_IDENTITY_ADMIN_REALM: agent-platform
+      WEB_BFF_IDENTITY_ADMIN_CLIENT_ID: agent-web-identity-admin
+      WEB_BFF_IDENTITY_ADMIN_CLIENT_SECRET: local-identity-admin-secret
       WEB_BFF_PUBLIC_ORIGIN: http://127.0.0.1:9010
       WEB_BFF_CSRF_ENFORCED: "true"
     depends_on: [keycloak, redis]

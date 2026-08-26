@@ -111,7 +111,7 @@ async def verify_audit_chain(identity: Auditor, container: Container) -> dict[st
     tags=["audit-export"],
 )
 async def create_audit_export(identity: Auditor, container: Container) -> dict[str, Any]:
-    """Persist an asynchronous WORM export request without blocking on KMS or storage."""
+    """持久化异步 WORM 导出请求，不在 HTTP 请求内阻塞等待 KMS 或对象存储。"""
     return await container.worm_exports.create(identity.tenant_id, identity.user_id)
 
 
@@ -121,7 +121,7 @@ async def list_audit_exports(
     container: Container,
     limit: int = Query(default=100, ge=1, le=1_000),
 ) -> dict[str, Any]:
-    """List this tenant's export progress, retention proof and bounded failure details."""
+    """列出租户导出的进度、保留证明与受限失败详情，不暴露其他租户作业。"""
     return {"items": await container.worm_exports.list(identity.tenant_id, limit)}
 
 
@@ -129,7 +129,7 @@ async def list_audit_exports(
 async def get_audit_export(
     job_id: str, identity: Auditor, container: Container
 ) -> dict[str, Any]:
-    """Return one tenant-isolated export job; object data is never proxied through Web."""
+    """返回单个租户隔离的导出作业；对象内容不经 Web 服务反向代理。"""
     job = await container.worm_exports.get(identity.tenant_id, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="audit export job not found")
@@ -144,7 +144,7 @@ async def get_audit_export(
 async def requeue_audit_export(
     job_id: str, identity: Auditor, container: Container
 ) -> dict[str, Any]:
-    """Requeue a failed export only through an explicit auditor action."""
+    """仅在审计员显式操作下重新排队失败导出，避免 Worker 自动绕过人工复核。"""
     try:
         job = await container.worm_exports.requeue(identity.tenant_id, job_id, identity.user_id)
     except ValueError as exc:

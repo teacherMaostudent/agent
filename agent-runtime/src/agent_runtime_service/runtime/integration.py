@@ -736,6 +736,24 @@ class RuntimeStoreOperations:
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
+    def list_for_tenant(self, tenant_id: str, *, limit: int = 50) -> list[RuntimeRun]:
+        """为具备显式租户读取权限的管理员列出有上限的租户 Run 索引。
+
+        The HTTP layer is solely responsible for checking ``run:tenant:read``.  Keeping this
+        repository method separate from ``list_for_user`` makes broad observation reviewable and
+        prevents a future caller from accidentally widening the normal Workspace query.
+        """
+        bounded_limit = min(max(limit, 1), 100)
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM runtime_runs WHERE tenant_id = ?
+                ORDER BY updated_at DESC, run_id DESC LIMIT ?
+                """,
+                (tenant_id, bounded_limit),
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
+
     def share_run(self, tenant_id: str, run_id: str, user_id: str, shared_by: str, reason: str) -> None:
         """持久化只读共享关系；调用方必须在 API 层先证明自己是 Run owner。"""
         now = datetime.now(UTC).isoformat()
@@ -962,7 +980,7 @@ class RuntimeStoreOperations:
             return cursor.rowcount == 1
 
     def _insert_artifact_ingestion(self, source: Any, artifact_id: str, now: str) -> None:
-        """Register a delivered Desktop Artifact as awaiting explicit RAG approval.
+        """登记已交付桌面 Artifact 并置为等待显式 RAG 审批，禁止自动摄取。
 
         This helper runs inside the caller's transaction/lock. The unique tenant/artifact
         key keeps delivery retries from creating multiple approval decisions.
@@ -1000,7 +1018,7 @@ class RuntimeStoreOperations:
         source_task_id: str,
         artifact_id: str,
     ) -> dict[str, Any]:
-        """Create the approval record for an immediately delivered Desktop result."""
+        """为立即交付的桌面结果创建唯一审批记录，重复登记不产生第二次摄取决定。"""
         now = datetime.now(UTC).isoformat()
         source = {
             "tenant_id": tenant_id,
@@ -1022,7 +1040,7 @@ class RuntimeStoreOperations:
     def list_artifact_ingestions(
         self, tenant_id: str, run_id: str, *, limit: int = 100
     ) -> list[dict[str, Any]]:
-        """List approval/ingestion state only within an already authorized Run."""
+        """只列出已完成 Run 授权校验范围内的审批与摄取状态，禁止跨任务读取。"""
         with self._lock:
             rows = self._connection.execute(
                 """SELECT request_id,run_id,root_task_id,source_task_id,artifact_id,status,
@@ -1043,7 +1061,7 @@ class RuntimeStoreOperations:
         approved: bool,
         reason: str,
     ) -> dict[str, Any] | None:
-        """Consume the one-time approval decision and never reopen a terminal rejection."""
+        """消费一次性审批决定；终态拒绝不可被后续请求重新打开。"""
         now = datetime.now(UTC).isoformat()
         status = "APPROVED" if approved else "REJECTED"
         with self._lock:
@@ -1064,7 +1082,7 @@ class RuntimeStoreOperations:
     def claim_artifact_ingestions(
         self, *, limit: int = 20, lease_seconds: int = 120
     ) -> list[dict[str, Any]]:
-        """Claim approved/retry items with expiring leases across Runtime replicas."""
+        """跨 Runtime 副本以可过期租约领取已批准或待重试项，避免重复提交。"""
         now = datetime.now(UTC)
         now_text = now.isoformat()
         lease_expires = (now + timedelta(seconds=lease_seconds)).isoformat()
@@ -1098,7 +1116,7 @@ class RuntimeStoreOperations:
     def complete_artifact_ingestion(
         self, request_id: str, lease_token: str, document_id: str, ingestion_job_id: str
     ) -> bool:
-        """Persist the downstream receipt only for the current lease owner."""
+        """仅允许当前租约持有者写入下游摄取回执，失效 Worker 不得覆盖状态。"""
         now = datetime.now(UTC).isoformat()
         with self._lock:
             cursor = self._connection.execute(
@@ -1113,7 +1131,7 @@ class RuntimeStoreOperations:
     def fail_artifact_ingestion(
         self, request_id: str, lease_token: str, error: str, *, max_attempts: int
     ) -> str:
-        """Retry transient submission failures and isolate exhausted items in DLQ."""
+        """对瞬时提交失败进行重试，并将超过最大次数的请求隔离到死信队列。"""
         with self._lock:
             row = self._connection.execute(
                 "SELECT attempts FROM runtime_artifact_ingestions WHERE request_id=? AND status='PROCESSING' AND lease_token=?",

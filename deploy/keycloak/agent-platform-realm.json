@@ -21,6 +21,12 @@
       "attributes": {"include.in.token.scope": "true"},
       "protocolMappers": [
         {
+          "name": "subject",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "config": {"user.attribute": "id", "claim.name": "sub", "jsonType.label": "String", "access.token.claim": "true", "id.token.claim": "true"}
+        },
+        {
           "name": "tenant-id",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-usermodel-attribute-mapper",
@@ -86,7 +92,33 @@
       "redirectUris": ["http://127.0.0.1:9010/auth/callback"],
       "webOrigins": ["http://127.0.0.1:9010"],
       "attributes": {"pkce.code.challenge.method": "S256"},
-      "defaultClientScopes": ["web-origins", "profile", "email", "roles", "agent-platform-claims"]
+      "defaultClientScopes": ["web-origins", "profile", "email", "roles", "agent-platform-claims"],
+      "protocolMappers": [
+        {
+          "name": "tenant-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {"user.attribute": "tenant_id", "claim.name": "tenant_id", "jsonType.label": "String", "access.token.claim": "true", "id.token.claim": "true"}
+        },
+        {
+          "name": "permissions",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {"user.attribute": "permissions", "claim.name": "permissions", "jsonType.label": "String", "multivalued": "true", "access.token.claim": "true", "id.token.claim": "true"}
+        },
+        {
+          "name": "realm-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {"claim.name": "roles", "jsonType.label": "String", "multivalued": "true", "access.token.claim": "true", "id.token.claim": "true"}
+        },
+        {
+          "name": "platform-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {"included.client.audience": "agent-platform", "access.token.claim": "true", "id.token.claim": "false", "introspection.token.claim": "true"}
+        }
+      ]
     }
   ],
   "users": [

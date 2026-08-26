@@ -16,6 +16,11 @@ class _Store:
         self.arguments = (tenant_id, user_id, limit)
         return []
 
+    def list_for_tenant(self, tenant_id: str, *, limit: int):
+        """Record the deliberately separate administrator-read query."""
+        self.arguments = (tenant_id, "tenant-admin", limit)
+        return []
+
 
 def test_workspace_list_is_bound_to_verified_identity() -> None:
     """“我的任务”不接收目标用户参数，只查询经身份中间件重建的当前主体。"""
@@ -39,5 +44,30 @@ def test_workspace_list_is_bound_to_verified_identity() -> None:
         x_user_id="user-a",
     )
 
-    assert body == {"items": []}
+    assert body == {"scope": "owned-or-shared", "items": []}
     assert store.arguments == ("tenant-a", "user-a", 100)
+
+
+def test_workspace_tenant_read_requires_explicit_permission() -> None:
+    """A supervisor capability changes only the query scope, never a user-id request parameter."""
+    store = _Store()
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                container=SimpleNamespace(
+                    run_store=store, settings=SimpleNamespace(oidc_enabled=False)
+                )
+            )
+        ),
+        scope={},
+    )
+
+    body = list_my_runs(
+        request,
+        x_tenant_id="tenant-a",
+        x_user_id="admin-a",
+        x_permissions="run:tenant:read",
+    )
+
+    assert body == {"scope": "tenant-admin", "items": []}
+    assert store.arguments == ("tenant-a", "tenant-admin", 30)

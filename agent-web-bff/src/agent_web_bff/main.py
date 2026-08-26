@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from time import time
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -67,7 +69,9 @@ app.add_middleware(
     issuer=settings.oidc_issuer,
     audience=settings.oidc_audience,
     jwks_url=settings.oidc_jwks_url,
-    public_paths=("/health/ready", "/auth/login", "/auth/callback"),
+    # Logout must remain public to the token validator: a stale/invalid BFF session is precisely
+    # when the browser needs to revoke its opaque cookie and start a clean Authorization Code flow.
+    public_paths=("/health/ready", "/auth/login", "/auth/callback", "/auth/logout", "/auth/relogin"),
 )
 if browser_sessions is not None:
     # Added after the JWT middleware so Starlette executes this outer layer first. It resolves
@@ -161,6 +165,41 @@ def _control_plane_headers(request: Request) -> dict[str, str]:
     return headers
 
 
+async def _identity_admin(method: str, path: str, **kwargs: Any) -> Any:
+    """Call Keycloak's Admin API with the BFF service account, never a browser token.
+
+    The feature is optional outside the local IdP overlay.  Production deployments must bind the
+    same interface to a least-privilege IdP/SCIM service account rather than a human admin login.
+    """
+    required = (
+        settings.identity_admin_base_url,
+        settings.identity_admin_realm,
+        settings.identity_admin_client_id,
+        settings.identity_admin_client_secret,
+    )
+    if not all(required):
+        raise HTTPException(status_code=503, detail="identity administration is not configured")
+    token_url = f"{settings.identity_admin_base_url.rstrip('/')}/realms/{settings.identity_admin_realm}/protocol/openid-connect/token"
+    try:
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            token = await client.post(
+                token_url,
+                data={"grant_type": "client_credentials", "client_id": settings.identity_admin_client_id, "client_secret": settings.identity_admin_client_secret},
+            )
+            token.raise_for_status()
+            response = await client.request(
+                method,
+                f"{settings.identity_admin_base_url.rstrip('/')}/admin/realms/{settings.identity_admin_realm}{path}",
+                headers={"Authorization": f"Bearer {token.json()['access_token']}"},
+                **kwargs,
+            )
+    except (httpx.HTTPError, KeyError) as exc:
+        raise HTTPException(status_code=503, detail="identity provider administration is unavailable") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail="identity provider rejected the request")
+    return {} if response.status_code == 204 or not response.content else response.json()
+
+
 async def _runtime(request: Request, method: str, path: str, **kwargs: Any) -> Any:
     """Call Runtime as the sole Workspace source of execution state.
 
@@ -230,13 +269,258 @@ async def _governance(request: Request, method: str, path: str, **kwargs: Any) -
     return {} if response.status_code == 204 else response.json()
 
 
-def _workspace_detail_projection(run: dict[str, Any], *, user_id: str, artifacts: list[dict[str, Any]]) -> dict[str, Any]:
-    """Reduce an owned Runtime result to the business-facing Workspace detail.
+def _event_metadata_projection(metadata: Any) -> dict[str, Any]:
+    """Project auditable event facts without returning prompts, responses, or tool payloads."""
+    if not isinstance(metadata, dict):
+        return {}
+    scalar_keys = {
+        "origin",
+        "previous_state",
+        "current_state",
+        "trigger",
+        "source_event_type",
+        "message_source",
+        "context_source",
+        "history_count",
+        "selection_policy",
+        "admission_id",
+        "plan_id",
+        "policy_version",
+        "step",
+        "step_id",
+        "epoch_id",
+        "model_route",
+        "model_policy_version",
+        "model_revision",
+        "logical_model",
+        "prompt_version",
+        "tool_catalog_version",
+        "action",
+        "outcome",
+        "tool",
+        "tool_name",
+        "tool_version",
+        "success",
+        "result_count",
+        "retrieval_profile",
+        "rag_status",
+        "degraded",
+        "termination_reason",
+        "steps",
+        "reason",
+        "approval_id",
+    }
+    projected = {
+        key: (value[:500] if isinstance(value, str) else value)
+        for key, value in metadata.items()
+        if key in scalar_keys and isinstance(value, (str, int, float, bool))
+    }
+    allowed_tools = metadata.get("allowed_tool_scope")
+    if isinstance(allowed_tools, list):
+        projected["allowed_tool_scope"] = [str(item)[:120] for item in allowed_tools[:20]]
+    checks = metadata.get("checks")
+    if isinstance(checks, list):
+        projected["checks"] = [
+            {
+                "check": str(item.get("check", ""))[:120],
+                "passed": bool(item.get("passed", False)),
+                "reason": str(item.get("reason", ""))[:500],
+            }
+            for item in checks[:30]
+            if isinstance(item, dict)
+        ]
+    budget_report = metadata.get("budget_report")
+    if isinstance(budget_report, dict):
+        projected["budget_report"] = {
+            key: value
+            for key, value in budget_report.items()
+            if key
+            in {
+                "requested_tokens",
+                "message_budget",
+                "evidence_budget",
+                "used_message_tokens",
+                "used_evidence_tokens",
+                "dropped_messages",
+                "dropped_evidence",
+                "strategy",
+            }
+            and isinstance(value, (str, int, float, bool))
+        }
+    return projected
 
-    Raw compiled plans, internal traces and tool payloads are intentionally absent here. They
-    belong to the reviewer/console projections once their explicit data-domain authorization is
-    implemented. The Runtime remains responsible for the initial ownership check.
+
+def _workspace_execution_projection(
+    run: dict[str, Any], *, events: list[dict[str, Any]], release: dict[str, Any]
+) -> dict[str, Any]:
+    """Build an owner-safe execution explanation from Runtime's persisted facts.
+
+    The projection deliberately excludes model messages, raw prompts, response bodies, tool
+    arguments and tool result content. It exposes identifiers, decisions, counts and bounded
+    status facts so a business user can understand what ran without crossing Review data domains.
     """
+    result = run.get("result", {}) if isinstance(run.get("result"), dict) else {}
+    context = run.get("context", {}) if isinstance(run.get("context"), dict) else {}
+    plan = result.get("execution_plan", {})
+    plan = plan if isinstance(plan, dict) else {}
+    budget = result.get("budget", {})
+    budget = budget if isinstance(budget, dict) else {}
+    observations = result.get("observations", [])
+    observations = observations if isinstance(observations, list) else []
+
+    retrieval = []
+    tools = []
+    for observation in observations[:100]:
+        if not isinstance(observation, dict):
+            continue
+        if observation.get("type") == "retrieval":
+            retrieval.append(
+                {
+                    key: observation.get(key)
+                    for key in (
+                        "query",
+                        "result_count",
+                        "retrieval_profile",
+                        "rag_status",
+                        "context_truncated",
+                        "context_degraded",
+                    )
+                    if observation.get(key) is not None
+                }
+            )
+        elif observation.get("type") == "tool":
+            tool_result = observation.get("result", {})
+            tool_result = tool_result if isinstance(tool_result, dict) else {}
+            matches = tool_result.get("matches", [])
+            tools.append(
+                {
+                    "tool": str(observation.get("tool", ""))[:200],
+                    "success": bool(observation.get("success", False)),
+                    "scope": str(tool_result.get("scope", ""))[:200],
+                    "match_count": len(matches) if isinstance(matches, list) else None,
+                    "error_code": str(observation.get("error_code", ""))[:200],
+                }
+            )
+
+    timeline = [
+        {
+            "event_id": str(item.get("event_id", "")),
+            "sequence": item.get("sequence", 0),
+            "event_type": str(item.get("event_type", "")),
+            "occurred_at": item.get("occurred_at"),
+            "status": str(item.get("status", "")),
+            "error_code": str(item.get("error_code", ""))[:200],
+            "metadata": _event_metadata_projection(item.get("metadata")),
+        }
+        for item in events[:500]
+        if isinstance(item, dict) and item.get("run_id") in {"", run.get("run_id")}
+    ]
+    model_events = [
+        item for item in timeline if item["event_type"] == "runtime.request_epoch.pinned"
+    ]
+    model_routes = list(
+        dict.fromkeys(
+            str(item["metadata"].get("model_route", ""))
+            for item in model_events
+            if item["metadata"].get("model_route")
+        )
+    )
+    prompt_versions = list(
+        dict.fromkeys(
+            str(item["metadata"].get("prompt_version", ""))
+            for item in model_events
+            if item["metadata"].get("prompt_version")
+        )
+    )
+    route = plan.get("route", {}) if isinstance(plan.get("route"), dict) else {}
+    intent = plan.get("intent", {}) if isinstance(plan.get("intent"), dict) else {}
+    complexity = plan.get("complexity", {}) if isinstance(plan.get("complexity"), dict) else {}
+    context_summary = result.get("context_summary", {})
+    context_summary = context_summary if isinstance(context_summary, dict) else {}
+    context_status = context_summary.get("status", {})
+    context_status = context_status if isinstance(context_status, dict) else {}
+
+    return {
+        "release": release,
+        "snapshot": {
+            "snapshot_id": run.get("snapshot_id", ""),
+            "agent_version": context.get("agent_version", ""),
+            "graph_version": context.get("graph_version", ""),
+            "model_policy_version": context.get("model_policy_version", ""),
+        },
+        "plan": {
+            "plan_id": plan.get("plan_id", ""),
+            "plan_stage": plan.get("plan_stage", ""),
+            "planner_version": plan.get("planner_version", ""),
+            "executor_profile": plan.get("executor_profile", ""),
+            "execution_mode": plan.get("execution_mode", ""),
+            "topology": plan.get("topology", ""),
+            "intent": intent,
+            "complexity": complexity,
+            "route": route,
+            "admission_id": plan.get("admission_id", ""),
+            "admission_checks": [
+                {
+                    "check": item.get("check", ""),
+                    "passed": bool(item.get("passed", False)),
+                    "reason": str(item.get("reason", ""))[:500],
+                }
+                for item in (plan.get("admission_checks") or [])[:30]
+                if isinstance(item, dict)
+            ],
+            "allowed_tool_scope": (plan.get("allowed_tool_scope") or [])[:50],
+        },
+        "retrieval": retrieval,
+        "model": {
+            "routes": model_routes,
+            "model_policy_version": context.get("model_policy_version", ""),
+            "prompt_versions": prompt_versions,
+            "decision_request_events": sum(
+                1 for item in timeline if item["event_type"] == "runtime.model.requested"
+            ),
+            "billed_llm_calls": budget.get("llm_calls", 0),
+            "fallback_chain": route.get("fallback_chain", []),
+        },
+        "tools": tools,
+        "budget": {
+            key: budget.get(key)
+            for key in (
+                "max_steps",
+                "max_llm_calls",
+                "max_tool_calls",
+                "max_retrieval_rounds",
+                "max_cost_usd",
+                "step_count",
+                "llm_calls",
+                "tool_calls",
+                "retrieval_rounds",
+                "spent_cost_usd",
+                "attempts_used",
+                "deadline_at",
+            )
+            if budget.get(key) is not None
+        },
+        "latency_ms": result.get("latency_ms"),
+        "context": {
+            "selected_history_count": context_summary.get("selected_history_count", 0),
+            "rag_status": context_status.get("rag_status", ""),
+            "degraded": bool(context_status.get("degraded", False)),
+            "degrade_reason": context_status.get("degrade_reason"),
+            "token_budget": context_status.get("budget_report", {}),
+        },
+        "timeline": timeline,
+    }
+
+
+def _workspace_detail_projection(
+    run: dict[str, Any],
+    *,
+    user_id: str,
+    artifacts: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    release: dict[str, Any],
+) -> dict[str, Any]:
+    """Reduce an owned Runtime result to a safe but explainable Workspace detail."""
     result = run.get("result", {}) if isinstance(run.get("result"), dict) else {}
     evidence = result.get("evidence", [])
     citations = [
@@ -256,6 +540,7 @@ def _workspace_detail_projection(run: dict[str, Any], *, user_id: str, artifacts
         "citations": citations,
         "error_code": run.get("error_code", ""),
         "artifacts": artifacts,
+        "execution": _workspace_execution_projection(run, events=events, release=release),
         # Read shares are intentionally not control delegation. Rendering this flag avoids a
         # misleading UI that offers cancel/steering to someone Runtime will correctly reject.
         "can_control": run.get("user_id") == user_id,
@@ -289,6 +574,75 @@ async def session(request: Request) -> dict[str, Any]:
         "authentication": "oidc" if settings.oidc_enabled else "local-development",
         "claim_subject": claims.get("sub", "") if isinstance(claims, dict) else "",
     }
+
+
+_MANAGEABLE_HUMAN_ROLES = frozenset(
+    {"agent-user", "agent-reviewer", "platform-operator", "governance-auditor"}
+)
+_MANAGEABLE_PERMISSIONS = frozenset({
+    "rag:read", "rag:ingest:approve", "file:scan", "tool:invoke", "ops:read",
+    "release:read", "release:validate", "release:version:publish", "release:create",
+    "release:promote", "release:pause", "release:rollback", "model:route:read",
+    "model:route:release", "model:route:monitor", "model:route:rollback", "quota:read",
+    "quota:write", "audit:export", "audit:export:requeue", "eval:golden:review",
+    "agent:review", "run:review:approve", "run:review:assign", "run:review:transfer",
+    "run:review:comment", "run:review:label", "evidence:content:read", "run:share",
+    "run:tenant:read", "identity:users:read", "identity:users:write",
+})
+
+
+@app.get("/api/console/identity/users")
+async def list_identity_users(request: Request) -> dict[str, Any]:
+    """Return a bounded, credential-free user projection for the Console authorization screen."""
+    _require_permission(request, "identity:users:read")
+    users = await _identity_admin("GET", "/users", params={"first": 0, "max": 100})
+    items = []
+    for user in users if isinstance(users, list) else []:
+        attributes = user.get("attributes") if isinstance(user.get("attributes"), dict) else {}
+        role_rows = await _identity_admin("GET", f"/users/{user['id']}/role-mappings/realm")
+        roles = sorted(
+            row.get("name", "") for row in role_rows if row.get("name", "") in _MANAGEABLE_HUMAN_ROLES
+        )
+        items.append({
+            "id": user["id"], "username": user.get("username", ""), "enabled": bool(user.get("enabled")),
+            "email": user.get("email", ""), "tenant_id": (attributes.get("tenant_id") or [""])[0],
+            "permissions": sorted(attributes.get("permissions") or []), "roles": roles,
+        })
+    return {
+        "items": items, "roles": sorted(_MANAGEABLE_HUMAN_ROLES),
+        "permissions": sorted(_MANAGEABLE_PERMISSIONS),
+    }
+
+
+@app.put("/api/console/identity/users/{identity_id}")
+async def update_identity_user(identity_id: str, request: Request) -> dict[str, Any]:
+    """Apply a reasoned tenant/role/permission change; passwords and service roles are excluded."""
+    _require_permission(request, "identity:users:write")
+    payload = await request.json()
+    reason = str(payload.get("reason", "")).strip()
+    tenant_id = str(payload.get("tenant_id", "")).strip()
+    roles = {str(value) for value in payload.get("roles", [])}
+    permissions = sorted({str(value).strip() for value in payload.get("permissions", []) if str(value).strip()})
+    if (
+        not reason or not tenant_id or not roles.issubset(_MANAGEABLE_HUMAN_ROLES)
+        or not set(permissions).issubset(_MANAGEABLE_PERMISSIONS)
+    ):
+        raise HTTPException(status_code=422, detail="tenant, reason, and catalog roles/permissions are required")
+    current = await _identity_admin("GET", f"/users/{identity_id}")
+    current["enabled"] = bool(payload.get("enabled", current.get("enabled", True)))
+    current["attributes"] = {"tenant_id": [tenant_id], "permissions": permissions}
+    await _identity_admin("PUT", f"/users/{identity_id}", json=current)
+    current_roles = await _identity_admin("GET", f"/users/{identity_id}/role-mappings/realm")
+    removable = [row for row in current_roles if row.get("name") in _MANAGEABLE_HUMAN_ROLES]
+    if removable:
+        await _identity_admin("DELETE", f"/users/{identity_id}/role-mappings/realm", json=removable)
+    if roles:
+        available = await _identity_admin("GET", "/roles")
+        selected = [row for row in available if row.get("name") in roles]
+        await _identity_admin("POST", f"/users/{identity_id}/role-mappings/realm", json=selected)
+    # Keycloak records the protected resource mutation in its administrative audit stream.
+    await _identity_admin("GET", f"/users/{identity_id}")
+    return {"status": "updated", "identity_id": identity_id, "reason": reason, "changed_at": datetime.now(UTC).isoformat(), "request_id": f"identity_{uuid4().hex}"}
 
 
 @app.get("/api/workspace/runs")
@@ -789,10 +1143,70 @@ async def create_workspace_run(request: Request) -> dict[str, Any]:
     return await _runtime(request, "POST", "/agent/interactive-runs", json=payload)
 
 
+async def _workspace_release_binding(
+    request: Request, *, agent_id: str, snapshot_id: str
+) -> dict[str, Any]:
+    """Resolve the Release that supplied an owned Run's frozen version.
+
+    This is a read-only projection for a Run the Runtime has already authorized. The browser does
+    not receive Control Plane credentials and cannot select a different Release through this path.
+    Historical data remains readable when Control Plane is temporarily unavailable.
+    """
+    if not agent_id or not snapshot_id:
+        return {"status": "unavailable", "reason": "run has no release binding"}
+    try:
+        releases = await _control_plane(request, "GET", f"/v1/agents/{agent_id}/releases")
+    except HTTPException:
+        return {"status": "unavailable", "reason": "control plane is unavailable"}
+    items = releases if isinstance(releases, list) else releases.get("items", [])
+    matched = next(
+        (
+            item
+            for item in items
+            if isinstance(item, dict) and str(item.get("version_id", "")) == snapshot_id
+        ),
+        None,
+    )
+    if matched is None:
+        return {
+            "status": "unresolved",
+            "version_id": snapshot_id,
+            "reason": "no retained Release references this frozen version",
+        }
+    return {
+        "release_id": matched.get("release_id", ""),
+        "environment": matched.get("environment", ""),
+        "status": matched.get("status", ""),
+        "version_id": matched.get("version_id", ""),
+        "snapshot_id": matched.get("snapshot_id", ""),
+        "created_at": matched.get("created_at"),
+    }
+
+
 @app.get("/api/workspace/runs/{run_id}")
 async def workspace_run(request: Request, run_id: str) -> dict[str, Any]:
     """Read one owned Run; Runtime returns 404 for foreign resources."""
     run = await _runtime(request, "GET", f"/agent/runs/{run_id}")
+    context = run.get("context", {}) if isinstance(run.get("context"), dict) else {}
+    session_id = str(context.get("session_id", ""))
+    events: list[dict[str, Any]] = []
+    if session_id:
+        try:
+            event_index = await _runtime(
+                request,
+                "GET",
+                f"/agent/sessions/{session_id}/events",
+                params={"limit": 500},
+            )
+            events = event_index.get("events", [])
+        except HTTPException:
+            # Event history enriches explainability but must not hide an otherwise readable result.
+            events = []
+    release = await _workspace_release_binding(
+        request,
+        agent_id=str(run.get("agent_id") or context.get("agent_id", "")),
+        snapshot_id=str(run.get("snapshot_id", "")),
+    )
     try:
         artifact_index = await _runtime(request, "GET", f"/agent/runs/{run_id}/artifacts")
         artifacts = artifact_index.get("items", [])
@@ -820,6 +1234,8 @@ async def workspace_run(request: Request, run_id: str) -> dict[str, Any]:
         run,
         user_id=request.headers.get("X-User-Id", ""),
         artifacts=artifacts,
+        events=events,
+        release=release,
     )
 
 
@@ -905,6 +1321,12 @@ async def share_workspace_run(request: Request, run_id: str) -> Response:
 @app.post("/api/workspace/runs/{run_id}/inputs", status_code=202)
 async def steer_workspace_run(request: Request, run_id: str) -> dict[str, Any]:
     """Submit owner steering through Runtime's persisted mailbox, never via browser-local state."""
+    run = await _runtime(request, "GET", f"/agent/runs/{run_id}")
+    if run.get("status") in {"COMPLETED", "FAILED", "CANCELLED"}:
+        raise HTTPException(
+            status_code=409,
+            detail="任务已经结束，不能再补充指令；请基于现有结果创建一个新任务。",  # noqa: RUF001
+        )
     return await _runtime(request, "POST", f"/agent/runs/{run_id}/inputs", json=await request.json())
 
 

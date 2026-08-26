@@ -61,7 +61,7 @@ class GatewayPolicyClient:
             return response.json()
 
     async def quotas(self, tenant_id: str) -> dict[str, Any]:
-        """Read one tenant's effective quota snapshot for CAS-style management workflows."""
+        """读取租户当前生效的配额快照，供发布侧 CAS 校验和编辑时保留未改字段。"""
         async with httpx.AsyncClient(
             base_url=self._settings.llm_gateway_base_url,
             auth=self._auth(),
@@ -73,7 +73,7 @@ class GatewayPolicyClient:
             return response.json()
 
     async def replace_quotas(self, tenant_id: str, quotas: dict[str, Any]) -> dict[str, Any]:
-        """Apply a complete tenant quota projection; lifecycle ownership stays in Control Plane."""
+        """以完整投影替换租户配额；生命周期决策仍由 Control Plane 保有，Gateway 只执行。"""
         async with httpx.AsyncClient(
             base_url=self._settings.llm_gateway_base_url,
             auth=self._auth(),
