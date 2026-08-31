@@ -57,4 +57,3 @@ def test_unpublished_route_is_rejected_even_when_it_looks_like_a_provider_model(
     """The request cannot smuggle an arbitrary Gateway target through the model field."""
     with pytest.raises(ValueError, match="not published"):
         _plan_for_requested_model_route(_snapshot(), _plan(), "openai:gpt-secret-preview")
-
