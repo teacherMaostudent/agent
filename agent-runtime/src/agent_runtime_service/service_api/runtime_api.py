@@ -92,6 +92,53 @@ def _resolve_release(container, **arguments) -> dict:
             detail={"code": "release_resolution_rejected", "message": str(exc)},
         ) from exc
 
+
+def _published_model_routes(snapshot: dict) -> tuple[str, dict[str, dict]]:
+    """Return the only model routes a Run may request from its frozen Snapshot.
+
+    A UI selection is deliberately a logical route rather than ``provider:model``.  Credentials,
+    base URLs, model revisions and fallback behavior remain Gateway/Control-Plane concerns; a
+    caller can choose among published options but can never add a new upstream endpoint.
+    """
+    spec = snapshot.get("spec") if isinstance(snapshot, dict) else None
+    policy = spec.get("model_policy") if isinstance(spec, dict) else None
+    if not isinstance(policy, dict):
+        raise ValueError("published snapshot has no model policy")
+    routes = {
+        str(route.get("route_name")): route
+        for route in policy.get("routes", [])
+        if isinstance(route, dict) and route.get("route_name") and route.get("models")
+    }
+    default_route = str(policy.get("default_route", ""))
+    if default_route not in routes:
+        raise ValueError("published snapshot has no executable default model route")
+    return default_route, routes
+
+
+def _plan_for_requested_model_route(
+    snapshot: dict, compiled_plan: CompiledAgentPlan, requested_route: str | None
+) -> CompiledAgentPlan:
+    """Narrow one Run to a Snapshot-declared route while preserving its approved fallback chain."""
+    default_route, routes = _published_model_routes(snapshot)
+    selected_route = requested_route or default_route
+    selected = routes.get(selected_route)
+    if selected is None:
+        raise ValueError("requested model route is not published for this Agent Release")
+    models = [str(item) for item in selected.get("models", []) if str(item)]
+    if not models:
+        raise ValueError("requested model route has no executable model")
+    fallback_models = models[1:]
+    fallback = routes.get(str(selected.get("fallback_route", "")))
+    if fallback:
+        fallback_models.extend(str(item) for item in fallback.get("models", []) if str(item))
+    return compiled_plan.model_copy(
+        update={
+            "logical_model": models[0],
+            "fallback_models": list(dict.fromkeys(fallback_models)),
+            "data_region": selected.get("data_region"),
+        }
+    )
+
 router = APIRouter(prefix="/agent", tags=["agent-runtime"])
 
 
@@ -858,6 +905,27 @@ def _is_durable_plan(plan: CompiledAgentPlan) -> bool:
     return plan.execution_requirements.lifecycle == ExecutionLifecycle.DURABLE_WORKFLOW
 
 
+def _effective_attempt_budget(payload: AgentRunRequest, runtime_limits: dict, settings) -> int:
+    """计算 Run 的总下游尝试额度，并保证默认值不会与已发布子额度自相矛盾。
+
+    显式 ``attempt_budget`` 仍可主动缩小运行；未显式提供时，总额度至少覆盖快照允许的
+    LLM、工具和检索调用之和。此前固定默认值 6 小于桌面 Release 的 4+3+3，导致各项
+    子预算尚未耗尽时提前失败。
+    """
+    if payload.attempt_budget is not None:
+        return payload.attempt_budget
+    max_llm_calls = int(runtime_limits.get("max_llm_calls", settings.agent_max_llm_calls))
+    max_tool_calls = int(runtime_limits.get("max_tool_calls", settings.agent_max_tool_calls))
+    max_retrieval_rounds = int(
+        runtime_limits.get("max_retrieval_rounds", settings.agent_max_retrieval_rounds)
+    )
+    published_action_budget = min(
+        1000,
+        max_llm_calls + max_tool_calls + max_retrieval_rounds,
+    )
+    return max(settings.agent_attempt_budget, published_action_budget)
+
+
 def _trusted_identity(
     request: Request,
     tenant_id: str,
@@ -887,6 +955,63 @@ def _trusted_identity(
     if not tenant_id or not user_id:
         raise HTTPException(status_code=401, detail="trusted tenant and user identity are required")
     return tenant_id, user_id, permissions
+
+
+@router.get("/model-routes")
+def list_published_model_routes(
+    request: Request,
+    agent_id: str,
+    environment: str = "production",
+    session_id: str = "",
+    x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
+    x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
+    x_permissions: str = Header(default="rag:read", alias="X-Permissions"),
+) -> dict:
+    """List model choices from the exact Release that this task session will execute.
+
+    Resolving with the same generated ``session_id`` pins the release before the task form is
+    submitted.  The later POST reuses that binding, so a canary transition cannot make the
+    dropdown describe one Snapshot while the Run executes another.
+    """
+    tenant_id, user_id, permissions = _trusted_identity(
+        request, x_tenant_id, x_user_id, x_permissions
+    )
+    if "rag:read" not in permissions:
+        raise HTTPException(status_code=403, detail="rag:read permission is required")
+    if not session_id.strip():
+        raise HTTPException(status_code=422, detail="session_id is required to pin model choices")
+    container = request.app.state.container
+    resolution = _resolve_release(
+        container,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        environment=environment,
+        session_id=session_id,
+        trace_id=f"model-catalog:{session_id}",
+    )
+    snapshot = dict(resolution.get("snapshot") or {})
+    try:
+        default_route, routes = _published_model_routes(snapshot)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "agent_id": agent_id,
+        "environment": environment,
+        "session_id": session_id,
+        "release_id": str(resolution.get("release_id", "")),
+        "snapshot_id": str(resolution.get("version_id", "")),
+        "default_route": default_route,
+        "items": [
+            {
+                "route_name": name,
+                "models": [str(item) for item in route.get("models", [])],
+                "data_region": route.get("data_region"),
+                "fallback_route": route.get("fallback_route"),
+            }
+            for name, route in routes.items()
+        ],
+    }
 
 
 @router.post("/run")
@@ -945,7 +1070,12 @@ def run_agent(
             detail={"code": "snapshot_not_executable", "message": str(exc)},
         ) from exc
     snapshot = loaded_snapshot.snapshot
-    compiled_plan = loaded_snapshot.plan
+    try:
+        compiled_plan = _plan_for_requested_model_route(
+            loaded_snapshot.snapshot, loaded_snapshot.plan, payload.model_route
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if _is_durable_plan(compiled_plan) and not _temporal_worker_execution:
         raise HTTPException(
             status_code=409,
@@ -968,11 +1098,7 @@ def run_agent(
         agent_id=payload.agent_id,
         loaded_snapshot=loaded_snapshot,
         deadline_seconds=deadline_seconds,
-        attempt_budget=(
-            payload.attempt_budget
-            if payload.attempt_budget is not None
-            else container.settings.agent_attempt_budget
-        ),
+        attempt_budget=_effective_attempt_budget(payload, runtime_limits, container.settings),
         run_id=x_run_id,
         parent_run_id=str(payload.metadata.get("_parent_run_id", "")),
         parent_session_id=str(payload.metadata.get("_parent_session_id", "")),
@@ -1724,6 +1850,7 @@ def get_run(
 def list_my_runs(
     request: Request,
     limit: int = 30,
+    offset: int = 0,
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
     x_permissions: str = Header(default="", alias="X-Permissions"),
@@ -1737,14 +1864,22 @@ def list_my_runs(
     # Limit is bounded at the API boundary as well as in the repository so a future storage
     # implementation cannot accidentally turn one Workspace request into a tenant-wide scan.
     bounded_limit = min(max(limit, 1), 100)
+    bounded_offset = min(max(offset, 0), 10_000)
     tenant_wide = "run:tenant:read" in permissions
-    runs = (
-        request.app.state.container.run_store.list_for_tenant(tenant_id, limit=bounded_limit)
-        if tenant_wide
-        else request.app.state.container.run_store.list_for_user(tenant_id, user_id, limit=bounded_limit)
-    )
+    store = request.app.state.container.run_store
+    # Count and list use the same owner/shared predicate.  Never infer the total from a short page:
+    # doing so would make the final page look like the complete task history.
+    if tenant_wide:
+        total_items = store.count_for_tenant(tenant_id)
+        runs = store.list_for_tenant(tenant_id, limit=bounded_limit, offset=bounded_offset)
+    else:
+        total_items = store.count_for_user(tenant_id, user_id)
+        runs = store.list_for_user(tenant_id, user_id, limit=bounded_limit, offset=bounded_offset)
     return {
         "scope": "tenant-admin" if tenant_wide else "owned-or-shared",
+        "offset": bounded_offset,
+        "limit": bounded_limit,
+        "total_items": total_items,
         "items": [
             {
                 "run_id": run.run_id,
@@ -2152,10 +2287,15 @@ def assign_run_reviewer(
     )
     if "run:review:assign" not in permissions:
         raise HTTPException(status_code=403, detail="run:review:assign permission is required")
+    store = request.app.state.container.run_store
     try:
-        request.app.state.container.run_store.assign_reviewer(
-            tenant_id, run_id, payload.reviewer_id, user_id, payload.reason
-        )
+        # Current Runtime stores make Assignment and Governance Outbox insertion atomic.  The
+        # compatibility fallback preserves narrow unit-test doubles and never runs in deployment.
+        assign_with_audit = getattr(store, "assign_reviewer_and_audit", None)
+        if callable(assign_with_audit):
+            assign_with_audit(tenant_id, run_id, payload.reviewer_id, user_id, payload.reason)
+        else:
+            store.assign_reviewer(tenant_id, run_id, payload.reviewer_id, user_id, payload.reason)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -2364,6 +2504,8 @@ def get_run_audit_events(
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
     x_permissions: str = Header(default="", alias="X-Permissions"),
+    after_sequence: int = 0,
+    limit: int = 1_000,
 ) -> dict:
     """为所有者或显式租户观察员读取 Governance 审计事实，治理不可用时明确失败。"""
     tenant_id, user_id, permissions = _trusted_identity(request, x_tenant_id, x_user_id, x_permissions)
@@ -2374,10 +2516,16 @@ def get_run_audit_events(
     if not container.settings.governance_base_url:
         return {"items": [], "status": "unconfigured"}
     try:
+        # 审计读取与事件发布使用同一工作负载身份和专属 mTLS 证书，不能直连绕过生产传输边界。
+        headers = {"X-Tenant-Id": tenant_id, "X-Governance-Event-Key": container.settings.governance_event_key}
+        if container.workload_identity is not None:
+            headers.update(container.workload_identity.authorization_header())
         response = httpx.get(
             f"{container.settings.governance_base_url.rstrip('/')}/internal/v1/governance/audit-events/runs/{run_id}",
-            headers={"X-Tenant-Id": tenant_id, "X-Governance-Event-Key": container.settings.governance_event_key},
+            headers=headers,
+            params={"after_sequence": max(0, after_sequence), "limit": min(max(limit, 1), 1_000)},
             timeout=container.settings.service_http_timeout,
+            **container._mtls_options(),
         )
         response.raise_for_status()
     except httpx.HTTPError as exc:

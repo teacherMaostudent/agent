@@ -10,6 +10,7 @@ from contextlib import suppress
 from app.application.control_plane_service import ControlPlaneService
 from app.application.model_release_service import ModelReleaseService
 from app.core.config import Settings
+from app.domain.models import Tenant, utc_now
 from app.infrastructure.platform_clients import (
     AgentLabClient,
     GatewayPolicyClient,
@@ -84,6 +85,21 @@ class AppContainer:
         Initialize persistence before serving release-management requests.
         """
         await self.repository.initialize()
+        if self.settings.bootstrap_tenant_id:
+            # Explicit local bootstrap: idempotent and incapable of overwriting an administrator's
+            # later catalog update. It is intentionally unset in production configuration.
+            now = utc_now()
+            await self.repository.ensure_tenant(
+                Tenant(
+                    tenant_id=self.settings.bootstrap_tenant_id,
+                    display_name=self.settings.bootstrap_tenant_display_name,
+                    data_region=self.settings.bootstrap_tenant_data_region,
+                    created_by="bootstrap",
+                    created_at=now,
+                    updated_by="bootstrap",
+                    updated_at=now,
+                )
+            )
         if not self.settings.temporal_enabled:
             self._monitor_task = asyncio.create_task(self._monitor_model_releases())
 

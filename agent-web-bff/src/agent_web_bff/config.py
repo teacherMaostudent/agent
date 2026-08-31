@@ -22,6 +22,7 @@ class WebBffSettings(BaseSettings):
     oidc_jwks_url: str = ""
     oidc_authorization_url: str = ""
     oidc_token_url: str = ""
+    oidc_end_session_url: str = ""
     oidc_client_id: str = ""
     oidc_client_secret: str = Field(default="", repr=False)
     oidc_redirect_uri: str = ""
@@ -70,6 +71,7 @@ class WebBffSettings(BaseSettings):
                 "WEB_BFF_OIDC_TOKEN_URL": self.oidc_token_url,
                 "WEB_BFF_OIDC_CLIENT_ID": self.oidc_client_id,
                 "WEB_BFF_OIDC_REDIRECT_URI": self.oidc_redirect_uri,
+                "WEB_BFF_OIDC_END_SESSION_URL": self.oidc_end_session_url,
                 "WEB_BFF_SESSION_REDIS_URL": self.session_redis_url,
             }
             missing = [name for name, value in required.items() if not value]

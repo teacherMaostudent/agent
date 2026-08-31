@@ -151,6 +151,21 @@ CREATE TABLE IF NOT EXISTS tenant_policies (
     updated_at TEXT NOT NULL
 );
 
+-- Tenant is a platform aggregate, not a free-form attribute on a login account.
+-- Retired rows remain for audit and historical tenant_id foreign references.
+CREATE TABLE IF NOT EXISTS tenants (
+    tenant_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'suspended', 'retired')),
+    data_region TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status, tenant_id);
+
 CREATE TABLE IF NOT EXISTS outbox_events (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id TEXT NOT NULL UNIQUE,

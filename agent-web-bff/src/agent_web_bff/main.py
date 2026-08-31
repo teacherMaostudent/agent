@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from datetime import UTC, datetime
 from pathlib import Path
 from time import time
 from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from platform_infra.identity import OidcIdentityMiddleware
@@ -18,6 +20,7 @@ from platform_infra.mtls import mtls_httpx_options
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from agent_web_bff.browser_oidc import (
+    PUBLIC_OIDC_PATHS,
     BrowserOidcSessionMiddleware,
     BrowserSessionStore,
     build_auth_router,
@@ -59,6 +62,11 @@ class BrowserBoundaryMiddleware(BaseHTTPMiddleware):
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
+        # 当前前端资源使用稳定文件名（app.js/styles.css），浏览器若采用启发式缓存，
+        # 即使 BFF 容器已重建也可能继续执行旧权限 UI。要求每次导航重新验证 ETag，
+        # 在保留带宽收益的同时确保发布后的页面代码立即生效。
+        if request.url.path == "/" or request.url.path.endswith((".html", ".js", ".css")):
+            response.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
         return response
 
 
@@ -71,13 +79,64 @@ app.add_middleware(
     jwks_url=settings.oidc_jwks_url,
     # Logout must remain public to the token validator: a stale/invalid BFF session is precisely
     # when the browser needs to revoke its opaque cookie and start a clean Authorization Code flow.
-    public_paths=("/health/ready", "/auth/login", "/auth/callback", "/auth/logout", "/auth/relogin"),
+    # favicon 是浏览器的辅助请求，不含业务内容；必须与外层会话中间件同时放行，
+    # 否则未登录加载图标会触发授权重定向循环。
+    public_paths=PUBLIC_OIDC_PATHS,
 )
 if browser_sessions is not None:
     # Added after the JWT middleware so Starlette executes this outer layer first. It resolves
     # the HttpOnly cookie and injects the token that the inner middleware then validates normally.
     app.add_middleware(BrowserOidcSessionMiddleware, settings=settings, store=browser_sessions)
     app.include_router(build_auth_router(settings, browser_sessions))
+else:
+
+    @app.get("/auth/signout", include_in_schema=False)
+    async def local_development_signout() -> RedirectResponse:
+        """End the browser's local demonstration context without pretending it is IdP logout.
+
+        Local Compose accepts explicit test headers, so it has no persistent authenticated session
+        to revoke.  The redirect marks the page as signed out; the UI then requires an explicit
+        local identity-template selection before it restores any simulated privileges.
+        """
+        response = RedirectResponse("/?local_signed_out=1", status_code=303)
+        response.delete_cookie(settings.session_cookie_name, path="/")
+        return response
+
+    @app.get("/auth/switch-account", include_in_schema=False)
+    async def local_development_switch_account() -> RedirectResponse:
+        """Return local Compose users to the neutral shell before selecting another test profile."""
+        return RedirectResponse("/?local_signed_out=1", status_code=303)
+
+
+async def _request_object(request: Request) -> dict[str, Any]:
+    """统一拒绝损坏 JSON、数组和 null，防止表单输入触发 AttributeError/500。"""
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="request body must be a JSON object") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="request body must be a JSON object")
+    return payload
+
+
+def _form_number(payload: dict[str, Any], name: str, default: int | float = 0,
+                 *, integer: bool = False, maximum: float | None = None) -> int | float:
+    """金额与比例只接受有限非负数，不能把布尔值、NaN 或小数静默转成整数。"""
+    value = payload.get(name, default)
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or value < 0 or value > 1e308 or not math.isfinite(value)
+            or (integer and value != int(value)) or (maximum is not None and value > maximum)):
+        raise HTTPException(status_code=422, detail=f"{name} is invalid")
+    return int(value) if integer else float(value)
+
+
+def _form_strings(payload: dict[str, Any], name: str, maximum: int) -> list[str]:
+    """列表必须显式提交为字符串数组；不能将租户白名单字符串拆成字符后发布。"""
+    values = payload.get(name, [])
+    if (not isinstance(values, list) or len(values) > maximum
+            or any(not isinstance(value, str) for value in values)):
+        raise HTTPException(status_code=422, detail=f"{name} must be a string array of at most {maximum} items")
+    return values
 
 
 def _identity_headers(request: Request) -> dict[str, str]:
@@ -198,6 +257,23 @@ async def _identity_admin(method: str, path: str, **kwargs: Any) -> Any:
     if response.status_code >= 400:
         raise HTTPException(status_code=response.status_code, detail="identity provider rejected the request")
     return {} if response.status_code == 204 or not response.content else response.json()
+
+
+def _identity_administration_configured() -> bool:
+    """Return whether human-user administration has a real IdP service-account path.
+
+    Tenant Catalog management stays available through Control Plane, but human-account changes
+    require both verified OIDC and a separate least-privilege IdP service account.  Exposing this
+    capability in the session projection keeps the UI from offering a writable-looking directory
+    when a developer deliberately selected Header-only compatibility mode.
+    """
+    return all((
+        settings.oidc_enabled,
+        settings.identity_admin_base_url,
+        settings.identity_admin_realm,
+        settings.identity_admin_client_id,
+        settings.identity_admin_client_secret,
+    ))
 
 
 async def _runtime(request: Request, method: str, path: str, **kwargs: Any) -> Any:
@@ -545,10 +621,11 @@ def _workspace_detail_projection(
         # misleading UI that offers cancel/steering to someone Runtime will correctly reject.
         "can_control": run.get("user_id") == user_id,
         "available_actions": (
+            [] if run.get("user_id") != user_id else
             ["approve", "reject", "cancel"]
             if run.get("status") == "WAITING_APPROVAL"
             else ["cancel"]
-            if run.get("status") not in {"COMPLETED", "FAILED", "CANCELLED"}
+            if run.get("status") not in {"COMPLETED", "FAILED", "CANCELLED", "LIMIT_EXCEEDED", "REJECTED"}
             else []
         ),
     }
@@ -566,12 +643,18 @@ async def session(request: Request) -> dict[str, Any]:
     claims = request.scope.get("auth.claims", {}) if settings.oidc_enabled else {}
     return {
         "tenant_id": request.headers.get("X-Tenant-Id", ""),
+        # ``user_id`` is the stable OIDC subject used for ownership and authorization.  A login
+        # name can be renamed, so it must never be used to decide who owns a Run or session.
         "user_id": request.headers.get("X-User-Id", ""),
+        "username": claims.get("preferred_username", "") if isinstance(claims, dict) else "",
         "roles": [item for item in request.headers.get("X-Roles", "").split(",") if item],
         "permissions": [
             item for item in request.headers.get("X-Permissions", "").split(",") if item
         ],
         "authentication": "oidc" if settings.oidc_enabled else "local-development",
+        # Capability does not replace per-route authorization: directory routes still require
+        # explicit identity permissions and the protected platform-super-admin role.
+        "identity_management_available": _identity_administration_configured(),
         "claim_subject": claims.get("sub", "") if isinstance(claims, dict) else "",
     }
 
@@ -579,6 +662,7 @@ async def session(request: Request) -> dict[str, Any]:
 _MANAGEABLE_HUMAN_ROLES = frozenset(
     {"agent-user", "agent-reviewer", "platform-operator", "governance-auditor"}
 )
+_PROTECTED_HUMAN_ROLE = "platform-super-admin"
 _MANAGEABLE_PERMISSIONS = frozenset({
     "rag:read", "rag:ingest:approve", "file:scan", "tool:invoke", "ops:read",
     "release:read", "release:validate", "release:version:publish", "release:create",
@@ -588,37 +672,165 @@ _MANAGEABLE_PERMISSIONS = frozenset({
     "agent:review", "run:review:approve", "run:review:assign", "run:review:transfer",
     "run:review:comment", "run:review:label", "evidence:content:read", "run:share",
     "run:tenant:read", "identity:users:read", "identity:users:write",
+    "tenant:read", "tenant:write",
 })
+
+
+def _require_platform_super_admin(request: Request) -> None:
+    """Guard global directory actions independently of any editable permission checkbox."""
+    roles = {item for item in request.headers.get("X-Roles", "").split(",") if item}
+    if _PROTECTED_HUMAN_ROLE not in roles:
+        raise HTTPException(status_code=403, detail="the platform-super-admin role is required")
+
+
+async def _require_active_catalog_tenant(request: Request, tenant_id: str) -> None:
+    """Reject user assignment to missing/suspended tenants before mutating the IdP record."""
+    tenant = await _control_plane(request, "GET", f"/v1/tenants/{quote(tenant_id, safe='')}")
+    if tenant.get("status") != "active":
+        raise HTTPException(status_code=422, detail="users can be assigned only to an active tenant")
+
+
+@app.get("/api/console/tenants")
+async def list_tenants(request: Request) -> dict[str, Any]:
+    """Expose the authoritative Tenant Catalog; only the highest platform role can enumerate it."""
+    _require_permission(request, "tenant:read")
+    _require_platform_super_admin(request)
+    return {"items": await _control_plane(request, "GET", "/v1/tenants")}
+
+
+@app.post("/api/console/tenants", status_code=201)
+async def create_tenant(request: Request) -> dict[str, Any]:
+    """Create one tenant and its default policy through Control Plane's transactional boundary."""
+    _require_permission(request, "tenant:write")
+    _require_platform_super_admin(request)
+    payload = await _request_object(request)
+    return await _control_plane(request, "POST", "/v1/tenants", json=payload)
+
+
+@app.put("/api/console/tenants/{tenant_id}")
+async def update_tenant(tenant_id: str, request: Request) -> dict[str, Any]:
+    """Soft-suspend or retire a tenant; deletion is intentionally excluded to preserve evidence."""
+    _require_permission(request, "tenant:write")
+    _require_platform_super_admin(request)
+    payload = await _request_object(request)
+    return await _control_plane(request, "PUT", f"/v1/tenants/{quote(tenant_id, safe='')}", json=payload)
 
 
 @app.get("/api/console/identity/users")
 async def list_identity_users(request: Request) -> dict[str, Any]:
-    """Return a bounded, credential-free user projection for the Console authorization screen."""
+    """Return tenant-scoped human users; the bootstrap super-admin may view every tenant."""
     _require_permission(request, "identity:users:read")
     users = await _identity_admin("GET", "/users", params={"first": 0, "max": 100})
     items = []
+    caller_tenant = request.headers.get("X-Tenant-Id", "")
+    caller_user_id = request.headers.get("X-User-Id", "")
+    caller_roles = {item for item in request.headers.get("X-Roles", "").split(",") if item}
+    super_admin = _PROTECTED_HUMAN_ROLE in caller_roles
     for user in users if isinstance(users, list) else []:
         attributes = user.get("attributes") if isinstance(user.get("attributes"), dict) else {}
         role_rows = await _identity_admin("GET", f"/users/{user['id']}/role-mappings/realm")
+        all_roles = {row.get("name", "") for row in role_rows}
+        username = user.get("username", "")
+        tenant_id = (attributes.get("tenant_id") or [""])[0]
+        # Workload service accounts are never assignable through the human authorization screen.
+        if username.startswith("service-account-") or "platform-workload" in all_roles:
+            continue
+        if not super_admin and tenant_id != caller_tenant:
+            continue
         roles = sorted(
             row.get("name", "") for row in role_rows if row.get("name", "") in _MANAGEABLE_HUMAN_ROLES
         )
         items.append({
-            "id": user["id"], "username": user.get("username", ""), "enabled": bool(user.get("enabled")),
-            "email": user.get("email", ""), "tenant_id": (attributes.get("tenant_id") or [""])[0],
+            # ``identity_id`` is Keycloak's management identifier. ``user_id`` is OIDC subject
+            # and normally equal to it; username remains presentation/login-only.
+            "identity_id": user["id"], "user_id": user["id"], "username": username, "enabled": bool(user.get("enabled")),
+            "email": user.get("email", ""), "tenant_id": tenant_id,
             "permissions": sorted(attributes.get("permissions") or []), "roles": roles,
+            "current": user["id"] == caller_user_id,
+            "protected": _PROTECTED_HUMAN_ROLE in all_roles,
         })
     return {
         "items": items, "roles": sorted(_MANAGEABLE_HUMAN_ROLES),
-        "permissions": sorted(_MANAGEABLE_PERMISSIONS),
+        "permissions": sorted(_MANAGEABLE_PERMISSIONS), "super_admin": super_admin,
     }
+
+
+async def _assignable_reviewers(request: Request) -> list[dict[str, str]]:
+    """Resolve the only people that may receive a Review Assignment in this tenant.
+
+    Login names are presentation-only.  The Runtime stores the immutable OIDC subject as
+    ``reviewer_id`` so a later username change cannot silently move an existing assignment.
+    This server-side directory check is deliberately independent of the browser select list.
+    """
+    tenant_id = request.headers.get("X-Tenant-Id", "").strip()
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="verified tenant identity is required")
+    users = await _identity_admin("GET", "/users", params={"first": 0, "max": 100})
+    reviewers: list[dict[str, str]] = []
+    for user in users if isinstance(users, list) else []:
+        identity_id = str(user.get("id", "")).strip()
+        attributes = user.get("attributes") if isinstance(user.get("attributes"), dict) else {}
+        user_tenant = str((attributes.get("tenant_id") or [""])[0]).strip()
+        permissions = {str(value).strip() for value in attributes.get("permissions") or []}
+        if not identity_id or not bool(user.get("enabled")) or user_tenant != tenant_id:
+            continue
+        role_rows = await _identity_admin("GET", f"/users/{identity_id}/role-mappings/realm")
+        roles = {str(row.get("name", "")).strip() for row in role_rows if isinstance(row, dict)}
+        # Service identities and disabled/cross-tenant accounts can never become human reviewers.
+        if (
+            str(user.get("username", "")).startswith("service-account-")
+            or "platform-workload" in roles
+            or "agent-reviewer" not in roles
+            or "agent:review" not in permissions
+        ):
+            continue
+        reviewers.append({"user_id": identity_id, "username": str(user.get("username", ""))})
+    return sorted(reviewers, key=lambda item: (item["username"].lower(), item["user_id"]))
+
+
+@app.get("/api/workspace/reviewers")
+async def list_assignable_reviewers(request: Request) -> dict[str, Any]:
+    """Return a tenant-scoped reviewer directory for the assignment picker.
+
+    Only an authorized assigner can enumerate this reduced directory; ordinary users cannot use
+    the endpoint to discover colleagues or reviewer identities.
+    """
+    _require_permission(request, "run:review:assign")
+    return {"items": await _assignable_reviewers(request)}
+
+
+@app.post("/api/workspace/runs/{run_id}/review-assignment", status_code=204)
+async def assign_workspace_review(request: Request, run_id: str) -> Response:
+    """Validate a human reviewer against IdP, then create the Runtime Assignment.
+
+    The Runtime persists the assignment and its Governance Outbox event in one transaction.  The
+    IdP is consulted here because it is the authority for tenant membership, enabled status,
+    human roles, and effective user permissions; a select value alone is never trusted.
+    """
+    _require_permission(request, "run:review:assign")
+    _require_high_risk_authentication(request)
+    payload = await _request_object(request)
+    reviewer_id = str(payload.get("reviewer_id", "")).strip()
+    reason = str(payload.get("reason", "")).strip()
+    if not 2 <= len(reviewer_id) <= 160 or not 2 <= len(reason) <= 2_000:
+        raise HTTPException(status_code=422, detail="reviewer_id and reason must be between 2 and 2000 characters")
+    reviewer_ids = {item["user_id"] for item in await _assignable_reviewers(request)}
+    if reviewer_id not in reviewer_ids:
+        raise HTTPException(status_code=422, detail="reviewer must be an enabled reviewer in the current tenant")
+    await _runtime(
+        request,
+        "POST",
+        f"/agent/runs/{quote(run_id, safe='')}/review-assignments",
+        json={"reviewer_id": reviewer_id, "reason": reason},
+    )
+    return Response(status_code=204)
 
 
 @app.put("/api/console/identity/users/{identity_id}")
 async def update_identity_user(identity_id: str, request: Request) -> dict[str, Any]:
     """Apply a reasoned tenant/role/permission change; passwords and service roles are excluded."""
     _require_permission(request, "identity:users:write")
-    payload = await request.json()
+    payload = await _request_object(request)
     reason = str(payload.get("reason", "")).strip()
     tenant_id = str(payload.get("tenant_id", "")).strip()
     roles = {str(value) for value in payload.get("roles", [])}
@@ -629,10 +841,29 @@ async def update_identity_user(identity_id: str, request: Request) -> dict[str, 
     ):
         raise HTTPException(status_code=422, detail="tenant, reason, and catalog roles/permissions are required")
     current = await _identity_admin("GET", f"/users/{identity_id}")
+    current_roles = await _identity_admin("GET", f"/users/{identity_id}/role-mappings/realm")
+    existing_role_names = {row.get("name", "") for row in current_roles}
+    current_attributes = current.get("attributes") if isinstance(current.get("attributes"), dict) else {}
+    current_tenant = (current_attributes.get("tenant_id") or [""])[0]
+    caller_tenant = request.headers.get("X-Tenant-Id", "")
+    caller_user_id = request.headers.get("X-User-Id", "")
+    caller_roles = {item for item in request.headers.get("X-Roles", "").split(",") if item}
+    super_admin = _PROTECTED_HUMAN_ROLE in caller_roles
+    if current.get("username", "").startswith("service-account-") or "platform-workload" in existing_role_names:
+        raise HTTPException(status_code=403, detail="workload identities cannot be managed here")
+    if not super_admin and current_tenant != caller_tenant:
+        raise HTTPException(status_code=404, detail="identity user was not found in the current tenant")
+    if _PROTECTED_HUMAN_ROLE in existing_role_names:
+        raise HTTPException(status_code=403, detail="the bootstrap super-admin is protected from browser changes")
+    await _require_active_catalog_tenant(request, tenant_id)
+    if current.get("id") == caller_user_id and (
+        not bool(payload.get("enabled", current.get("enabled", True)))
+        or "identity:users:write" not in permissions
+    ):
+        raise HTTPException(status_code=422, detail="an administrator cannot disable or lock out the active account")
     current["enabled"] = bool(payload.get("enabled", current.get("enabled", True)))
     current["attributes"] = {"tenant_id": [tenant_id], "permissions": permissions}
     await _identity_admin("PUT", f"/users/{identity_id}", json=current)
-    current_roles = await _identity_admin("GET", f"/users/{identity_id}/role-mappings/realm")
     removable = [row for row in current_roles if row.get("name") in _MANAGEABLE_HUMAN_ROLES]
     if removable:
         await _identity_admin("DELETE", f"/users/{identity_id}/role-mappings/realm", json=removable)
@@ -642,13 +873,43 @@ async def update_identity_user(identity_id: str, request: Request) -> dict[str, 
         await _identity_admin("POST", f"/users/{identity_id}/role-mappings/realm", json=selected)
     # Keycloak records the protected resource mutation in its administrative audit stream.
     await _identity_admin("GET", f"/users/{identity_id}")
+    # Existing access tokens contain the old claims. Revoking the target user's IdP sessions makes
+    # the new role/permission set effective on their next request instead of hours later.
+    await _identity_admin("POST", f"/users/{identity_id}/logout")
     return {"status": "updated", "identity_id": identity_id, "reason": reason, "changed_at": datetime.now(UTC).isoformat(), "request_id": f"identity_{uuid4().hex}"}
 
 
 @app.get("/api/workspace/runs")
-async def list_workspace_runs(request: Request, limit: int = 30) -> dict[str, Any]:
+async def list_workspace_runs(request: Request, limit: int = 8, page: int = 1) -> dict[str, Any]:
     """Project only the current user's task list; no target-user filter exists."""
-    return await _runtime(request, "GET", "/agent/runs", params={"limit": limit})
+    bounded_limit = min(max(limit, 1), 100)
+    bounded_page = min(max(page, 1), 1_251)
+    return await _runtime(
+        request, "GET", "/agent/runs",
+        params={"limit": bounded_limit, "offset": (bounded_page - 1) * bounded_limit},
+    )
+
+
+@app.get("/api/workspace/model-routes")
+async def workspace_model_routes(
+    request: Request, agent_id: str, environment: str, session_id: str
+) -> dict[str, Any]:
+    """Expose only the selected Release's logical model routes to the task form.
+
+    The Runtime resolves and pins the Release using ``session_id``.  This proxy intentionally
+    does not return provider credentials, base URLs, vendor revisions, or arbitrary Gateway
+    catalog entries; the browser can choose only a route declared by the Agent Snapshot.
+    """
+    if not 2 <= len(agent_id.strip()) <= 160:
+        raise HTTPException(status_code=422, detail="agent_id is invalid")
+    if not 2 <= len(environment.strip()) <= 64 or not 8 <= len(session_id.strip()) <= 160:
+        raise HTTPException(status_code=422, detail="environment or session_id is invalid")
+    return await _runtime(
+        request,
+        "GET",
+        "/agent/model-routes",
+        params={"agent_id": agent_id, "environment": environment, "session_id": session_id},
+    )
 
 
 @app.get("/api/review/runs")
@@ -671,14 +932,14 @@ async def review_run(request: Request, run_id: str) -> dict[str, Any]:
 @app.post("/api/review/runs/{run_id}/approval")
 async def review_approval(request: Request, run_id: str) -> dict[str, Any]:
     """Submit one reviewer decision to Runtime's existing approval inbox and state machine."""
-    payload = await request.json()
+    payload = await _request_object(request)
     return await _runtime(request, "POST", f"/agent/runs/{run_id}/resume", json=payload)
 
 
 @app.post("/api/review/runs/{run_id}/transfer", status_code=204)
 async def review_transfer(request: Request, run_id: str) -> Response:
     """Transfer only the caller's explicit Review Assignment through Runtime's atomic store operation."""
-    payload = await request.json()
+    payload = await _request_object(request)
     await _runtime(request, "POST", f"/agent/review/runs/{run_id}/transfer", json=payload)
     return Response(status_code=204)
 
@@ -687,7 +948,7 @@ async def review_transfer(request: Request, run_id: str) -> Response:
 async def add_review_collaborator(request: Request, run_id: str) -> Response:
     """新增共同审查人而不撤销当前 reviewer；Runtime 验证 Assignment 与细粒度权限。"""
     await _runtime(
-        request, "POST", f"/agent/review/runs/{run_id}/collaborators", json=await request.json()
+        request, "POST", f"/agent/review/runs/{run_id}/collaborators", json=await _request_object(request)
     )
     return Response(status_code=204)
 
@@ -711,7 +972,7 @@ async def create_review_comment(request: Request, run_id: str) -> dict[str, Any]
     """将当前审查人的备注交给 Runtime 写入，以转交后的 Assignment 为最终写入边界。"""
     _require_permission(request, "run:review:comment")
     return await _runtime(
-        request, "POST", f"/agent/review/runs/{run_id}/comments", json=await request.json()
+        request, "POST", f"/agent/review/runs/{run_id}/comments", json=await _request_object(request)
     )
 
 
@@ -721,8 +982,8 @@ async def review_feedback(request: Request, run_id: str) -> dict[str, Any]:
     _require_permission(request, "run:review:label")
     # Runtime confirms the reviewer-to-Run relation before Governance receives any feedback.
     await _runtime(request, "GET", f"/agent/review/runs/{run_id}")
-    payload = await request.json()
-    rating = int(payload.get("rating", 0))
+    payload = await _request_object(request)
+    rating = _form_number(payload, "rating", integer=True, maximum=5)
     if rating < 1 or rating > 5:
         raise HTTPException(status_code=422, detail="rating must be between 1 and 5")
     headers = _governance_headers(request)
@@ -732,7 +993,7 @@ async def review_feedback(request: Request, run_id: str) -> dict[str, Any]:
         "reviewStatus": str(payload.get("review_status", "REVIEWED")),
         "criticality": str(payload.get("criticality", "normal")),
         "expectedAnswer": str(payload.get("expected_answer", ""))[:12_000],
-        "tags": [str(item)[:120] for item in payload.get("tags", [])[:20]],
+        "tags": [item[:120] for item in _form_strings(payload, "tags", 20)],
         "source": "agent-web-review",
     }
     try:
@@ -770,7 +1031,7 @@ async def console_golden_candidates(request: Request) -> dict[str, Any]:
 async def review_console_golden_candidate(request: Request, candidate_id: str) -> dict[str, Any]:
     """批准或拒绝候选 Golden；Governance 仍是写入 Golden Case 的唯一所有者。"""
     _require_permission(request, "eval:golden:review")
-    payload = await request.json()
+    payload = await _request_object(request)
     if not isinstance(payload.get("approved"), bool):
         raise HTTPException(status_code=422, detail="approved must be a boolean")
     try:
@@ -827,20 +1088,18 @@ async def console_services(request: Request) -> dict[str, Any]:
 
 
 @app.get("/api/console/agents")
-async def console_agents(request: Request) -> dict[str, Any]:
-    """列出控制面中当前租户的 Agent Draft 摘要，供发布浏览而非运行时解析。"""
+async def console_agents(
+    request: Request,
+    limit: int = Query(default=8, ge=1, le=100),
+    page: int = Query(default=1, ge=1, le=12_501),
+) -> dict[str, Any]:
+    """分页列出当前租户的 Agent 发布目录，不在浏览器端做全量切片。"""
     _require_permission(request, "release:read")
-    try:
-        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds, **_mtls_options()) as client:
-            response = await client.get(
-                f"{settings.control_plane_base_url.rstrip('/')}/v1/agents",
-                headers=_control_plane_headers(request),
-            )
-    except httpx.RequestError as exc:
-        raise HTTPException(status_code=503, detail="control plane is unavailable") from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=response.text[:2_000])
-    agents = response.json()
+    offset = (page - 1) * limit
+    result = await _control_plane(
+        request, "GET", "/v1/agents/catalog", params={"limit": limit, "offset": offset}
+    )
+    agents = result.get("items", []) if isinstance(result, dict) else []
     return {
         "items": [
             {
@@ -850,7 +1109,10 @@ async def console_agents(request: Request) -> dict[str, Any]:
             }
             for item in agents
             if isinstance(item, dict)
-        ]
+        ],
+        "total_items": int(result.get("total_items", 0)) if isinstance(result, dict) else 0,
+        "limit": int(result.get("limit", limit)) if isinstance(result, dict) else limit,
+        "page": page,
     }
 
 
@@ -888,6 +1150,28 @@ async def console_agent_releases(
     }
 
 
+@app.get("/api/console/agents/{agent_id}/versions")
+async def console_agent_versions(request: Request, agent_id: str) -> dict[str, Any]:
+    """Expose immutable Version metadata for release selection, never its embedded snapshot body."""
+    _require_permission(request, "release:read")
+    versions = await _control_plane(request, "GET", f"/v1/agents/{agent_id}/versions")
+    return {
+        "items": [
+            {
+                "version_id": item.get("version_id", ""),
+                "semantic_version": item.get("semantic_version", ""),
+                "source_revision": item.get("source_revision", 0),
+                "content_hash": item.get("content_hash", ""),
+                "change_summary": item.get("change_summary", ""),
+                "published_by": item.get("published_by", ""),
+                "published_at": item.get("published_at", ""),
+            }
+            for item in versions
+            if isinstance(item, dict)
+        ]
+    }
+
+
 @app.post("/api/console/agents/{agent_id}/validate")
 async def console_validate_agent(request: Request, agent_id: str) -> dict[str, Any]:
     """发布前只读校验 Draft；该动作不会创建 Version 或改变 Runtime 流量。"""
@@ -900,7 +1184,7 @@ async def console_publish_agent_version(request: Request, agent_id: str) -> dict
     """冻结一个不可变 Agent Version；语义版本和变更摘要由操作者明确提交。"""
     _require_permission(request, "release:version:publish")
     _require_high_risk_authentication(request)
-    payload = await request.json()
+    payload = await _request_object(request)
     semantic_version = str(payload.get("semantic_version", ""))
     if not semantic_version or len(semantic_version) > 80:
         raise HTTPException(status_code=422, detail="semantic_version is required")
@@ -920,7 +1204,7 @@ async def console_create_release(request: Request, agent_id: str) -> dict[str, A
     """由冻结 Version 创建候选 Release，质量门禁仍由 Control Plane 强制执行。"""
     _require_permission(request, "release:create")
     _require_high_risk_authentication(request)
-    payload = await request.json()
+    payload = await _request_object(request)
     if str(payload.get("confirm_agent_id", "")) != agent_id:
         raise HTTPException(status_code=422, detail="confirm_agent_id must match the target Agent")
     return await _control_plane(
@@ -930,8 +1214,8 @@ async def console_create_release(request: Request, agent_id: str) -> dict[str, A
         json={
             "version_id": str(payload.get("version_id", "")),
             "environment": str(payload.get("environment", "production")),
-            "rollout_percentage": int(payload.get("rollout_percentage", 0)),
-            "tenant_allowlist": [str(item) for item in payload.get("tenant_allowlist", [])[:100]],
+            "rollout_percentage": _form_number(payload, "rollout_percentage", integer=True, maximum=100),
+            "tenant_allowlist": _form_strings(payload, "tenant_allowlist", 100),
             "reason": str(payload.get("reason", ""))[:2_000],
             "quality_gate_run_id": payload.get("quality_gate_run_id") or None,
             "agent_lab_experiment_id": payload.get("agent_lab_experiment_id") or None,
@@ -945,11 +1229,11 @@ async def _release_control_action(
     """执行单个 Release 高风险动作，并用回显 ID 防止误操作错误目标。"""
     _require_permission(request, permission)
     _require_high_risk_authentication(request)
-    payload = await request.json()
+    payload = await _request_object(request)
     if str(payload.get("confirm_release_id", "")) != release_id:
         raise HTTPException(status_code=422, detail="confirm_release_id must match the target Release")
     body = (
-        {"rollout_percentage": int(payload.get("rollout_percentage", 100))}
+        {"rollout_percentage": _form_number(payload, "rollout_percentage", 100, integer=True, maximum=100)}
         if action == "promote"
         else {}
     )
@@ -988,7 +1272,7 @@ async def console_requeue_connector_artifact(request: Request, outbox_id: str) -
     """显式重排一条当前租户死信；调用者必须回显目标 ID。"""
     _require_permission(request, "connector:artifact:dlq:requeue")
     _require_high_risk_authentication(request)
-    payload = await request.json()
+    payload = await _request_object(request)
     if str(payload.get("confirm_outbox_id", "")) != outbox_id:
         raise HTTPException(status_code=422, detail="confirm_outbox_id must match the target record")
     return await _runtime(
@@ -1012,7 +1296,7 @@ async def console_create_model_route_release(request: Request) -> dict[str, Any]
     """Start a quality-gated model canary instead of mutating Gateway routes directly."""
     _require_permission(request, "model:route:release")
     _require_high_risk_authentication(request)
-    payload = await request.json()
+    payload = await _request_object(request)
     route_name = str(payload.get("routeName", "")).strip()
     if not route_name or str(payload.get("confirmRouteName", "")) != route_name:
         raise HTTPException(status_code=422, detail="confirmRouteName must match routeName")
@@ -1024,7 +1308,7 @@ async def console_create_model_route_release(request: Request) -> dict[str, Any]
             "routeName": route_name,
             "canaryTarget": str(payload.get("canaryTarget", ""))[:200],
             "judgeRunId": str(payload.get("judgeRunId", ""))[:200],
-            "canaryPercent": int(payload.get("canaryPercent", 5)),
+            "canaryPercent": _form_number(payload, "canaryPercent", 5, integer=True, maximum=100),
             "modelLabExperimentId": str(payload.get("modelLabExperimentId", ""))[:200],
         },
     )
@@ -1044,7 +1328,7 @@ async def console_rollback_model_route_release(request: Request, release_id: str
     """Restore the recorded pre-canary route after ID confirmation and strong authentication."""
     _require_permission(request, "model:route:rollback")
     _require_high_risk_authentication(request)
-    payload = await request.json()
+    payload = await _request_object(request)
     if str(payload.get("confirmReleaseId", "")) != release_id:
         raise HTTPException(status_code=422, detail="confirmReleaseId must match release_id")
     return await _control_plane(
@@ -1076,14 +1360,14 @@ async def console_update_llm_quota(request: Request, subject: str) -> dict[str, 
     _require_high_risk_authentication(request)
     if not subject or len(subject) > 160 or ":" in subject:
         raise HTTPException(status_code=422, detail="subject must be '*' or a local user ID")
-    payload = await request.json()
+    payload = await _request_object(request)
     if str(payload.get("confirmSubject", "")) != subject:
         raise HTTPException(status_code=422, detail="confirmSubject must match subject")
     policy = await _control_plane(request, "GET", "/v1/tenant-policy")
     quotas = dict(policy.get("llm_quotas", {}) or {})
     quotas[subject] = {
-        "daily_token_limit": int(payload.get("dailyTokenLimit", 0)),
-        "daily_cost_limit_usd": float(payload.get("dailyCostLimitUsd", 0)),
+        "daily_token_limit": _form_number(payload, "dailyTokenLimit", integer=True),
+        "daily_cost_limit_usd": _form_number(payload, "dailyCostLimitUsd"),
         "currency": "USD",
     }
     updated = await _control_plane(
@@ -1115,7 +1399,7 @@ async def console_create_audit_export(request: Request) -> dict[str, Any]:
     """Queue a retention-locked audit export after explicit strong authentication."""
     _require_permission(request, "audit:export")
     _require_high_risk_authentication(request)
-    payload = await request.json()
+    payload = await _request_object(request)
     tenant_id = request.headers.get("X-Tenant-Id", "")
     if str(payload.get("confirmTenantId", "")) != tenant_id:
         raise HTTPException(status_code=422, detail="confirmTenantId must match current tenant")
@@ -1127,7 +1411,7 @@ async def console_requeue_audit_export(request: Request, job_id: str) -> dict[st
     """Explicitly replay one failed export; silent automatic DLQ replay is forbidden."""
     _require_permission(request, "audit:export:requeue")
     _require_high_risk_authentication(request)
-    payload = await request.json()
+    payload = await _request_object(request)
     if str(payload.get("confirmJobId", "")) != job_id:
         raise HTTPException(status_code=422, detail="confirmJobId must match target job")
     return await _governance(
@@ -1138,8 +1422,11 @@ async def console_requeue_audit_export(request: Request, job_id: str) -> dict[st
 @app.post("/api/workspace/runs")
 async def create_workspace_run(request: Request) -> dict[str, Any]:
     """Submit an interactive Workspace task while preserving Runtime's release resolution."""
-    payload = await request.json()
-    payload["metadata"] = {**payload.get("metadata", {}), "interaction_channel": "agent-web"}
+    payload = await _request_object(request)
+    metadata = payload.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise HTTPException(status_code=422, detail="metadata must be a JSON object")
+    payload["metadata"] = {**metadata, "interaction_channel": "agent-web"}
     return await _runtime(request, "POST", "/agent/interactive-runs", json=payload)
 
 
@@ -1248,7 +1535,7 @@ async def workspace_artifact_ingestion_decision(
     """Forward a permissioned, ID-confirmed decision; Web never submits RAG content."""
     _require_permission(request, "rag:ingest:approve")
     _require_high_risk_authentication(request)
-    payload = await request.json()
+    payload = await _request_object(request)
     if str(payload.get("confirm_artifact_id", "")) != artifact_id:
         raise HTTPException(status_code=422, detail="confirm_artifact_id must match artifact_id")
     return await _runtime(
@@ -1314,7 +1601,7 @@ async def cancel_workspace_run(request: Request, run_id: str) -> dict[str, Any]:
 @app.post("/api/workspace/runs/{run_id}/shares", status_code=204)
 async def share_workspace_run(request: Request, run_id: str) -> Response:
     """Proxy an owner-only, read-only Run share; Runtime enforces ownership and scope."""
-    await _runtime(request, "POST", f"/agent/runs/{run_id}/shares", json=await request.json())
+    await _runtime(request, "POST", f"/agent/runs/{run_id}/shares", json=await _request_object(request))
     return Response(status_code=204)
 
 
@@ -1322,18 +1609,18 @@ async def share_workspace_run(request: Request, run_id: str) -> Response:
 async def steer_workspace_run(request: Request, run_id: str) -> dict[str, Any]:
     """Submit owner steering through Runtime's persisted mailbox, never via browser-local state."""
     run = await _runtime(request, "GET", f"/agent/runs/{run_id}")
-    if run.get("status") in {"COMPLETED", "FAILED", "CANCELLED"}:
+    if run.get("status") in {"COMPLETED", "FAILED", "CANCELLED", "LIMIT_EXCEEDED", "REJECTED"}:
         raise HTTPException(
             status_code=409,
             detail="任务已经结束，不能再补充指令；请基于现有结果创建一个新任务。",  # noqa: RUF001
         )
-    return await _runtime(request, "POST", f"/agent/runs/{run_id}/inputs", json=await request.json())
+    return await _runtime(request, "POST", f"/agent/runs/{run_id}/inputs", json=await _request_object(request))
 
 
 @app.post("/api/workspace/runs/{run_id}/approval")
 async def approve_workspace_run(request: Request, run_id: str) -> dict[str, Any]:
     """Delegate an owner's approval decision to Runtime's one-time approval inbox."""
-    return await _runtime(request, "POST", f"/agent/runs/{run_id}/resume", json=await request.json())
+    return await _runtime(request, "POST", f"/agent/runs/{run_id}/resume", json=await _request_object(request))
 
 
 @app.get("/api/workspace/runs/{run_id}/events")

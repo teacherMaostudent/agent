@@ -11,6 +11,7 @@
       {"name": "agent-reviewer"},
       {"name": "platform-operator"},
       {"name": "governance-auditor"},
+      {"name": "platform-super-admin"},
       {"name": "platform-workload"}
     ]
   },
@@ -91,7 +92,10 @@
       "serviceAccountsEnabled": false,
       "redirectUris": ["http://127.0.0.1:9010/auth/callback"],
       "webOrigins": ["http://127.0.0.1:9010"],
-      "attributes": {"pkce.code.challenge.method": "S256"},
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://127.0.0.1:9010/*"
+      },
       "defaultClientScopes": ["web-origins", "profile", "email", "roles", "agent-platform-claims"],
       "protocolMappers": [
         {
@@ -119,6 +123,19 @@
           "config": {"included.client.audience": "agent-platform", "access.token.claim": "true", "id.token.claim": "false", "introspection.token.claim": "true"}
         }
       ]
+    },
+    {
+      "clientId": "agent-web-identity-admin",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "local-identity-admin-secret",
+      "serviceAccountRoles": {
+        "realm-management": ["view-users", "query-users", "manage-users", "view-realm"]
+      }
     }
   ],
   "users": [

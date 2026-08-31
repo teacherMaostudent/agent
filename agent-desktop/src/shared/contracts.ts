@@ -10,10 +10,20 @@ export type AgentRunRequest = {
   task: string;
   agent_id: string;
   environment: string;
+  /** Snapshot-declared logical route; never a provider URL or API credential. */
+  model_route?: string;
   session_id?: string;
   max_steps?: number;
   max_cost_usd?: number;
   metadata: Record<string, unknown>;
+};
+
+export type ModelRouteCatalog = {
+  session_id: string;
+  default_route: string;
+  release_id: string;
+  snapshot_id: string;
+  items: Array<{ route_name: string; models: string[]; data_region?: string; fallback_route?: string }>;
 };
 
 export type RunSnapshot = {
@@ -63,6 +73,7 @@ export type RunHistoryItem = {
 export type DesktopApi = {
   configure(connection: RuntimeConnection): Promise<void>;
   capabilities(): Promise<Record<string, unknown>>;
+  modelRoutes(agentId: string, environment: string, sessionId: string): Promise<ModelRouteCatalog>;
   pairConnector(deviceName: string, capabilities: string[]): Promise<Record<string, unknown>>;
   confirmConnector(connectorId: string, pairingCode: string): Promise<void>;
   connectorStatus(connectorId: string): Promise<Record<string, unknown>>;

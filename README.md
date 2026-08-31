@@ -87,6 +87,8 @@ Workflow 不加载 Planner 或 Agent Session，支持重试、补偿、Human Sig
    Graph、Context/RAG、模型、工具、发布、治理和故障恢复映射到具体文件与方法。
 7. 规划业务产品与平台控制台：阅读 [统一 Agent Web 产品设计与现状审计](docs/unified-agent-web-product-design.md)。
 8. 从 Web、Desktop 到七服务做本机演示：阅读 [Web、Desktop 与七服务本地联调指南](docs/local-web-desktop-testing-guide.md)。
+9. 排查网页端与 Desktop 的认证、任务、日志和端到端问题：阅读 [Web 与 Desktop 联调调试手册](docs/web-desktop-debugging-guide.md)。
+10. 理解租户目录、IdP 身份、平台 user_id 与人员授权边界：阅读 [租户与用户管理说明](docs/tenant-and-user-management.md)。
 
 ## 注释与说明文件标准
 
@@ -349,7 +351,7 @@ Runtime 以 `agent-run/<tenant>/<run>` 生成全局幂等 Workflow ID，并使�
 ## 本地开发
 
 要求：Python 3.12、Java 17+、Docker Compose（完整联调）以及可选的 Node.js（Gateway 前端）。
-不要把开发默认值带入生产：本地可使用 SQLite、同步队列和关闭的 OIDC；生产必须使用 PostgreSQL、
+不要把开发默认值带入生产：统一启动器默认启用本地 Keycloak OIDC；生产必须使用 PostgreSQL、
 Temporal、OIDC、工作负载身份和 mTLS。
 
 ### 最短联调路径
@@ -359,6 +361,10 @@ Desktop，构建七个逻辑服务及 PostgreSQL、Redis、摄取工作负载，
 最后执行 `scripts/platform_e2e.py`。验收过程会幂等准备桌面端默认使用的
 `demo / general-agent / local` Release，因此首次安装后无需手工发布即可提交基础任务；
 持久化卷不会在普通启动或停止时删除。
+Web 默认启动真实 OIDC/PKCE 登录和可撤销服务端 Session；仅排查身份服务时才可显式添加
+`-WithoutIdentity` 回到本地 Header 兼容模式。平台最高管理员、普通用户和审查员按其 JWT
+角色/权限分别看到 Workspace、Review 和 Console；最高管理员可在 Console 为其他人类账号
+分配目录内角色和权限，但不能通过页面转授最高管理员或工作负载身份。
 需要启动、状态、日志、重启和停止菜单时双击 `manage-platform.cmd`。两个 CMD 都会先
 切换到自身所在的仓库根目录，失败后保留窗口，不依赖用户打开终端时的当前目录。
 
@@ -389,6 +395,11 @@ python scripts/platform_e2e.py
 ```
 
 ### Python 服务测试
+
+统一回归入口为 `scripts/test-platform.ps1`，包含现有服务测试、前端测试/构建、Ruff 和 Compose
+配置检查；加 `-WithIntegration` 可验证已运行的本地服务链路。
+实际验证结果与限制见 [2026-08-26 全项目审计](docs/audit-2026-08-26.md)，
+不要把本地测试通过或配置校验通过等同于生产 HA、安全及 GUI 全场景验收。
 
 各服务拥有独立依赖和测试入口；不要用一个混合 `PYTHONPATH` 同时执行两个名为 `app` 的服务测试。
 

@@ -714,7 +714,9 @@ class RuntimeStoreOperations:
             ).fetchone()
         return self._from_row(row) if row else None
 
-    def list_for_user(self, tenant_id: str, user_id: str, *, limit: int = 50) -> list[RuntimeRun]:
+    def list_for_user(
+        self, tenant_id: str, user_id: str, *, limit: int = 50, offset: int = 0
+    ) -> list[RuntimeRun]:
         """列出调用者拥有的近期 Run，作为 Workspace 的最小任务投影数据源。
 
         此查询刻意不提供任意 ``user_id`` 参数给 HTTP 调用方：当前产品尚未实现分享、
@@ -722,6 +724,7 @@ class RuntimeStoreOperations:
         团队协作时应扩展独立资源关系表，而不是移除此处所有权过滤。
         """
         bounded_limit = min(max(limit, 1), 100)
+        bounded_offset = min(max(offset, 0), 10_000)
         with self._lock:
             rows = self._connection.execute(
                 """
@@ -730,13 +733,27 @@ class RuntimeStoreOperations:
                     SELECT run_id FROM runtime_run_shares WHERE tenant_id = ? AND user_id = ?
                 ))
                 ORDER BY updated_at DESC, run_id DESC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (tenant_id, user_id, tenant_id, user_id, bounded_limit),
+                (tenant_id, user_id, tenant_id, user_id, bounded_limit, bounded_offset),
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
-    def list_for_tenant(self, tenant_id: str, *, limit: int = 50) -> list[RuntimeRun]:
+    def count_for_user(self, tenant_id: str, user_id: str) -> int:
+        """Return only the authorized Workspace count; ownership remains in the query itself."""
+        with self._lock:
+            row = self._connection.execute(
+                """SELECT COUNT(*) AS count FROM runtime_runs
+                WHERE tenant_id = ? AND (user_id = ? OR run_id IN (
+                    SELECT run_id FROM runtime_run_shares WHERE tenant_id = ? AND user_id = ?
+                ))""",
+                (tenant_id, user_id, tenant_id, user_id),
+            ).fetchone()
+        return int(row["count"] if row else 0)
+
+    def list_for_tenant(
+        self, tenant_id: str, *, limit: int = 50, offset: int = 0
+    ) -> list[RuntimeRun]:
         """为具备显式租户读取权限的管理员列出有上限的租户 Run 索引。
 
         The HTTP layer is solely responsible for checking ``run:tenant:read``.  Keeping this
@@ -744,15 +761,24 @@ class RuntimeStoreOperations:
         prevents a future caller from accidentally widening the normal Workspace query.
         """
         bounded_limit = min(max(limit, 1), 100)
+        bounded_offset = min(max(offset, 0), 10_000)
         with self._lock:
             rows = self._connection.execute(
                 """
                 SELECT * FROM runtime_runs WHERE tenant_id = ?
-                ORDER BY updated_at DESC, run_id DESC LIMIT ?
+                ORDER BY updated_at DESC, run_id DESC LIMIT ? OFFSET ?
                 """,
-                (tenant_id, bounded_limit),
+                (tenant_id, bounded_limit, bounded_offset),
             ).fetchall()
         return [self._from_row(row) for row in rows]
+
+    def count_for_tenant(self, tenant_id: str) -> int:
+        """Return a count for a separately authorized tenant-wide Workspace projection."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT COUNT(*) AS count FROM runtime_runs WHERE tenant_id = ?", (tenant_id,)
+            ).fetchone()
+        return int(row["count"] if row else 0)
 
     def share_run(self, tenant_id: str, run_id: str, user_id: str, shared_by: str, reason: str) -> None:
         """持久化只读共享关系；调用方必须在 API 层先证明自己是 Run owner。"""
@@ -1259,6 +1285,61 @@ class RuntimeStoreOperations:
                 (tenant_id, run_id, reviewer_id, assigned_by, reason, now),
             )
             self._connection.commit()
+
+    def assign_reviewer_and_audit(
+        self, tenant_id: str, run_id: str, reviewer_id: str, assigned_by: str, reason: str
+    ) -> None:
+        """Atomically save a Review Assignment and its immutable Governance Outbox fact.
+
+        Assignment expands a person's access to one Run, so it must never commit successfully
+        while its audit record is absent.  The Outbox is intentionally persisted here instead of
+        calling Governance in the request path: a temporary downstream outage must not roll back
+        a valid assignment or create an unrecorded side effect.
+        """
+        now = datetime.now(UTC).isoformat()
+        event = {
+            "event_id": f"evt_{uuid4().hex}",
+            "source_service": "agent-runtime",
+            "event_type": "agent.review.assigned",
+            # The management action has no active LLM trace.  A stable synthetic trace keeps the
+            # event admissible to the common Governance schema and lets auditors fetch every
+            # assignment fact for this Run without inventing a user-controlled correlation ID.
+            "trace_id": f"review-assignment:{run_id}",
+            "tenant_id": tenant_id,
+            "occurred_at": now,
+            "payload": {
+                "run_id": run_id,
+                "reviewer_id": reviewer_id,
+                "assigned_by": assigned_by,
+                "reason": reason,
+                "assignment_action": "assigned",
+            },
+        }
+        with self._lock:
+            try:
+                exists = self._connection.execute(
+                    "SELECT 1 FROM runtime_runs WHERE tenant_id = ? AND run_id = ?",
+                    (tenant_id, run_id),
+                ).fetchone()
+                if exists is None:
+                    raise LookupError("run not found")
+                self._connection.execute(
+                    """
+                    INSERT INTO runtime_review_assignments(
+                        tenant_id, run_id, reviewer_id, assigned_by, reason, assigned_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(tenant_id, run_id, reviewer_id) DO UPDATE SET
+                        assigned_by = excluded.assigned_by,
+                        reason = excluded.reason,
+                        assigned_at = excluded.assigned_at
+                    """,
+                    (tenant_id, run_id, reviewer_id, assigned_by, reason, now),
+                )
+                self._enqueue_governance_locked(event, now)
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
 
     def transfer_reviewer(
         self, tenant_id: str, run_id: str, current_reviewer_id: str, next_reviewer_id: str, reason: str

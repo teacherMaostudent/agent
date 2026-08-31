@@ -4,7 +4,8 @@
 
 本地环境可以真实运行七个逻辑服务、Web/BFF、Desktop、PostgreSQL、Redis、MinIO 和两个 Relay，
 并验证发布快照、Agent 执行、RAG、模型/工具事件、Artifact、人工审批、WORM 作业等业务链路。
-它不是生产验收环境：本地默认使用兼容身份 Header、SQLite 状态、离线模型模式和 HMAC 演示签名；
+它不是生产验收环境：统一启动器默认使用本地 Keycloak OIDC，部分工作负载仍可使用本地兼容配置、
+离线模型模式和 HMAC 演示签名；
 企业 IdP、KMS、云对象存储、Kafka/CDC、Temporal Global Namespace 和真实告警接收器需要单独环境。
 
 | 能力 | 本地验证方式 | 本地结论 | 不能由本地证明 |
@@ -17,7 +18,7 @@
 | LLM 配额 | Console 编辑 `*` 或用户配额 | 可验证租户/用户隔离和 Gateway 执行值 | 多区域 Redis 一致性 |
 | WORM 导出 | Console 创建导出，Worker 写 MinIO 锁定桶 | 可验证 Hash Chain、Merkle、对象保留和 DLQ | 云 KMS 不可抵赖性、监管验收 |
 | Desktop 扫描入 RAG | Desktop 扫描 → Web 审批 → Relay → Worker | 可验证人工门禁、幂等提交和索引终态 | 任意本机目录的隐式授权 |
-| OIDC | 叠加 `compose.identity.yaml` | 可验证真实 Keycloak、PKCE、JWT Claim 和服务端 Session | 企业 IdP 联邦、正式 MFA 策略 |
+| OIDC | 统一启动器默认叠加 `compose.identity.yaml` | 可验证真实 Keycloak、PKCE、JWT Claim、账号切换和服务端 Session | 企业 IdP 联邦、正式 MFA 策略 |
 | 告警 | 校验 Prometheus/Alertmanager/Blackbox 配置 | 可验证规则和部署拓扑 | 未配置接收器时的真实通知送达 |
 | 跨区域 Temporal | 配置校验和故障转移脚本 Dry Run | 可验证 fail-closed 参数和操作步骤 | 没有两套 Cluster 时不能做真实切换 |
 
@@ -127,13 +128,14 @@ pnpm run dev
 
 ## 7. Keycloak OIDC 联调
 
-默认启动只提供本地 Header 身份，因此不会监听 `9110`。需要验证真实登录时，使用统一脚本启动身份覆盖层：
+统一脚本默认启动 Keycloak 身份覆盖层和真实登录；显式的 `-WithIdentity` 仍可用于强调该模式：
 
 ```powershell
 .\scripts\start-platform.ps1 -Action Start -WithIdentity
 ```
 
 该参数会启动 Keycloak、导入本地 Realm，并让 Agent Web BFF 强制使用 OIDC/PKCE；此时 `9010` 会跳转到登录页。
+只有服务开发或身份故障隔离时才使用 `-WithoutIdentity`，该模式不构成可交付的登录体验。
 本地 Realm 仅请求 `openid agent-platform-claims`，后者包含租户、权限与角色 Claim；它不依赖企业 IdP 中
 常见但本地未导入的 `profile`、`email` Scope。
 
@@ -141,35 +143,49 @@ pnpm run dev
 
 ```powershell
 docker compose -f compose.platform.yaml -f compose.identity.yaml up --build -d
-python scripts/platform_e2e.py
+python scripts/platform_e2e.py --bootstrap-desktop
 ```
 
 Keycloak 地址是 `http://127.0.0.1:9110`。本地 Keycloak 的管理账号仅用于 Realm 管理；不要把它和
 Web 平台用户混用。平台管理员应使用已在 Keycloak 中创建的 `admin` 平台账号登录 `9010`。该账号拥有
-`agent-user`、`agent-reviewer`、`platform-operator`、`governance-auditor` 四类人类角色，因此可进入
-**我的任务、审查中心、平台控制台**；它不拥有 `platform-workload`，后者是服务间委托身份，绝不能发给人类。
-账号密码只应保存在本机 Keycloak 数据卷或企业密钥系统，不能写入 Realm JSON、Compose 文件或 Git。演示用户
+`agent-user`、`agent-reviewer`、`platform-operator`、`governance-auditor` 四类业务角色以及不可转授的
+`platform-super-admin`，因此可进入 **我的任务、审查中心、平台控制台**；它不拥有
+`platform-workload`，后者是服务间委托身份，绝不能发给人类。
+本机演示初始账号为 `admin`，默认演示密码为 `970402`；该弱口令仅服务于回环地址上的本地演示，
+可通过 `.env` 的 `LOCAL_PLATFORM_ADMIN_USERNAME/LOCAL_PLATFORM_ADMIN_PASSWORD` 覆盖，禁止用于共享或生产环境。
+本地最高管理员密码可由忽略提交的 `.env` 中 `LOCAL_PLATFORM_ADMIN_PASSWORD` 覆盖；生产账号密码只应
+保存在企业 IdP 或密钥系统，不能写入 Realm JSON、Compose 文件或 Git。演示用户
 `demo-operator` 首次登录必须修改临时密码。它们只用于本机协议验证，不能复制到生产。
 
 应检查浏览器只保存随机 HttpOnly Session Cookie，Access Token 位于 BFF 的 Redis Session；退出后 Session
 失效，伪造 `X-Tenant-Id`、角色或权限 Header 不能覆盖已验证 JWT Claim。
+页面提供“退出登录”和“切换账号”；后者撤销当前 BFF Session，并以 `prompt=login` 重新进入 IdP。
+最高管理员在 Console 的“用户与授权”中可选择常用权限模板并微调角色/权限；保存后目标用户的旧 IdP
+会话会被撤销，下一次请求必须重新登录并取得新 Claim。
 若浏览器保留了旧 Realm、旧 Scope 或旧签名密钥的会话并显示 401，请打开
 `http://127.0.0.1:9010/auth/relogin`；它会在服务端撤销 BFF 的旧 HttpOnly Session 并自动回到新的
 PKCE 登录流程，不依赖页面脚本或表单提交。
 
 ## 8. 自动化回归
 
-各服务测试和静态检查可以在不启动 Docker 的情况下运行。当前基线覆盖 Runtime、RAG/Context/Ingestion、
-Control Plane、Governance、Tool Gateway、Web BFF、Agent Lab、Model Lab 和 Platform Infra。提交前至少运行：
+各服务测试和静态检查不要求启动服务容器，但 Compose 配置校验仍需安装 Docker CLI。
+当前基线覆盖 Runtime、RAG/Context/Ingestion、Control Plane、Governance、Tool Gateway、Web BFF、
+Agent Lab、Model Lab、Platform Infra 和前端。项目根目录的统一入口：
 
 ```powershell
-python -m pytest
-mvn -f llm-gateway/pom.xml test
-docker compose -f compose.platform.yaml config --quiet
-docker compose --env-file .env.production.example -f compose.production.yaml config --quiet
+.\scripts\test-platform.ps1
+# 仅针对运行中的本地开发服务，会创建合成测试数据和保留期内的审计导出对象
+.\scripts\test-platform.ps1 -WithIntegration
+# 先在本机环境安全提供 AUDIT_USERNAME/AUDIT_PASSWORD；不将凭证写入源码
+.\scripts\test-platform.ps1 -WithOidc
 ```
 
-各 Python 子项目使用自己的 `pyproject.toml`；根目录没有统一虚拟环境时，应进入对应目录执行测试。
+各 Python 子项目使用自己的 `pyproject.toml`，统一入口会切换工作目录后运行，避免同名 `app` 包冲突。
+直接执行 `platform_e2e.py` 默认只创建测试租户发布；加 `--bootstrap-desktop` 才初始化演示 Agent。
+旧 `rag-agent-service/scripts/distributed_smoke.py` 需传 `--running-platform`，不再导入其他服务应用包。
+
+最近一次实际结果、发现并修复的问题、源码挂载说明及未验证项见
+[2026-08-26 审计报告](audit-2026-08-26.md)。该报告中的通过项不是生产全场景验收承诺。
 
 ## 9. 本机无法单独完成的验收
 

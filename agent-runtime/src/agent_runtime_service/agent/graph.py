@@ -268,9 +268,9 @@ class AgentGraph:
                 result = self.graph.invoke(initial, config)
             return self._result(result)
         except RuntimeLimitExceeded as exc:
-            return self._limited_result(initial, exc)
+            return self._limited_result(self._checkpoint_state(config, initial), exc)
         except RuntimeCancelled:
-            return self._cancelled_result(initial)
+            return self._cancelled_result(self._checkpoint_state(config, initial))
 
     def resume(
         self,
@@ -291,9 +291,21 @@ class AgentGraph:
             )
             return self._result(result)
         except RuntimeLimitExceeded as exc:
-            return self._limited_result({}, exc)
+            return self._limited_result(self._checkpoint_state(self._config(thread_id, max_steps)), exc)
         except RuntimeCancelled:
-            return self._cancelled_result({})
+            return self._cancelled_result(self._checkpoint_state(self._config(thread_id, max_steps)))
+
+    def _checkpoint_state(self, config: dict[str, Any], fallback: dict | None = None) -> dict:
+        """在预期终止后读取最近检查点，使结果保留真实预算、观察和执行轨迹。"""
+        try:
+            snapshot = self.graph.get_state(config)
+            values = getattr(snapshot, "values", None)
+            if isinstance(values, dict) and values:
+                return values
+        except Exception:
+            # 结果整理不能掩盖原始限额/取消原因；检查点后端不可用时退回已有状态。
+            pass
+        return fallback or {}
 
     @staticmethod
     def _config(thread_id: str, max_steps: int) -> dict[str, Any]:
@@ -1816,9 +1828,21 @@ class AgentGraph:
     @staticmethod
     def _limited_result(state: dict[str, Any], error: RuntimeLimitExceeded) -> AgentRunResult:
         """将预算或发布边界错误标准化为无敏感细节的 ``LIMIT_EXCEEDED`` 响应。"""
+        explanations = {
+            "MAX_LLM_CALLS": "模型调用次数已达到当前 Release 上限。未能生成最终答案。",
+            "MAX_TOOL_CALLS": "工具调用次数已达到当前 Release 上限。任务未能继续。",
+            "MAX_RETRIEVAL_ROUNDS": "检索轮次已达到当前 Release 上限。任务未能继续。",
+            "ATTEMPT_BUDGET_EXCEEDED": "下游总尝试额度已耗尽。任务未能继续。",
+            "DEADLINE_EXCEEDED": "任务超过当前 Release 的执行时限。",
+            "COST_BUDGET_EXCEEDED": "任务达到当前 Release 的成本上限。",
+            "MAX_STEPS": "Agent 步数已达到当前 Release 上限。",
+        }
         return AgentRunResult(
             status="LIMIT_EXCEEDED",
-            answer="Unable to complete within the configured runtime limits.",
+            answer=explanations.get(
+                error.code,
+                f"任务被已发布的运行策略终止 ({error.code})。",
+            ),
             steps=state.get("step_count", 0),
             termination_reason=error.code,
             evidence=state.get("evidence", []),

@@ -1,0 +1,62 @@
+.account-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.account-actions .logout-button {
+  margin-top: 0;
+}
+
+.identity-summary strong {
+  display: block;
+  color: #fff;
+  font-size: 13px;
+  margin-bottom: 3px;
+}
+
+.identity-summary small {
+  color: #93a5c4;
+}
+
+.identity-badge {
+  display: inline-flex;
+  margin-top: 7px;
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: #233456;
+  color: #bdd0ff;
+  font-size: 10px;
+}
+
+.identity-user-card.protected {
+  border-color: #d4bc77;
+  background: #fffdf7;
+}
+
+.identity-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.identity-card-tags span {
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: #eef3ff;
+  color: #365baf;
+  font-size: 10px;
+}
+
+.identity-form-placeholder {
+  color: #718098;
+  font-size: 12px;
+}
+
+@media (max-width: 1080px) {
+  .account-actions {
+    grid-template-columns: 1fr;
+  }
+}

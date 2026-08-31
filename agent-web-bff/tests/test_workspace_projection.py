@@ -1,5 +1,7 @@
 """Workspace execution projection regression tests."""
 
+import pytest
+
 from agent_web_bff.main import _workspace_detail_projection
 
 
@@ -101,7 +103,8 @@ def test_workspace_detail_explains_execution_without_leaking_tool_content() -> N
     assert "rendered_prompt" not in serialized
 
 
-def test_terminal_workspace_run_has_no_control_actions() -> None:
+@pytest.mark.parametrize("status", ["COMPLETED", "FAILED", "CANCELLED", "LIMIT_EXCEEDED", "REJECTED"])
+def test_terminal_workspace_run_has_no_control_actions(status: str) -> None:
     """A completed Run cannot advertise steering, approval, or cancellation."""
     detail = _workspace_detail_projection(
         {
@@ -109,7 +112,7 @@ def test_terminal_workspace_run_has_no_control_actions() -> None:
             "user_id": "user-1",
             "agent_id": "general-agent",
             "snapshot_id": "av_2",
-            "status": "COMPLETED",
+            "status": status,
             "result": {},
         },
         user_id="user-1",
@@ -119,3 +122,12 @@ def test_terminal_workspace_run_has_no_control_actions() -> None:
     )
     assert detail["available_actions"] == []
 
+
+def test_read_shared_run_does_not_advertise_owner_actions() -> None:
+    """只读共享不是审批委派，即使 Run 等待审批也不能显示控制操作。"""
+    detail = _workspace_detail_projection(
+        {"run_id": "shared", "user_id": "owner", "status": "WAITING_APPROVAL", "result": {}},
+        user_id="reader", artifacts=[], events=[], release={},
+    )
+    assert detail["can_control"] is False
+    assert detail["available_actions"] == []

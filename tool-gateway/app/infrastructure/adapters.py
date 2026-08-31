@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 import httpx
 
-from app.domain.errors import ToolUpstreamError, UnsafeEndpointError
+from app.domain.errors import ToolUpstreamError, ToolValidationError, UnsafeEndpointError
 from app.domain.models import HttpTransport, InvocationContext, McpTransport
 from app.infrastructure.security import validate_outbound_url
 
@@ -93,6 +93,10 @@ class HttpToolAdapter:
         if response.is_redirect:
             raise ToolUpstreamError("tool upstream redirects are disabled", retryable=False)
         if response.status_code >= 400:
+            if response.status_code in {400, 422}:
+                # 下游契约明确拒绝了模型参数时, 返回可恢复的参数错误且禁止重试。
+                # 只提取受限 JSON 字段, 不回传任意响应正文或内部堆栈。
+                raise ToolValidationError(_validation_message(response))
             retryable = response.status_code in {408, 425, 429} or response.status_code >= 500
             raise ToolUpstreamError(
                 f"tool upstream returned HTTP {response.status_code}",
@@ -293,3 +297,22 @@ async def close_adapters(adapters: list[ToolAdapter]) -> None:
     Release or remove owned state without bypassing cleanup rules.
     """
     await asyncio.gather(*(adapter.close() for adapter in adapters))
+
+
+def _validation_message(response: httpx.Response) -> str:
+    """从受信下游的 4xx JSON 中提取短错误提示，拒绝泄露 HTML 或任意正文。"""
+    fallback = f"tool arguments were rejected by upstream (HTTP {response.status_code})"
+    try:
+        payload = response.json()
+    except ValueError:
+        return fallback
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    if isinstance(detail, str):
+        return detail[:500]
+    if isinstance(detail, dict):
+        message = detail.get("message")
+        hint = detail.get("hint")
+        parts = [item.strip() for item in (message, hint) if isinstance(item, str) and item.strip()]
+        if parts:
+            return " ".join(parts)[:500]
+    return fallback

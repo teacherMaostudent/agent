@@ -19,6 +19,9 @@ T = TypeVar("T")
 class PostgresRepository(GovernanceRepositoryOperations):
     """生产 PostgreSQL 适配器，保持 SQLite 开发实现相同的审计仓储契约。"""
 
+    # JSON 提取方言由适配器负责; 动态用户输入始终使用绑定参数。
+    audit_run_id_expression = "(payload_json::jsonb ->> 'run_id')"
+
     def __init__(self, dsn: str, schema: str, schema_path: Path) -> None:
         """保存受限 Schema 的连接配置，并初始化本进程写事务串行锁。"""
         self._dsn = dsn

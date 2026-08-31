@@ -36,6 +36,22 @@ services:
       keycloak-db-init:
         condition: service_completed_successfully
 
+  keycloak-platform-init:
+    image: quay.io/keycloak/keycloak:26.7.1
+    entrypoint: ["/bin/sh", "/bootstrap/bootstrap-local-identity.sh"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: local-keycloak-admin
+      IDENTITY_ADMIN_CLIENT_SECRET: local-identity-admin-secret
+      PLATFORM_ADMIN_USERNAME: ${LOCAL_PLATFORM_ADMIN_USERNAME:-admin}
+      # Local demonstration default only. Production identity credentials are never sourced here.
+      PLATFORM_ADMIN_PASSWORD: ${LOCAL_PLATFORM_ADMIN_PASSWORD:-970402}
+    volumes:
+      - ./deploy/keycloak/bootstrap-local-identity.sh:/bootstrap/bootstrap-local-identity.sh:ro
+    depends_on:
+      keycloak:
+        condition: service_started
+
   agent-web-bff:
     environment:
       WEB_BFF_OIDC_ENABLED: "true"
@@ -44,6 +60,7 @@ services:
       WEB_BFF_OIDC_JWKS_URL: http://keycloak:8080/realms/agent-platform/protocol/openid-connect/certs
       WEB_BFF_OIDC_AUTHORIZATION_URL: http://127.0.0.1:9110/realms/agent-platform/protocol/openid-connect/auth
       WEB_BFF_OIDC_TOKEN_URL: http://keycloak:8080/realms/agent-platform/protocol/openid-connect/token
+      WEB_BFF_OIDC_END_SESSION_URL: http://127.0.0.1:9110/realms/agent-platform/protocol/openid-connect/logout
       WEB_BFF_OIDC_CLIENT_ID: agent-web-bff
       WEB_BFF_OIDC_REDIRECT_URI: http://127.0.0.1:9010/auth/callback
       # 本地 Realm 只导入最小 OIDC + 平台 Claim Scope，不声明 profile/email 默认 Scope。
@@ -57,4 +74,8 @@ services:
       WEB_BFF_IDENTITY_ADMIN_CLIENT_SECRET: local-identity-admin-secret
       WEB_BFF_PUBLIC_ORIGIN: http://127.0.0.1:9010
       WEB_BFF_CSRF_ENFORCED: "true"
-    depends_on: [keycloak, redis]
+    depends_on:
+      keycloak-platform-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started

@@ -9,6 +9,14 @@ from pathlib import Path
 from platform_sdk.security import bound_untrusted, redact_text
 
 
+class ControlledScanRequestError(ValueError):
+    """调用方可修正的扫描参数错误；API 必须把它映射为 422 而不是 500。"""
+
+
+class ControlledScanUnavailableError(RuntimeError):
+    """扫描根目录或服务配置不可用；该错误不能伪装成模型参数问题。"""
+
+
 @dataclass(frozen=True)
 class ScanMatch:
     scope: str
@@ -61,17 +69,35 @@ class ControlledFileScanner:
         # Scope is an allow-list key, never a caller-provided filesystem path.
         # This keeps source/log search useful without granting arbitrary reads.
         if scope not in self.roots:
-            raise ValueError("unknown scan scope")
+            raise ControlledScanRequestError("unknown scan scope")
         if not pattern or len(pattern) > 500:
-            raise ValueError("pattern must contain 1-500 characters")
+            raise ControlledScanRequestError("pattern must contain 1-500 characters")
         if not glob or ".." in Path(glob).parts or glob.startswith(("/", "\\")):
-            raise ValueError("glob must remain within the configured scan scope")
-        if regex and ("(?" in pattern or "\\C" in pattern):
-            raise ValueError("advanced or unsafe regex constructs are not allowed")
-        matcher = re.compile(pattern, re.IGNORECASE) if regex else None
+            raise ControlledScanRequestError("glob must remain within the configured scan scope")
+        normalized_pattern = pattern
+        if regex:
+            # 模型经常生成前缀 ``(?i)``。扫描器本身已固定 IGNORECASE，因此只去掉这个
+            # 等价前缀；其余内联标志、环视、命名组和条件表达式仍 fail-closed。
+            if normalized_pattern.startswith("(?i)"):
+                normalized_pattern = normalized_pattern[4:]
+            if not normalized_pattern:
+                raise ControlledScanRequestError("regex must contain a pattern after (?i)")
+            if "(?" in normalized_pattern or "\\C" in normalized_pattern:
+                raise ControlledScanRequestError(
+                    "advanced or unsafe regex constructs are not allowed; use literals, "
+                    "alternation, character classes, anchors and simple quantifiers"
+                )
+            if re.search(r"\\(?:[1-9]|g[<{])", normalized_pattern):
+                raise ControlledScanRequestError("regex backreferences are not allowed")
+            try:
+                matcher = re.compile(normalized_pattern, re.IGNORECASE)
+            except re.error as exc:
+                raise ControlledScanRequestError(f"invalid regular expression: {exc.msg}") from exc
+        else:
+            matcher = None
         root = self.roots[scope]
         if not root.is_dir():
-            raise ValueError("configured scan scope does not exist")
+            raise ControlledScanUnavailableError("configured scan scope does not exist")
         matches: list[ScanMatch] = []
         files_seen = 0
         for candidate in root.glob(glob):
@@ -111,4 +137,11 @@ class ControlledFileScanner:
         return matches
 
 
-__all__ = ["ControlledFileScanner", "ScanMatch", "bound_untrusted", "redact_text"]
+__all__ = [
+    "ControlledFileScanner",
+    "ControlledScanRequestError",
+    "ControlledScanUnavailableError",
+    "ScanMatch",
+    "bound_untrusted",
+    "redact_text",
+]

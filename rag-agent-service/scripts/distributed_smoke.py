@@ -1,136 +1,24 @@
-"""Start the split services, exercise both data paths, then shut them down."""
+"""兼容旧冒烟入口；拆分后的服务必须通过 HTTP 测试，不能重新 import 到同一进程。"""
 
 from __future__ import annotations
 
-import os
-import tempfile
-import threading
-import time
-
-import httpx
-import uvicorn
+import argparse
+import runpy
+from pathlib import Path
 
 
 def main() -> None:
-    """启动拆分后的服务并覆盖查询、运行与摄取的最小端到端链路。"""
-    with tempfile.TemporaryDirectory(prefix="rag-agent-smoke-") as data_dir:
-        os.environ.update(
-            {
-                "RAG_DATA_DIR": data_dir,
-                "RAG_PERSISTENCE": "sqlite",
-                "RAG_LLM_ENABLED": "false",
-                "RAG_LLM_STARTUP_CHECK": "false",
-                "RAG_CONTEXT_SERVICE_BASE_URL": "http://127.0.0.1:18002",
-                "RAG_RAG_QUERY_BASE_URL": "http://127.0.0.1:18003",
-            }
-        )
-
-        # Imports intentionally happen after environment setup because each module
-        # constructs its own process-level composition root.
-        from agent_runtime_service.main import app as runtime_app
-
-        from app.ingestion.worker import IngestionWorker
-        from apps.agent_context_service.main import app as context_app
-        from apps.ingestion_api.main import app as ingestion_app
-        from apps.rag_query_api.main import app as query_app
-
-        services = [
-            _Server(query_app, 18003),
-            _Server(context_app, 18002),
-            _Server(runtime_app, 18001),
-            _Server(ingestion_app, 18004),
-        ]
-        try:
-            for service in services:
-                service.start()
-            for port in (18001, 18002, 18003, 18004):
-                _wait_ready(port)
-
-            query = httpx.post(
-                "http://127.0.0.1:18003/api/v1/query/search",
-                json={"query": "audit record retention", "top_k": 3},
-                timeout=10,
-            )
-            query.raise_for_status()
-
-            runtime = httpx.post(
-                "http://127.0.0.1:18001/api/v1/agent/run",
-                headers={
-                    "X-Tenant-Id": "tenant-a",
-                    "X-User-Id": "user-a",
-                    "X-Permissions": "rag:read",
-                },
-                json={
-                    "task": "Find the audit record requirement",
-                    "session_id": "smoke-session",
-                    "max_steps": 4,
-                },
-                timeout=20,
-            )
-            runtime.raise_for_status()
-
-            upload = httpx.post(
-                "http://127.0.0.1:18004/api/v1/ingestion/documents",
-                headers={"X-Tenant-Id": "tenant-a", "X-User-Id": "user-a"},
-                files={
-                    "file": ("smoke.md", b"# Smoke\nAudit records are retained.", "text/markdown")
-                },
-                timeout=10,
-            )
-            upload.raise_for_status()
-            upload_body = upload.json()
-            IngestionWorker(ingestion_app.state.container).run_once()
-            job = httpx.get(
-                f"http://127.0.0.1:18004/api/v1/ingestion/jobs/{upload_body['job']['job_id']}",
-                timeout=10,
-            )
-            job.raise_for_status()
-            if job.json()["status"] != "COMPLETED":
-                raise RuntimeError(f"ingestion did not complete: {job.text}")
-
-            print(
-                "distributed smoke passed:",
-                {
-                    "rag_results": len(query.json()["evidence"]),
-                    "agent_steps": runtime.json()["steps"],
-                    "ingestion_status": job.json()["status"],
-                },
-            )
-        finally:
-            for service in reversed(services):
-                service.stop()
-
-
-class _Server:
-    def __init__(self, app, port: int) -> None:
-        """为指定 ASGI 应用创建后台 Uvicorn 服务器，供冒烟测试独占使用。"""
-        self.server = uvicorn.Server(
-            uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-        )
-        self.thread = threading.Thread(target=self.server.run, daemon=True)
-
-    def start(self) -> None:
-        """在守护线程中启动服务器，避免阻塞后续跨服务校验。"""
-        self.thread.start()
-
-    def stop(self) -> None:
-        """请求服务器退出并有界等待，防止测试遗留后台线程。"""
-        self.server.should_exit = True
-        self.thread.join(timeout=5)
-
-
-def _wait_ready(port: int) -> None:
-    """轮询健康检查端点，直到服务就绪或超过测试允许的等待时限。"""
-    url = f"http://127.0.0.1:{port}/api/v1/health"
-    for _ in range(50):
-        try:
-            response = httpx.get(url, timeout=1)
-            if response.status_code == 200:
-                return
-        except httpx.HTTPError:
-            pass
-        time.sleep(0.1)
-    raise RuntimeError(f"service did not become ready: {url}")
+    """显式确认使用本机运行中的平台后，复用统一 E2E，避免维护两份失配测试。"""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--running-platform", action="store_true",
+        help="确认已启动本地 Compose；将创建 e2e 测试发布、任务及审计记录",
+    )
+    if not parser.parse_args().running_platform:
+        parser.error("请先启动本地平台，再传 --running-platform；独立服务不再以同进程导入启动")
+    target = Path(__file__).resolve().parents[2] / "scripts" / "platform_e2e.py"
+    entry = runpy.run_path(str(target))
+    raise SystemExit(entry["main"]())
 
 
 if __name__ == "__main__":

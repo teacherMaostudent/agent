@@ -14,6 +14,7 @@ from app.application.exceptions import (
     ConflictError,
     ControlPlaneError,
     DraftValidationError,
+    ForbiddenError,
     InvalidStateError,
     NotFoundError,
     PolicyViolationError,
@@ -82,6 +83,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status_code = 400
         if isinstance(error, NotFoundError):
             status_code = 404
+        elif isinstance(error, ForbiddenError):
+            status_code = 403
         elif isinstance(error, ConflictError):
             status_code = 409
         elif isinstance(error, (DraftValidationError, PolicyViolationError)):

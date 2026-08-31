@@ -75,9 +75,12 @@ async def list_audit_events(
     container: Container,
     after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1_000),
+    trace_id: str | None = Query(default=None, min_length=1, max_length=160),
 ) -> AuditEventList:
     """以序号分页读取租户审计链，审计身份不能跨越自己的租户边界。"""
-    return await service(container).list_audit_events(identity, after_sequence, limit)
+    return await service(container).list_audit_events(
+        identity, after_sequence, limit, trace_id=trace_id
+    )
 
 
 @router.get("/internal/v1/governance/audit-events/runs/{run_id}", tags=["internal"])
@@ -86,17 +89,19 @@ async def list_run_audit_events_for_runtime(
     _: EventKey,
     container: Container,
     x_tenant_id: str = Header(alias="X-Tenant-Id"),
+    after_sequence: int = Query(default=0, ge=0),
+    limit: int = Query(default=1_000, ge=1, le=1_000),
 ) -> dict[str, Any]:
     """只向 Runtime 返回单个 Run 的审计事实；Runtime 仍须校验该 Run 的用户所有权。"""
     events = await service(container).list_audit_events(
-        Identity(tenant_id=x_tenant_id, user_id="agent-runtime", roles={"service"}), 0, 1_000
+        Identity(tenant_id=x_tenant_id, user_id="agent-runtime", roles={"service"}),
+        after_sequence, limit, run_id=run_id,
     )
     items = [
         item.model_dump(mode="json")
         for item in events.items
-        if str(item.payload.get("run_id", "")) == run_id
     ]
-    return {"items": items}
+    return {"items": items, "next_cursor": events.next_cursor}
 
 
 @router.get("/v1/governance/audit-events/verify", tags=["audit"])

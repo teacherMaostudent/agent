@@ -52,11 +52,12 @@ class GovernanceService:
         )
 
     async def list_audit_events(
-        self, identity: Identity, after_sequence: int, limit: int
+        self, identity: Identity, after_sequence: int, limit: int,
+        *, trace_id: str | None = None, run_id: str | None = None,
     ) -> AuditEventList:
         """以序列游标读取调用方租户审计链，分页不会跳过或重排历史事件。"""
         items, next_cursor = await self._repository.list_audit_events(
-            identity.tenant_id, after_sequence, limit
+            identity.tenant_id, after_sequence, limit, trace_id=trace_id, run_id=run_id,
         )
         return AuditEventList(items=items, next_cursor=next_cursor)
 

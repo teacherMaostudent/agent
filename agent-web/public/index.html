@@ -4,7 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Agent Workspace</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <!-- Versioned assets prevent an already-open browser from rendering a stale layout after deployment. -->
+    <link rel="stylesheet" href="/styles.css?v=20260828-account-access" />
+    <link rel="stylesheet" href="/execution-details.css" />
+    <link rel="stylesheet" href="/identity.css?v=20260827-account-lifecycle" />
   </head>
   <body>
     <div class="app-shell">
@@ -14,24 +17,24 @@
           <button class="nav-item active" data-view="workspace"><span>◉</span>我的任务</button>
           <button class="nav-item" data-view="review" data-requires="agent:review"><span>◎</span>审查中心</button>
           <button class="nav-item" data-view="console" data-requires="ops:read"><span>◇</span>平台控制台</button>
+          <button class="nav-item" data-view="identity" data-requires="identity:users:read"><span>◌</span>租户与用户</button>
         </nav>
         <div class="sidebar-bottom">
           <p class="environment">受控执行环境</p>
           <div id="identity-summary" class="identity-summary">正在读取会话…</div>
           <div id="access-summary" class="access-summary">正在计算页面访问范围…</div>
-          <button id="logout-button" class="logout-button" type="button">退出登录</button>
         </div>
       </aside>
 
       <main>
         <header class="topbar">
           <div><p class="eyebrow">AGENT WORKSPACE</p><h1 id="page-title">我的任务</h1></div>
-          <button id="new-task-button" class="primary">新建任务</button>
+          <div class="topbar-actions"><button id="new-task-button" class="primary">新建任务</button><button id="account-button" class="account-profile" type="button" aria-haspopup="dialog"><strong id="account-display">正在读取账号</strong><small id="account-context">查看权限</small></button><div class="account-actions"><button id="switch-account-button" class="logout-button" type="button">切换账号</button><button id="logout-button" class="logout-button" type="button">退出登录</button></div></div>
         </header>
 
         <section id="development-identity" class="development-note" hidden>
-          <div><strong>本地开发身份</strong><p>此区域只在未启用 OIDC 的本地 Compose 环境出现。生产环境由统一登录提供身份，不显示租户、用户或权限输入。</p></div>
-          <div class="identity-fields"><label>租户<input id="tenant-input" value="demo" /></label><label>用户<input id="user-input" value="desktop-user" /></label><label>权限<input id="permissions-input" value="rag:read,rag:ingest:approve,file:scan,tool:invoke,ops:read,release:read,model:route:read,model:route:release,model:route:monitor,model:route:rollback,quota:read,quota:write,audit:export,audit:export:requeue" /></label><button id="refresh-session">应用</button></div>
+          <div><strong>本地开发身份</strong><p>这是 Compose 联调用的模拟身份，不是生产授权。请选择角色模板以验证不同页面和接口；生产环境由 OIDC/IdP 的签名声明决定租户、角色和权限。</p></div>
+          <div class="identity-fields"><label>身份模板<select id="local-profile-input"><option value="administrator">本地最高管理员</option><option value="operator">平台操作员</option><option value="reviewer">审查专家</option><option value="business">业务用户</option></select></label><label>租户<input id="tenant-input" value="demo" /></label><label>用户<input id="user-input" value="local-admin" /></label><button id="refresh-session">应用身份</button></div>
         </section>
 
         <section id="workspace-view" class="view">
@@ -39,8 +42,9 @@
             <div><p class="eyebrow">从目标开始，而不是从系统配置开始</p><h2>今天想完成什么？</h2><p>Agent 会在已发布的权限、工具、预算与审批约束内完成任务。需要你决策时会明确通知你。</p></div>
             <button class="primary" id="hero-new-task">创建任务</button>
           </div>
-          <section class="section-heading"><div><h2>进行中与最近完成</h2><p id="workspace-scope">只显示你创建、拥有或被明确共享的任务。</p></div><button id="refresh-runs" class="ghost">刷新</button></section>
+          <section class="section-heading"><div><h2>进行中与最近完成</h2><p id="workspace-scope">默认只展示最近 8 项；点击任务可查看完整计划、证据和事件。</p></div><button id="refresh-runs" class="ghost">刷新</button></section>
           <div id="task-list" class="task-list" aria-live="polite"><div class="empty-state">正在加载任务…</div></div>
+          <nav id="workspace-pagination" class="pagination" aria-label="任务历史分页" hidden></nav>
         </section>
 
         <section id="review-view" class="view" hidden>
@@ -51,31 +55,57 @@
         <section id="console-view" class="view" hidden>
           <div class="hero-card compact"><div><p class="eyebrow">OPERATIONS OVERVIEW</p><h2>平台服务健康概览</h2><p>只读显示七个服务边界及摄取工作负载的就绪状态。发布、路由和重放等高危控制动作仍保持在各自受限接口中。</p></div><button id="refresh-console" class="ghost">刷新状态</button></div>
           <div id="console-list" class="service-list" aria-live="polite"><div class="empty-state">正在读取服务状态…</div></div>
-          <section id="release-catalog-section" hidden><div class="section-heading"><div><h2>Agent 发布目录</h2><p>查看 Draft 修订与冻结 Release；该视图不包含草稿正文、快照正文或密钥。</p></div><button id="refresh-release-catalog" class="ghost">刷新目录</button></div><div id="release-catalog-list" class="task-list" aria-live="polite"></div></section>
-          <section id="release-operations-section" hidden><div class="section-heading"><div><h2>受控发布操作</h2><p>版本冻结、Release 创建和流量动作使用独立权限；目标 ID 必须二次回显。</p></div></div><div class="service-list"><form id="agent-version-form" class="service-card operation-card"><div><h3>校验并冻结 Version</h3><label>Agent ID<input id="operation-agent-id" required /></label><label>语义版本<input id="operation-semantic-version" placeholder="1.0.0" required /></label><label>变更摘要<input id="operation-change-summary" /></label></div><div class="vertical-actions"><button id="validate-agent-button" type="button" class="ghost">只校验</button><button class="primary">冻结版本</button></div></form><form id="release-create-form" class="service-card operation-card"><div><h3>创建候选 Release</h3><label>Agent ID<input id="release-agent-id" required /></label><label>Version ID<input id="release-version-id" required /></label><label>环境<input id="release-environment" value="production" required /></label><label>首批流量（%）<input id="release-rollout" type="number" min="0" max="100" value="0" /></label><label>质量门禁 Run ID<input id="release-gate-run-id" /></label><label>原因<input id="release-reason" required /></label></div><button class="primary">创建 Release</button></form><form id="release-action-form" class="service-card operation-card"><div><h3>Release 流量控制</h3><label>Release ID<input id="release-action-id" required /></label><label>动作<select id="release-action"><option value="promote">提升</option><option value="pause">暂停</option><option value="rollback">回滚</option></select></label><label>目标流量（提升时）<input id="release-action-rollout" type="number" min="1" max="100" value="100" /></label></div><button class="primary">执行受控动作</button></form></div></section>
+          <section id="release-catalog-section" hidden><div class="section-heading"><div><h2>Agent 发布目录</h2><p>每页显示 8 个 Agent 的 Draft 修订与冻结 Release；该视图不包含草稿正文、快照正文或密钥。</p></div><button id="refresh-release-catalog" class="ghost">刷新目录</button></div><div id="release-catalog-list" class="task-list" aria-live="polite"></div><nav id="release-catalog-pagination" class="pagination" aria-label="Agent 发布目录分页" hidden></nav></section>
+          <section id="release-operations-section" hidden><div class="section-heading"><div><h2>受控发布操作</h2><p>版本冻结、Release 创建和流量动作使用独立权限；目标 ID 必须二次回显。</p></div></div><div class="service-list operation-grid"><form id="agent-version-form" class="service-card operation-card"><div class="operation-fields"><h3>校验并冻结 Version</h3><label>Agent ID<input id="operation-agent-id" required /></label><label>语义版本<input id="operation-semantic-version" placeholder="1.0.0" required /></label><label>变更摘要<input id="operation-change-summary" /></label></div><div class="vertical-actions"><button id="validate-agent-button" type="button" class="ghost">只校验</button><button class="primary">冻结版本</button></div></form><form id="release-create-form" class="service-card operation-card"><div class="operation-fields"><h3>创建候选 Release</h3><label>Agent ID<input id="release-agent-id" required /></label><label>Version ID<input id="release-version-id" required /></label><label>环境<input id="release-environment" value="production" required /></label><label>首批流量（%）<input id="release-rollout" type="number" min="0" max="100" value="0" /></label><label>质量门禁 Run ID<input id="release-gate-run-id" /></label><label>原因<input id="release-reason" required /></label></div><button class="primary">创建 Release</button></form><form id="release-action-form" class="service-card operation-card"><div class="operation-fields"><h3>Release 流量控制</h3><label>Release ID<input id="release-action-id" required /></label><label>动作<select id="release-action"><option value="promote">提升</option><option value="pause">暂停</option><option value="rollback">回滚</option></select></label><label>目标流量（提升时）<input id="release-action-rollout" type="number" min="1" max="100" value="100" /></label></div><button class="primary">执行受控动作</button></form></div></section>
           <section id="model-route-section" hidden><div class="section-heading"><div><h2>模型路由发布</h2><p>Console 只创建受质量门禁约束的 Canary；Gateway 不拥有发布决策。</p></div><button id="refresh-model-routes" class="ghost">刷新路由发布</button></div><div id="model-route-list" class="task-list"></div><form id="model-route-form" class="service-card operation-card"><div><label>逻辑路由<input id="model-route-name" required placeholder="general" /></label><label>候选目标<input id="model-route-target" required placeholder="deepseek:deepseek-chat" /></label><label>Judge Run ID<input id="model-route-judge" required /></label><label>Model Lab 实验 ID<input id="model-route-experiment" /></label><label>Canary（%）<input id="model-route-percent" type="number" min="1" max="50" value="5" /></label></div><button class="primary">启动受控 Canary</button></form></section>
           <section id="llm-quota-section" hidden><div class="section-heading"><div><h2>LLM 每日配额</h2><p>按租户和用户隔离 Token/美元预算；`*` 表示当前租户默认值。</p></div><button id="refresh-llm-quotas" class="ghost">刷新配额</button></div><div id="llm-quota-list" class="task-list"></div><form id="llm-quota-form" class="service-card operation-card"><div><label>用户或 *<input id="llm-quota-subject" value="*" required /></label><label>每日 Token<input id="llm-quota-tokens" type="number" min="1" value="50000" required /></label><label>每日成本（USD）<input id="llm-quota-cost" type="number" min="0.000001" step="0.01" value="1.00" required /></label></div><button class="primary">更新配额</button></form></section>
-          <section id="identity-users-section" hidden><div class="section-heading"><div><h2>用户与授权</h2><p>由 IdP 服务账号执行。变更仅限当前租户的人类角色；服务工作负载身份不可在此分配。</p></div><button id="refresh-identity-users" class="ghost">刷新用户</button></div><div id="identity-user-list" class="task-list"></div><form id="identity-user-form" class="service-card operation-card"><div><input id="identity-user-id" type="hidden" /><label>用户<input id="identity-user-name" disabled /></label><label>租户<input id="identity-user-tenant" required /></label><label>账号状态<select id="identity-user-enabled" required><option value="true">启用</option><option value="false">停用</option></select></label><label>角色（可多选）<select id="identity-user-roles" multiple required size="4" aria-describedby="identity-user-selection-hint"></select></label><label>权限（可多选）<select id="identity-user-permissions" multiple required size="9" aria-describedby="identity-user-selection-hint"></select></label><label>变更理由<textarea id="identity-user-reason" required></textarea></label><p id="identity-user-selection-hint" class="form-note">Windows：按住 Ctrl 可多选或取消选择。角色和权限均只能从平台目录中选择。</p></div><button class="primary">保存授权</button></form></section>
+          <section id="tenant-catalog-section" data-requires="tenant:read" hidden><div class="section-heading"><div><h2>租户管理</h2><p>租户是独立的平台目录对象，不是用户 ID 或登录名。冻结会停止后续人员分配；退休只保留历史，不物理删除。</p></div><button id="refresh-tenants" class="ghost">刷新租户</button></div><div id="tenant-catalog-list" class="task-list"></div><form id="tenant-form" class="service-card operation-card" data-requires="tenant:write"><div><input id="tenant-form-mode" type="hidden" value="create" /><h3 id="tenant-form-title">新建租户</h3><p id="tenant-form-help" class="form-note">填写租户基础信息后创建；新建默认启用，无需填写变更原因。</p><label>租户 ID<input id="tenant-form-id" pattern="[a-z][a-z0-9-]{1,62}" required placeholder="例如 acme-china" /></label><label>展示名称<input id="tenant-form-name" required placeholder="例如 Acme 中国" /></label><label>数据区域<input id="tenant-form-region" value="local" required /></label><label id="tenant-form-status-field" hidden>生命周期状态<select id="tenant-form-status"><option value="active">启用</option><option value="suspended">冻结</option><option value="retired">退休（保留审计）</option></select></label><label id="tenant-form-reason-field" hidden>变更原因<textarea id="tenant-form-reason" placeholder="说明创建、冻结、恢复或退休原因。"></textarea></label></div><div class="vertical-actions"><button id="tenant-form-reset" type="button" class="ghost" hidden>新建租户</button><button id="tenant-form-submit" class="primary">创建租户</button></div></form></section>
+          <section id="identity-users-section" hidden><div class="section-heading"><div><h2>用户与授权</h2><p>用户是 IdP 人类身份；登录名用于登录展示，平台 user_id 是不可变 OIDC Subject。人员只能从已启用租户下拉分配。</p></div><button id="refresh-identity-users" class="ghost">刷新用户</button></div><div id="identity-user-list" class="task-list"></div><form id="identity-user-form" class="service-card operation-card" hidden><div><input id="identity-user-id" type="hidden" /><label>登录名<input id="identity-user-name" disabled /></label><label>平台 User ID<input id="identity-user-subject" disabled /></label><label>所属租户<select id="identity-user-tenant" required></select></label><label>账号状态<select id="identity-user-enabled" required><option value="true">启用</option><option value="false">停用</option></select></label><label>权限模板<select id="identity-user-template"><option value="custom">自定义</option><option value="business">业务用户</option><option value="reviewer">审查专家</option><option value="operator">平台操作员</option><option value="auditor">治理审计员</option></select></label><label>角色（可多选）<select id="identity-user-roles" multiple required size="4" aria-describedby="identity-user-selection-hint"></select></label><label>权限（可多选）<select id="identity-user-permissions" multiple required size="9" aria-describedby="identity-user-selection-hint"></select></label><label>变更理由<textarea id="identity-user-reason" required placeholder="说明授权原因、工单或职责变更。"></textarea></label><p id="identity-user-selection-hint" class="form-note">登录名、IdP 内部 ID、平台 User ID 不可手工改写。先选常用模板，再按需微调；所有值都来自平台授权目录。</p></div><button class="primary">保存授权并使旧会话失效</button></form></section>
           <section id="audit-export-section" hidden><div class="section-heading"><div><h2>WORM 审计导出</h2><p>导出作业先验证 Hash Chain，再签名并写入合规保留对象；页面不接触存储凭据或审计原文。</p></div><div class="horizontal-actions"><button id="create-audit-export" class="primary">新建导出</button><button id="refresh-audit-exports" class="ghost">刷新</button></div></div><div id="audit-export-list" class="task-list"></div></section>
           <section id="connector-dlq-section" hidden><div class="section-heading"><div><h2>Connector 工件死信</h2><p>本机动作已经审计成功、但交付 Context 多次失败的记录；重排不会再次执行本机工具。</p></div><button id="refresh-connector-dlq" class="ghost">刷新死信</button></div><div id="connector-dlq-list" class="task-list" aria-live="polite"></div></section>
           <section id="golden-candidate-section" hidden><div class="section-heading"><div><h2>Golden Candidate 审核</h2><p>只有带有独立评测权限的人员可决定候选样本是否进入专家标注集。</p></div><button id="refresh-golden-candidates" class="ghost">刷新候选</button></div><div id="golden-candidate-list" class="task-list" aria-live="polite"></div></section>
         </section>
+
+        <section id="identity-view" class="view" hidden>
+          <div class="hero-card compact"><div><p class="eyebrow">TENANT & IDENTITY ADMINISTRATION</p><h2>租户与用户</h2><p>租户是独立隔离边界；用户通过稳定的 OIDC Subject 归属到一个已启用租户。登录名只用于展示与登录。</p></div></div>
+        </section>
       </main>
     </div>
 
+    <dialog id="account-dialog">
+      <article class="account-dialog-content">
+        <header class="dialog-heading"><div><p class="eyebrow">ACCOUNT & ACCESS</p><h2>账号与权限</h2></div><button id="account-dialog-close" class="icon-button" aria-label="关闭">×</button></header>
+        <p id="account-authentication-note" class="form-note"></p>
+        <dl id="account-details" class="account-details"></dl>
+        <section><h3>可访问工作区</h3><div id="account-workspaces" class="access-chip-list"></div></section>
+        <section><h3>有效权限</h3><p class="form-note">权限由登录身份声明或本地模拟模板生成；页面显示不代替后端鉴权。</p><div id="account-permission-list" class="access-chip-list"></div></section>
+        <div class="dialog-actions"><button id="account-open-identity" class="ghost" type="button" hidden>管理租户与用户</button><button id="account-dialog-done" class="primary" type="button">完成</button></div>
+      </article>
+    </dialog>
     <dialog id="task-dialog">
       <form id="task-form" method="dialog">
         <div class="dialog-heading"><div><p class="eyebrow">受控任务</p><h2>新建任务</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
         <label>选择 Agent<select id="agent-input"><option value="general-agent">通用受控 Agent</option></select></label>
         <label>发布环境<select id="environment-input"><option value="local">local</option><option value="staging">staging</option></select></label>
+        <input id="task-session-id" type="hidden" />
+        <label>指定模型路由<select id="model-route-input" required disabled><option value="">正在读取已发布模型…</option></select></label>
         <label>任务目标<textarea id="task-input" required minlength="3" placeholder="例如：检查这份方案中的风险点，并给出带引用的修改建议。"></textarea></label>
-        <p class="form-note">提交后会冻结 Release Snapshot；模型与工具不能因前端输入而越过发布约束。</p>
+        <p id="model-route-hint" class="form-note">模型列表来自本任务会话已冻结的 Release Snapshot；指定的是逻辑路由，Gateway 仍执行版本、配额、地域与降级策略。</p>
         <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button id="submit-task" class="primary" value="default">开始执行</button></div>
       </form>
     </dialog>
 
     <dialog id="task-detail-dialog">
       <article id="task-detail" class="task-detail"></article>
+    </dialog>
+    <dialog id="workspace-review-assignment-dialog">
+      <form id="workspace-review-assignment-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">REVIEW ASSIGNMENT</p><h2>指派审查任务</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+        <label>审查专家<select id="workspace-reviewer-select" required><option value="">正在加载当前租户的可用审查专家…</option></select></label>
+        <label>指派理由<textarea id="workspace-review-assignment-reason" required minlength="2" maxlength="2000" placeholder="说明需要复核的风险、证据缺口或审批事项。"></textarea></label>
+        <p class="form-note">只显示当前租户内已启用、具有审查专家角色和审查权限的人员。提交后，Runtime 会同时写入 Assignment 与 Governance 审计 Outbox。</p>
+        <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button id="workspace-review-assignment-submit" class="primary" value="default">确认指派</button></div>
+      </form>
     </dialog>
     <dialog id="review-transfer-dialog">
       <form id="review-transfer-form" method="dialog">
@@ -149,6 +179,7 @@
       </article>
     </dialog>
     <div id="toast" role="status" aria-live="polite"></div>
-    <script src="/app.js"></script>
+    <!-- 版本查询用于一次性淘汰历史上未声明 Cache-Control 的旧脚本；新的静态响应会按 ETag 重验证。 -->
+    <script src="/app.js?v=20260828-identity-boundary"></script>
   </body>
 </html>

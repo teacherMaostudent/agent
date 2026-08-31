@@ -11,7 +11,7 @@ if not exist "%~dp0scripts\start-platform.ps1" (
 
 echo Repository: %CD%
 echo Starting the seven-service Agent Platform...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-platform.ps1" -Action Start
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-platform.ps1" -Action Start -WithIdentity
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 

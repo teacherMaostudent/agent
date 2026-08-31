@@ -1,0 +1,31 @@
+# 仅用于本地审计源码联调：复用镜像依赖，业务代码和静态资源只读挂载。
+# 它不改变 OIDC、CSRF 或服务权限，不可替代从干净 Dockerfile 构建的生产镜像验收。
+services:
+  rag-query-api:
+    environment:
+      PYTHONPATH: /service
+    volumes:
+      - ./rag-agent-service/app:/service/app:ro
+      - ./rag-agent-service/apps:/service/apps:ro
+  tool-gateway:
+    environment:
+      PYTHONPATH: /service
+    volumes:
+      - ./tool-gateway/app:/service/app:ro
+  agent-runtime:
+    environment:
+      PYTHONPATH: /service/src
+    volumes:
+      - ./agent-runtime/src:/service/src:ro
+  agent-web-bff:
+    environment:
+      PYTHONPATH: /service/src
+    volumes:
+      - ./agent-web-bff/src:/service/src:ro
+      - ./agent-web/public:/service/static:ro
+  agent-governance:
+    environment:
+      PYTHONPATH: /service
+    volumes:
+      - ./agent-governance/app:/service/app:ro
+      - ./agent-governance/db:/service/db:ro

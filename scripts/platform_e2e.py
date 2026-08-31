@@ -7,6 +7,7 @@ execution-context propagation and its independent Governance outbox.
 
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 import uuid
@@ -63,8 +64,10 @@ def spec() -> dict[str, Any]:
         "model_policy": {"policy_id": "e2e-policy", "default_route": "chat", "routes": [
             {"route_name": "chat", "capability": "chat", "models": ["deepseek-v4-flash"]}
         ]},
-        "runtime_limits": {"max_steps": 4, "max_llm_calls": 2, "max_tool_calls": 2,
-                           "max_retrieval_rounds": 2, "max_execution_seconds": 30, "max_cost_usd": 1.0},
+        # Analyzer、一次或多次决策与最终回答都可能各消耗一次模型调用；2 会把健康的
+        # Plan-Execute 流程误判为预算耗尽，E2E 应验证跨服务契约而非制造假失败。
+        "runtime_limits": {"max_steps": 4, "max_llm_calls": 4, "max_tool_calls": 2,
+                           "max_retrieval_rounds": 2, "max_execution_seconds": 180, "max_cost_usd": 1.0},
         "labels": {"fixture": "platform-e2e"},
     }
 
@@ -120,17 +123,38 @@ def desktop_spec() -> dict[str, Any]:
                     "required_permissions": ["file:scan"],
                 }
             ],
+            # 任务入口可选择这些逻辑路由；真实厂商凭证、模型版本、地域、价格和降级链
+            # 仍由 LLM Gateway 配置与 Control Plane 发布门禁控制，前端不能直传 provider URL。
+            "model_policy": {
+                "policy_id": "desktop-provider-routes/v1",
+                "default_route": "deepseek-v4-flash",
+                "routes": [
+                    {"route_name": "deepseek-v4-flash", "capability": "chat", "models": ["deepseek-v4-flash"], "fallback_route": "qwen-plus"},
+                    {"route_name": "deepseek-v4-pro", "capability": "chat", "models": ["deepseek-v4-pro"], "fallback_route": "deepseek-v4-flash"},
+                    {"route_name": "gpt-4o-mini", "capability": "chat", "models": ["gpt-4o-mini"], "fallback_route": "deepseek-v4-flash"},
+                    {"route_name": "qwen-plus", "capability": "chat", "models": ["qwen-plus"], "fallback_route": "qwen-turbo"},
+                    {"route_name": "qwen-turbo", "capability": "chat", "models": ["qwen-turbo"], "fallback_route": "deepseek-v4-flash"},
+                    {"route_name": "qwen-max", "capability": "chat", "models": ["qwen-max"], "fallback_route": "qwen-plus"},
+                    {"route_name": "kimi-chat", "capability": "chat", "models": ["kimi-chat"], "fallback_route": "deepseek-v4-flash"},
+                    {"route_name": "kimi-long", "capability": "chat", "models": ["kimi-long"], "fallback_route": "kimi-chat"},
+                    {"route_name": "claude-sonnet-4", "capability": "chat", "models": ["claude-sonnet-4"], "fallback_route": "claude-3-5-haiku"},
+                    {"route_name": "claude-opus-4", "capability": "chat", "models": ["claude-opus-4"], "fallback_route": "claude-sonnet-4"},
+                    {"route_name": "claude-3-5-haiku", "capability": "chat", "models": ["claude-3-5-haiku"], "fallback_route": "deepseek-v4-flash"},
+                ],
+            },
             # 外部模型单次调用在网络抖动时可超过 30 秒。桌面基线的上限必须覆盖一次
             # 规划、一次工具决策和一次最终回答；仍由成本、调用次数及步骤上限共同约束。
             "runtime_limits": {
                 "max_steps": 8,
-                "max_llm_calls": 4,
+                # LLM Analyzer 消耗一次调用；三个扫描动作各需要一次 Decision，最后还需
+                # 一次 ANSWER Decision。因此桌面演示的模型预算至少为 1+3+1=5。
+                "max_llm_calls": 5,
                 "max_tool_calls": 3,
                 "max_retrieval_rounds": 3,
                 "max_execution_seconds": 180,
                 "max_cost_usd": 1.0,
             },
-            "labels": {"desktop_baseline": "v6", "fixture": "desktop-local"},
+            "labels": {"desktop_baseline": "v8", "fixture": "desktop-local"},
         }
     )
     return value
@@ -179,7 +203,7 @@ def ensure_desktop_release(client: httpx.Client) -> None:
     else:
         agent_response.raise_for_status()
         agent = agent_response.json()
-        if agent.get("draft", {}).get("labels", {}).get("desktop_baseline") != "v6":
+        if agent.get("draft", {}).get("labels", {}).get("desktop_baseline") != "v8":
             request(
                 client,
                 "PUT",
@@ -198,7 +222,7 @@ def ensure_desktop_release(client: httpx.Client) -> None:
         headers=manage,
     )
     version = next(
-        (item for item in versions if item["semantic_version"] == "1.5.0"),
+        (item for item in versions if item["semantic_version"] == "1.7.0"),
         None,
     )
     if version is None:
@@ -208,8 +232,10 @@ def ensure_desktop_release(client: httpx.Client) -> None:
             f"{BASE['control']}/v1/agents/{DESKTOP_AGENT}/versions",
             headers=manage,
             json={
-                "semantic_version": "1.5.0",
-                "change_summary": "Separate hosted-model timeout from the end-to-end desktop deadline",
+                "semantic_version": "1.7.0",
+                "change_summary": (
+                    "Publish selectable OpenAI, DeepSeek, Qwen, Kimi and Claude logical routes"
+                ),
             },
         )
 
@@ -244,15 +270,19 @@ def ensure_desktop_release(client: httpx.Client) -> None:
     verified.raise_for_status()
 
 
-def main() -> int:
+def main(*, bootstrap_desktop: bool = False) -> int:
     # 真实模型模式一次 Run 可以包含多次上游调用；15 秒只适合离线确定性路径，
     # 会把仍在执行的正常 Run 错判为联调失败。
-    with httpx.Client(timeout=90) as client:
+    # 这是跨服务契约验收而非 30 秒性能 SLA 测试；真实供应商慢响应不能冒充投递链路故障。
+    # 独立 fixture 仍保留 180 秒硬预算；不修改用户的正式 Release。
+    with httpx.Client(timeout=210) as client:
         for target in (f"{BASE['control']}/health/ready", f"{BASE['governance']}/health/ready",
                        f"{BASE['runtime']}/api/v1/health/ready", f"{BASE['tool']}/api/v1/health/ready"):
             wait_for(client, target)
 
-        ensure_desktop_release(client)
+        # 普通回归仅写测试租户；只有启动脚本显式请求时才初始化演示 Agent。
+        if bootstrap_desktop:
+            ensure_desktop_release(client)
 
         manage = management_headers(TENANT)
         # A restart can overlap two integration checks in the same second. A random
@@ -268,7 +298,8 @@ def main() -> int:
         })
         assert created["agent_id"] == agent
 
-        trace_id = "trace-platform-e2e"
+        # 每轮使用独立 Trace；不能把上一次 E2E 的治理事件当成本轮投递成功。
+        trace_id = f"trace-platform-e2e-{uuid.uuid4().hex[:12]}"
         run = request(client, "POST", f"{BASE['runtime']}/api/v1/agent/run", headers={
             "X-Tenant-Id": TENANT, "X-User-Id": "e2e-user", "X-Permissions": "rag:read",
             "X-Trace-Id": trace_id, "X-Rag-Agent-Key": "local-rag-service-key",
@@ -277,17 +308,20 @@ def main() -> int:
             "X-Tenant-Id": TENANT, "X-User-Id": "e2e-user",
             "X-Rag-Agent-Key": "local-rag-service-key",
         })
-        assert persisted["status"] == "COMPLETED"
-        assert persisted["context"]["snapshot_id"] == version["version_id"]
+        assert persisted["status"] == "COMPLETED", (
+            f"run {run['run_id']} ended as {persisted['status']}: "
+            f"{persisted.get('error_code') or persisted.get('error') or persisted.get('result', {}).get('termination_reason')}"
+        )
+        assert persisted["context"]["snapshot_id"] == version["version_id"], "snapshot identity mismatch"
 
-        request(client, "POST", f"{BASE['tool']}/api/v1/tools/create_ingestion_job/invoke", headers={
+        tool_result = request(client, "POST", f"{BASE['tool']}/api/v1/tools/create_ingestion_job/invoke", headers={
             "X-Tool-Gateway-Key": "local-tool-gateway-key", "X-Tenant-Id": TENANT,
             "X-User-Id": "e2e-user", "X-Permissions": "ingestion:write", "X-Request-Id": "e2e-tool-request",
             "X-Idempotency-Key": f"e2e-tool-{run['run_id']}", "X-Trace-Id": trace_id,
             "X-Run-Id": run["run_id"], "X-Agent-Id": agent, "X-Agent-Version": "1.0.0",
             "X-Snapshot-Id": version["version_id"],
-            # 写工具必须来自已准入的计划步骤；这些关联 ID 证明它不是脱离 Runtime
-            # 状态机的任意副作用调用，并会原样进入工具审计事件。
+            # 这里由测试直接构造上下文以验证 Tool Gateway 的透传契约和审计。
+            # 这些合成 ID 不证明 Runtime 已执行该步骤，也不能替代真实准入校验。
             "X-Root-Task-Id": run["run_id"],
             "X-Business-Operation-Id": f"business-{run['run_id']}",
             "X-Operation-Id": f"operation-{run['run_id']}",
@@ -295,20 +329,31 @@ def main() -> int:
             "X-Plan-Admission-Id": f"admission-{run['run_id']}",
             "X-Step-Id": "step-create-ingestion-job",
         }, json={"arguments": {"job_type": "REINDEX"}})
+        assert tool_result.get("status") == "SUCCEEDED", "tool invocation did not succeed"
 
-        audit = request(client, "GET", f"{BASE['governance']}/v1/governance/audit-events", headers={
-            "X-Tenant-Id": TENANT, "X-User-Id": "e2e-auditor", "X-Roles": "governance-auditor",
-            "X-Governance-Auditor-Key": "local-governance-auditor-key",
-        })
-        types = {item["event_type"] for item in audit["items"]}
+        # Outbox 投递异步完成；只在本轮 Trace 内有界等待，历史同名事件不得令门禁假通过。
+        types: set[str] = set()
+        for _ in range(20):
+            audit = request(client, "GET", f"{BASE['governance']}/v1/governance/audit-events", headers={
+                "X-Tenant-Id": TENANT, "X-User-Id": "e2e-auditor", "X-Roles": "governance-auditor",
+                "X-Governance-Auditor-Key": "local-governance-auditor-key",
+            }, params={"trace_id": trace_id, "limit": 200})
+            types = {item["event_type"] for item in audit["items"] if item["trace_id"] == trace_id}
+            if {"agent.run.completed", "tool.execution.completed"}.issubset(types):
+                break
+            time.sleep(1)
         assert {"agent.run.completed", "tool.execution.completed"}.issubset(types), types
     print("platform E2E passed: release resolution, persisted run, tool propagation, governance events")
     return 0
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bootstrap-desktop", action="store_true",
+                        help="同时初始化或迁移 demo/general-agent 的本地发布，仅用于开发启动")
+    options = parser.parse_args()
     try:
-        raise SystemExit(main())
+        raise SystemExit(main(bootstrap_desktop=options.bootstrap_desktop))
     except (AssertionError, httpx.HTTPError, RuntimeError) as error:
         print(f"platform E2E failed: {error}", file=sys.stderr)
         raise SystemExit(1)

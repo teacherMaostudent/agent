@@ -96,6 +96,9 @@ services:
       dockerfile: agent-control-plane/Dockerfile
     environment:
       CONTROL_PLANE_DATABASE_PATH: /data/control-plane.db
+      CONTROL_PLANE_BOOTSTRAP_TENANT_ID: demo
+      CONTROL_PLANE_BOOTSTRAP_TENANT_DISPLAY_NAME: Demo 租户
+      CONTROL_PLANE_BOOTSTRAP_TENANT_DATA_REGION: local
       CONTROL_PLANE_ENFORCE_ADMIN_ROLE: "true"
       CONTROL_PLANE_ADMIN_API_KEY: local-control-plane-admin-key
       CONTROL_PLANE_RUNTIME_API_KEY: local-control-plane-key

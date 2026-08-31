@@ -1,0 +1,1275 @@
+{
+  "schemaVersion": "desktop-run-export/v1",
+  "exportedAt": "2026-08-26T15:30:04.990Z",
+  "run": {
+    "run_id": "run_3345192c94be4d23b09296f452af3374",
+    "tenant_id": "audit-desktop-1787758123018",
+    "user_id": "desktop-test",
+    "agent_id": "desktop-audit",
+    "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+    "status": "COMPLETED",
+    "runtime_state": "COMPLETED",
+    "context": {
+      "request_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "parent_session_id": "",
+      "root_task_id": "run_3345192c94be4d23b09296f452af3374",
+      "collaboration_snapshot_id": "",
+      "business_operation_id": "",
+      "orchestration_owner": "agent",
+      "workflow_id": "",
+      "skill_execution_id": "",
+      "tenant_id": "audit-desktop-1787758123018",
+      "user_id": "desktop-test",
+      "agent_id": "desktop-audit",
+      "agent_version": "desktop-audit:1.0.0",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "graph_version": "desktop-controlled-graph:1",
+      "model_policy_version": "e2e-policy:1",
+      "deadline_at": "2026-08-26T15:32:26.661052Z",
+      "attempt_budget_remaining": 6
+    },
+    "result": {
+      "status": "COMPLETED",
+      "answer": "4",
+      "steps": 1,
+      "termination_reason": "ANSWERED",
+      "evidence": [],
+      "observations": [],
+      "execution_plan": {
+        "plan_id": "plan_238bcf7515864de8a50c494ca11614f6",
+        "orchestration_owner": "agent",
+        "topology": "single_agent",
+        "reasoning_policy": {
+          "strategy": "graph",
+          "max_replans": 2,
+          "max_reflections": 1,
+          "task_plan_required": true
+        },
+        "capability_policy": {
+          "required": [],
+          "optional": []
+        },
+        "durability_policy": {
+          "durable": false,
+          "retry_policy_id": "runtime-default/v1",
+          "compensation_required": false
+        },
+        "governance_policy": {
+          "policy_version": "governance-default/v1",
+          "qualification_required": true,
+          "audit_required": true
+        },
+        "budget_policy": {
+          "max_cost_usd": 1,
+          "max_latency_ms": 171419,
+          "max_steps": 8
+        },
+        "version_bindings": {
+          "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+          "graph_version": "desktop-controlled-graph:1",
+          "model_policy_version": "e2e-policy:1",
+          "capability_catalog_version": ""
+        },
+        "intent": {
+          "name": "direct_answer",
+          "confidence": 0.98,
+          "reason": "The request is a simple arithmetic question and explicitly prohibits tool or knowledge base calls."
+        },
+        "entities": [],
+        "source_plan": {
+          "knowledge_bases": [],
+          "context_sources": [],
+          "required_permissions": [],
+          "reason": "No retrieval or tool execution is required; the answer can be computed directly by the model."
+        },
+        "complexity": {
+          "score": 5,
+          "level": "simple",
+          "reasons": []
+        },
+        "sla": {
+          "deadline_at": "2026-08-26T15:32:26.661052Z",
+          "remaining_ms": 171419,
+          "tier": "standard",
+          "feasible": true
+        },
+        "cost": {
+          "max_cost_usd": 1,
+          "estimated_cost_usd": 0.01,
+          "remaining_cost_usd": 0.99947752,
+          "feasible": true
+        },
+        "route": {
+          "route": "direct",
+          "quality_tier": "fast",
+          "reasons": [
+            "simple_request_without_external_sources"
+          ],
+          "fallback_chain": [
+            "clarify"
+          ]
+        },
+        "agent_version": "desktop-audit:1.0.0",
+        "graph_version": "desktop-controlled-graph:1",
+        "model_policy_version": "e2e-policy:1",
+        "executor_profile": "declarative-langgraph/v1",
+        "execution_mode": "graph",
+        "execution_requirements": {
+          "lifecycle": "request_scoped",
+          "reasoning": "graph",
+          "engine": "langgraph",
+          "durability": "ephemeral",
+          "planning_strategy": "plan_execute",
+          "default_step_strategy": "deterministic",
+          "adaptive_step_strategy": "react",
+          "context_strategy": "managed_ledger",
+          "tool_presentation": "native"
+        },
+        "intent_catalog_version": "platform-default/v1",
+        "retrieval_policy": {
+          "profile": "FAST",
+          "retrieval_required": false,
+          "max_rounds": 1,
+          "candidate_top_k": 12,
+          "evidence_top_k": 3,
+          "hybrid_search": false,
+          "rerank_enabled": false,
+          "minimum_evidence_count": 0,
+          "citation_required": false,
+          "allow_answer_without_evidence": true,
+          "decision": "ACCEPTED",
+          "reason": "requested profile is allowed"
+        },
+        "planner_version": "runtime-planner/v2",
+        "analyzer_version": "GatewaySemanticAnalyzer",
+        "input_fingerprint": "a4b1c22a979c0e68207d1f6faa995d9c20cc9eb6d4122f12ecbb186b12b7f191",
+        "policy_fingerprint": "0aec6683ef45bba97eb4fc0959b8ee0712b69f2107657ba457aa42fca03189ed",
+        "plan_hash": "dc4fa71cc29054568c8980c34af1aa2e316ce75e539a7e324fc1d1ba598de06a",
+        "created_at": "2026-08-26T15:29:35.241733Z",
+        "plan_stage": "ADMITTED",
+        "admission_id": "admission_8a3fc74728624076b811caa4bad29339",
+        "admission_policy_version": "governance-default/v1",
+        "admission_checks": [
+          {
+            "check": "schema",
+            "passed": true,
+            "reason": "计划必须具有稳定标识与内容摘要",
+            "facts": {}
+          },
+          {
+            "check": "executor",
+            "passed": true,
+            "reason": "提议计划只能使用发布快照冻结的执行 Profile",
+            "facts": {
+              "published_contract": true
+            }
+          },
+          {
+            "check": "capability_feasibility",
+            "passed": true,
+            "reason": "必需能力必须存在已发布且可用的 Provider",
+            "facts": {
+              "missing": []
+            }
+          },
+          {
+            "check": "tool_scope",
+            "passed": true,
+            "reason": "工具型计划只能进入调用者权限内的发布工具范围",
+            "facts": {
+              "published_count": 1,
+              "allowed": [
+                "controlled_scan"
+              ]
+            }
+          },
+          {
+            "check": "risk",
+            "passed": true,
+            "reason": "副作用必须可幂等提交; 高风险动作必须声明审批",
+            "facts": {
+              "unsafe": []
+            }
+          },
+          {
+            "check": "budget",
+            "passed": true,
+            "reason": "估算成本必须位于父任务剩余额度和计划上限内",
+            "facts": {
+              "estimated_cost_usd": 0.01,
+              "remaining_cost_usd": 0.99947752
+            }
+          },
+          {
+            "check": "deadline",
+            "passed": true,
+            "reason": "计划开始前必须仍满足绝对截止时间",
+            "facts": {
+              "remaining_ms": 171419
+            }
+          }
+        ],
+        "allowed_tool_scope": [
+          "controlled_scan"
+        ]
+      },
+      "budget": {
+        "deadline_at": "2026-08-26T15:32:26.661052Z",
+        "max_steps": 8,
+        "max_llm_calls": 4,
+        "max_tool_calls": 3,
+        "max_retrieval_rounds": 3,
+        "max_cost_usd": 1,
+        "max_attempts": 6,
+        "step_count": 1,
+        "llm_calls": 2,
+        "tool_calls": 0,
+        "retrieval_rounds": 0,
+        "spent_cost_usd": 0.0009592352000000005,
+        "attempts_used": 2
+      },
+      "execution_trace": [
+        {
+          "node": "load_memory",
+          "at": "2026-08-26T15:29:26.713190+00:00",
+          "detail": {
+            "message_count": 0
+          }
+        },
+        {
+          "node": "analyze",
+          "at": "2026-08-26T15:29:35.239943+00:00",
+          "detail": {
+            "intent": "direct_answer"
+          }
+        },
+        {
+          "node": "build_plan",
+          "at": "2026-08-26T15:29:35.241843+00:00",
+          "detail": {
+            "plan_stage": "PROPOSED",
+            "plan_id": "plan_238bcf7515864de8a50c494ca11614f6",
+            "route": "direct",
+            "complexity": 5
+          }
+        },
+        {
+          "node": "plan_admission",
+          "at": "2026-08-26T15:29:35.246691+00:00",
+          "detail": {
+            "admission_id": "admission_8a3fc74728624076b811caa4bad29339",
+            "plan_id": "plan_238bcf7515864de8a50c494ca11614f6",
+            "policy_version": "governance-default/v1",
+            "checks": [
+              {
+                "check": "schema",
+                "passed": true,
+                "reason": "计划必须具有稳定标识与内容摘要",
+                "facts": {}
+              },
+              {
+                "check": "executor",
+                "passed": true,
+                "reason": "提议计划只能使用发布快照冻结的执行 Profile",
+                "facts": {
+                  "published_contract": true
+                }
+              },
+              {
+                "check": "capability_feasibility",
+                "passed": true,
+                "reason": "必需能力必须存在已发布且可用的 Provider",
+                "facts": {
+                  "missing": []
+                }
+              },
+              {
+                "check": "tool_scope",
+                "passed": true,
+                "reason": "工具型计划只能进入调用者权限内的发布工具范围",
+                "facts": {
+                  "published_count": 1,
+                  "allowed": [
+                    "controlled_scan"
+                  ]
+                }
+              },
+              {
+                "check": "risk",
+                "passed": true,
+                "reason": "副作用必须可幂等提交; 高风险动作必须声明审批",
+                "facts": {
+                  "unsafe": []
+                }
+              },
+              {
+                "check": "budget",
+                "passed": true,
+                "reason": "估算成本必须位于父任务剩余额度和计划上限内",
+                "facts": {
+                  "estimated_cost_usd": 0.01,
+                  "remaining_cost_usd": 0.99947752
+                }
+              },
+              {
+                "check": "deadline",
+                "passed": true,
+                "reason": "计划开始前必须仍满足绝对截止时间",
+                "facts": {
+                  "remaining_ms": 171419
+                }
+              }
+            ],
+            "allowed_tool_scope": [
+              "controlled_scan"
+            ]
+          }
+        },
+        {
+          "node": "decide",
+          "at": "2026-08-26T15:29:37.439357+00:00",
+          "detail": {
+            "action": "ANSWER"
+          }
+        }
+      ],
+      "interrupts": [],
+      "context_summary": {
+        "selected_history": [],
+        "selected_history_count": 0,
+        "status": {
+          "rag_status": "not_requested",
+          "degraded": false,
+          "degrade_reason": null,
+          "budget_report": {
+            "requested_tokens": 12000,
+            "message_budget": 12000,
+            "evidence_budget": 0,
+            "used_message_tokens": 7,
+            "used_evidence_tokens": 0,
+            "dropped_messages": 0,
+            "dropped_evidence": 0,
+            "strategy": "role_recency_relevance_and_source_trust"
+          }
+        }
+      },
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "latency_ms": 10835,
+      "artifact_ids": [
+        "art_a4d3c25248674953950dc5840acda7b2"
+      ]
+    },
+    "error_code": "",
+    "cancel_requested": false,
+    "created_at": "2026-08-26T15:29:26.661109Z",
+    "updated_at": "2026-08-26T15:29:37.538021Z",
+    "answer": "4",
+    "steps": 1,
+    "termination_reason": "ANSWERED",
+    "evidence": [],
+    "observations": [],
+    "execution_plan": {
+      "plan_id": "plan_238bcf7515864de8a50c494ca11614f6",
+      "orchestration_owner": "agent",
+      "topology": "single_agent",
+      "reasoning_policy": {
+        "strategy": "graph",
+        "max_replans": 2,
+        "max_reflections": 1,
+        "task_plan_required": true
+      },
+      "capability_policy": {
+        "required": [],
+        "optional": []
+      },
+      "durability_policy": {
+        "durable": false,
+        "retry_policy_id": "runtime-default/v1",
+        "compensation_required": false
+      },
+      "governance_policy": {
+        "policy_version": "governance-default/v1",
+        "qualification_required": true,
+        "audit_required": true
+      },
+      "budget_policy": {
+        "max_cost_usd": 1,
+        "max_latency_ms": 171419,
+        "max_steps": 8
+      },
+      "version_bindings": {
+        "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+        "graph_version": "desktop-controlled-graph:1",
+        "model_policy_version": "e2e-policy:1",
+        "capability_catalog_version": ""
+      },
+      "intent": {
+        "name": "direct_answer",
+        "confidence": 0.98,
+        "reason": "The request is a simple arithmetic question and explicitly prohibits tool or knowledge base calls."
+      },
+      "entities": [],
+      "source_plan": {
+        "knowledge_bases": [],
+        "context_sources": [],
+        "required_permissions": [],
+        "reason": "No retrieval or tool execution is required; the answer can be computed directly by the model."
+      },
+      "complexity": {
+        "score": 5,
+        "level": "simple",
+        "reasons": []
+      },
+      "sla": {
+        "deadline_at": "2026-08-26T15:32:26.661052Z",
+        "remaining_ms": 171419,
+        "tier": "standard",
+        "feasible": true
+      },
+      "cost": {
+        "max_cost_usd": 1,
+        "estimated_cost_usd": 0.01,
+        "remaining_cost_usd": 0.99947752,
+        "feasible": true
+      },
+      "route": {
+        "route": "direct",
+        "quality_tier": "fast",
+        "reasons": [
+          "simple_request_without_external_sources"
+        ],
+        "fallback_chain": [
+          "clarify"
+        ]
+      },
+      "agent_version": "desktop-audit:1.0.0",
+      "graph_version": "desktop-controlled-graph:1",
+      "model_policy_version": "e2e-policy:1",
+      "executor_profile": "declarative-langgraph/v1",
+      "execution_mode": "graph",
+      "execution_requirements": {
+        "lifecycle": "request_scoped",
+        "reasoning": "graph",
+        "engine": "langgraph",
+        "durability": "ephemeral",
+        "planning_strategy": "plan_execute",
+        "default_step_strategy": "deterministic",
+        "adaptive_step_strategy": "react",
+        "context_strategy": "managed_ledger",
+        "tool_presentation": "native"
+      },
+      "intent_catalog_version": "platform-default/v1",
+      "retrieval_policy": {
+        "profile": "FAST",
+        "retrieval_required": false,
+        "max_rounds": 1,
+        "candidate_top_k": 12,
+        "evidence_top_k": 3,
+        "hybrid_search": false,
+        "rerank_enabled": false,
+        "minimum_evidence_count": 0,
+        "citation_required": false,
+        "allow_answer_without_evidence": true,
+        "decision": "ACCEPTED",
+        "reason": "requested profile is allowed"
+      },
+      "planner_version": "runtime-planner/v2",
+      "analyzer_version": "GatewaySemanticAnalyzer",
+      "input_fingerprint": "a4b1c22a979c0e68207d1f6faa995d9c20cc9eb6d4122f12ecbb186b12b7f191",
+      "policy_fingerprint": "0aec6683ef45bba97eb4fc0959b8ee0712b69f2107657ba457aa42fca03189ed",
+      "plan_hash": "dc4fa71cc29054568c8980c34af1aa2e316ce75e539a7e324fc1d1ba598de06a",
+      "created_at": "2026-08-26T15:29:35.241733Z",
+      "plan_stage": "ADMITTED",
+      "admission_id": "admission_8a3fc74728624076b811caa4bad29339",
+      "admission_policy_version": "governance-default/v1",
+      "admission_checks": [
+        {
+          "check": "schema",
+          "passed": true,
+          "reason": "计划必须具有稳定标识与内容摘要",
+          "facts": {}
+        },
+        {
+          "check": "executor",
+          "passed": true,
+          "reason": "提议计划只能使用发布快照冻结的执行 Profile",
+          "facts": {
+            "published_contract": true
+          }
+        },
+        {
+          "check": "capability_feasibility",
+          "passed": true,
+          "reason": "必需能力必须存在已发布且可用的 Provider",
+          "facts": {
+            "missing": []
+          }
+        },
+        {
+          "check": "tool_scope",
+          "passed": true,
+          "reason": "工具型计划只能进入调用者权限内的发布工具范围",
+          "facts": {
+            "published_count": 1,
+            "allowed": [
+              "controlled_scan"
+            ]
+          }
+        },
+        {
+          "check": "risk",
+          "passed": true,
+          "reason": "副作用必须可幂等提交; 高风险动作必须声明审批",
+          "facts": {
+            "unsafe": []
+          }
+        },
+        {
+          "check": "budget",
+          "passed": true,
+          "reason": "估算成本必须位于父任务剩余额度和计划上限内",
+          "facts": {
+            "estimated_cost_usd": 0.01,
+            "remaining_cost_usd": 0.99947752
+          }
+        },
+        {
+          "check": "deadline",
+          "passed": true,
+          "reason": "计划开始前必须仍满足绝对截止时间",
+          "facts": {
+            "remaining_ms": 171419
+          }
+        }
+      ],
+      "allowed_tool_scope": [
+        "controlled_scan"
+      ]
+    },
+    "budget": {
+      "deadline_at": "2026-08-26T15:32:26.661052Z",
+      "max_steps": 8,
+      "max_llm_calls": 4,
+      "max_tool_calls": 3,
+      "max_retrieval_rounds": 3,
+      "max_cost_usd": 1,
+      "max_attempts": 6,
+      "step_count": 1,
+      "llm_calls": 2,
+      "tool_calls": 0,
+      "retrieval_rounds": 0,
+      "spent_cost_usd": 0.0009592352000000005,
+      "attempts_used": 2
+    },
+    "execution_trace": [
+      {
+        "node": "load_memory",
+        "at": "2026-08-26T15:29:26.713190+00:00",
+        "detail": {
+          "message_count": 0
+        }
+      },
+      {
+        "node": "analyze",
+        "at": "2026-08-26T15:29:35.239943+00:00",
+        "detail": {
+          "intent": "direct_answer"
+        }
+      },
+      {
+        "node": "build_plan",
+        "at": "2026-08-26T15:29:35.241843+00:00",
+        "detail": {
+          "plan_stage": "PROPOSED",
+          "plan_id": "plan_238bcf7515864de8a50c494ca11614f6",
+          "route": "direct",
+          "complexity": 5
+        }
+      },
+      {
+        "node": "plan_admission",
+        "at": "2026-08-26T15:29:35.246691+00:00",
+        "detail": {
+          "admission_id": "admission_8a3fc74728624076b811caa4bad29339",
+          "plan_id": "plan_238bcf7515864de8a50c494ca11614f6",
+          "policy_version": "governance-default/v1",
+          "checks": [
+            {
+              "check": "schema",
+              "passed": true,
+              "reason": "计划必须具有稳定标识与内容摘要",
+              "facts": {}
+            },
+            {
+              "check": "executor",
+              "passed": true,
+              "reason": "提议计划只能使用发布快照冻结的执行 Profile",
+              "facts": {
+                "published_contract": true
+              }
+            },
+            {
+              "check": "capability_feasibility",
+              "passed": true,
+              "reason": "必需能力必须存在已发布且可用的 Provider",
+              "facts": {
+                "missing": []
+              }
+            },
+            {
+              "check": "tool_scope",
+              "passed": true,
+              "reason": "工具型计划只能进入调用者权限内的发布工具范围",
+              "facts": {
+                "published_count": 1,
+                "allowed": [
+                  "controlled_scan"
+                ]
+              }
+            },
+            {
+              "check": "risk",
+              "passed": true,
+              "reason": "副作用必须可幂等提交; 高风险动作必须声明审批",
+              "facts": {
+                "unsafe": []
+              }
+            },
+            {
+              "check": "budget",
+              "passed": true,
+              "reason": "估算成本必须位于父任务剩余额度和计划上限内",
+              "facts": {
+                "estimated_cost_usd": 0.01,
+                "remaining_cost_usd": 0.99947752
+              }
+            },
+            {
+              "check": "deadline",
+              "passed": true,
+              "reason": "计划开始前必须仍满足绝对截止时间",
+              "facts": {
+                "remaining_ms": 171419
+              }
+            }
+          ],
+          "allowed_tool_scope": [
+            "controlled_scan"
+          ]
+        }
+      },
+      {
+        "node": "decide",
+        "at": "2026-08-26T15:29:37.439357+00:00",
+        "detail": {
+          "action": "ANSWER"
+        }
+      }
+    ],
+    "interrupts": [],
+    "context_summary": {
+      "selected_history": [],
+      "selected_history_count": 0,
+      "status": {
+        "rag_status": "not_requested",
+        "degraded": false,
+        "degrade_reason": null,
+        "budget_report": {
+          "requested_tokens": 12000,
+          "message_budget": 12000,
+          "evidence_budget": 0,
+          "used_message_tokens": 7,
+          "used_evidence_tokens": 0,
+          "dropped_messages": 0,
+          "dropped_evidence": 0,
+          "strategy": "role_recency_relevance_and_source_trust"
+        }
+      }
+    },
+    "latency_ms": 10835,
+    "artifact_ids": [
+      "art_a4d3c25248674953950dc5840acda7b2"
+    ]
+  },
+  "events": [
+    {
+      "event_id": "rse_a01ea90f2dd34161bad55f572d0fa767",
+      "sequence": 2,
+      "event_type": "runtime.run.started",
+      "occurred_at": "2026-08-26T15:29:26.661938Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "",
+      "step_id": "",
+      "epoch_id": "",
+      "attempt_id": "",
+      "payload_version": "session-event/v1",
+      "status": "RUNNING",
+      "error_code": "",
+      "metadata": {},
+      "model_message": null
+    },
+    {
+      "event_id": "rse_c954e4f13dce4780bae66ed4a31f02d7",
+      "sequence": 3,
+      "event_type": "runtime.turn.started",
+      "occurred_at": "2026-08-26T15:29:26.665442Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "turn_run_3345192c94be4d23b09296f452af3374",
+      "step_id": "",
+      "epoch_id": "",
+      "attempt_id": "attempt_run_3345192c94be4d23b09296f452af3374",
+      "payload_version": "session-event/v1",
+      "status": "RUNNING",
+      "error_code": "",
+      "metadata": {
+        "origin": "runtime-api"
+      },
+      "model_message": null
+    },
+    {
+      "event_id": "rse_86fcb5950f5a41b88d87680c771595a7",
+      "sequence": 4,
+      "event_type": "runtime.run.state_changed",
+      "occurred_at": "2026-08-26T15:29:26.668710Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "",
+      "step_id": "",
+      "epoch_id": "",
+      "attempt_id": "",
+      "payload_version": "session-event/v1",
+      "status": "RUNNING",
+      "error_code": "",
+      "metadata": {
+        "previous_state": "CREATED",
+        "current_state": "PREPARING_CONTEXT",
+        "trigger": "START",
+        "source": "runtime-api"
+      },
+      "model_message": null
+    },
+    {
+      "event_id": "rse_3bd380ff71cf4375a57632b2bfc9b549",
+      "sequence": 5,
+      "event_type": "runtime.user.message",
+      "occurred_at": "2026-08-26T15:29:26.672199Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "turn_run_3345192c94be4d23b09296f452af3374",
+      "step_id": "",
+      "epoch_id": "",
+      "attempt_id": "attempt_run_3345192c94be4d23b09296f452af3374",
+      "payload_version": "session-event/v1",
+      "status": "RUNNING",
+      "error_code": "",
+      "metadata": {
+        "message_source": "runtime-api"
+      },
+      "model_message": {
+        "role": "user",
+        "content": "桌面交互测试：直接回答 2+2 的结果，不调用工具或知识库。",
+        "content_sha256": "1308b581d080d373b2c0f595311c45da30df8e543313821ad19e397effb06643",
+        "source": "runtime-api.user-message",
+        "redacted": true,
+        "truncated": false
+      }
+    },
+    {
+      "event_id": "rse_c1bd2157150143808812be305898ee52",
+      "sequence": 6,
+      "event_type": "runtime.context.injected",
+      "occurred_at": "2026-08-26T15:29:26.703217Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "turn_run_3345192c94be4d23b09296f452af3374",
+      "step_id": "",
+      "epoch_id": "",
+      "attempt_id": "attempt_run_3345192c94be4d23b09296f452af3374",
+      "payload_version": "session-event/v1",
+      "status": "RUNNING",
+      "error_code": "",
+      "metadata": {
+        "context_source": "context-service",
+        "history_count": 0,
+        "selection_policy": "context-service",
+        "budget_report": {
+          "requested_tokens": 12000,
+          "message_budget": 12000,
+          "evidence_budget": 0,
+          "used_message_tokens": 7,
+          "used_evidence_tokens": 0,
+          "dropped_messages": 0,
+          "dropped_evidence": 0,
+          "strategy": "role_recency_relevance_and_source_trust"
+        }
+      },
+      "model_message": null
+    },
+    {
+      "event_id": "rse_8aebb3a4199140d0808a40ee89a7f463",
+      "sequence": 7,
+      "event_type": "runtime.run.state_changed",
+      "occurred_at": "2026-08-26T15:29:26.708280Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "",
+      "step_id": "",
+      "epoch_id": "",
+      "attempt_id": "",
+      "payload_version": "session-event/v1",
+      "status": "RUNNING",
+      "error_code": "",
+      "metadata": {
+        "previous_state": "PREPARING_CONTEXT",
+        "current_state": "REQUESTING_MODEL",
+        "trigger": "CONTEXT_READY",
+        "source_event_id": "rse_c1bd2157150143808812be305898ee52",
+        "source_event_type": "runtime.context.injected"
+      },
+      "model_message": null
+    },
+    {
+      "event_id": "rse_eba6a815d60f4ab591cb0b5548baa4ce",
+      "sequence": 8,
+      "event_type": "runtime.plan.admitted",
+      "occurred_at": "2026-08-26T15:29:35.243142Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "turn_run_3345192c94be4d23b09296f452af3374",
+      "step_id": "",
+      "epoch_id": "",
+      "attempt_id": "attempt_run_3345192c94be4d23b09296f452af3374",
+      "payload_version": "session-event/v1",
+      "status": "RUNNING",
+      "error_code": "",
+      "metadata": {
+        "admission_id": "admission_8a3fc74728624076b811caa4bad29339",
+        "plan_id": "plan_238bcf7515864de8a50c494ca11614f6",
+        "policy_version": "governance-default/v1",
+        "checks": [
+          {
+            "check": "schema",
+            "passed": true,
+            "reason": "计划必须具有稳定标识与内容摘要",
+            "facts": {}
+          },
+          {
+            "check": "executor",
+            "passed": true,
+            "reason": "提议计划只能使用发布快照冻结的执行 Profile",
+            "facts": {
+              "published_contract": true
+            }
+          },
+          {
+            "check": "capability_feasibility",
+            "passed": true,
+            "reason": "必需能力必须存在已发布且可用的 Provider",
+            "facts": {
+              "missing": []
+            }
+          },
+          {
+            "check": "tool_scope",
+            "passed": true,
+            "reason": "工具型计划只能进入调用者权限内的发布工具范围",
+            "facts": {
+              "published_count": 1,
+              "allowed": [
+                "controlled_scan"
+              ]
+            }
+          },
+          {
+            "check": "risk",
+            "passed": true,
+            "reason": "副作用必须可幂等提交; 高风险动作必须声明审批",
+            "facts": {
+              "unsafe": []
+            }
+          },
+          {
+            "check": "budget",
+            "passed": true,
+            "reason": "估算成本必须位于父任务剩余额度和计划上限内",
+            "facts": {
+              "estimated_cost_usd": 0.01,
+              "remaining_cost_usd": 0.99947752
+            }
+          },
+          {
+            "check": "deadline",
+            "passed": true,
+            "reason": "计划开始前必须仍满足绝对截止时间",
+            "facts": {
+              "remaining_ms": 171419
+            }
+          }
+        ],
+        "allowed_tool_scope": [
+          "controlled_scan"
+        ]
+      },
+      "model_message": null
+    },
+    {
+      "event_id": "rse_ddde07b778a040fda0d02ca73fe34f0c",
+      "sequence": 9,
+      "event_type": "runtime.step.started",
+      "occurred_at": "2026-08-26T15:29:35.252053Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "turn_run_3345192c94be4d23b09296f452af3374",
+      "step_id": "step_run_3345192c94be4d23b09296f452af3374_1",
+      "epoch_id": "",
+      "attempt_id": "attempt_run_3345192c94be4d23b09296f452af3374",
+      "payload_version": "session-event/v1",
+      "status": "RUNNING",
+      "error_code": "",
+      "metadata": {
+        "step": 1,
+        "step_id": "step_run_3345192c94be4d23b09296f452af3374_1"
+      },
+      "model_message": null
+    },
+    {
+      "event_id": "rse_39cc2344110d4a25b77e52b7d5c4ffcb",
+      "sequence": 10,
+      "event_type": "runtime.request_epoch.pinned",
+      "occurred_at": "2026-08-26T15:29:35.259203Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "turn_run_3345192c94be4d23b09296f452af3374",
+      "step_id": "step_run_3345192c94be4d23b09296f452af3374_1",
+      "epoch_id": "epoch_step_run_3345192c94be4d23b09296f452af3374_1",
+      "attempt_id": "attempt_run_3345192c94be4d23b09296f452af3374",
+      "payload_version": "session-event/v1",
+      "status": "RUNNING",
+      "error_code": "",
+      "metadata": {
+        "step_id": "step_run_3345192c94be4d23b09296f452af3374_1",
+        "epoch_id": "epoch_step_run_3345192c94be4d23b09296f452af3374_1",
+        "model_route": "deepseek-v4-flash",
+        "model_policy_version": "",
+        "model_revision": "deepseek-v4-flash",
+        "prompt_version": "a9a77c823e7aacd9b750cd9f33c3d5c8d1427c385c4f4e923f088c911444431d",
+        "rendered_prompt_hash": "0ad20769be62112b08e82e6c64d30a9e93707501c8543fa48937bacaccc9308d",
+        "tool_catalog_version": "",
+        "visible_tool_schema_hash": "d0c0d3fe92fe384527d2d5525212483b0f6f504915ffcb57b3ec19b50e14903b",
+        "knowledge_bindings": [],
+        "index_contracts": {},
+        "budget_policy": {
+          "deadline_at": "2026-08-26T15:32:26.661052Z",
+          "max_steps": 8,
+          "max_llm_calls": 4,
+          "max_tool_calls": 3,
+          "max_retrieval_rounds": 3,
+          "max_cost_usd": 1,
+          "max_attempts": 6,
+          "step_count": 0,
+          "llm_calls": 1,
+          "tool_calls": 0,
+          "retrieval_rounds": 0,
+          "spent_cost_usd": 0.00052248,
+          "attempts_used": 1
+        },
+        "retrieval_policy": {
+          "profile": "FAST",
+          "retrieval_required": false,
+          "max_rounds": 1,
+          "candidate_top_k": 12,
+          "evidence_top_k": 3,
+          "hybrid_search": false,
+          "rerank_enabled": false,
+          "minimum_evidence_count": 0,
+          "citation_required": false,
+          "allow_answer_without_evidence": true,
+          "decision": "ACCEPTED",
+          "reason": "requested profile is allowed"
+        },
+        "context_sources": [],
+        "output_schema": null
+      },
+      "model_message": null
+    },
+    {
+      "event_id": "rse_b0546d0133a14dd5b73f3a6fe40c4f88",
+      "sequence": 11,
+      "event_type": "runtime.prompt.assembled",
+      "occurred_at": "2026-08-26T15:29:35.266403Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "turn_run_3345192c94be4d23b09296f452af3374",
+      "step_id": "step_run_3345192c94be4d23b09296f452af3374_1",
+      "epoch_id": "epoch_step_run_3345192c94be4d23b09296f452af3374_1",
+      "attempt_id": "attempt_run_3345192c94be4d23b09296f452af3374",
+      "payload_version": "session-event/v1",
+      "status": "RUNNING",
+      "error_code": "",
+      "metadata": {
+        "prompt_version": "a9a77c823e7aacd9b750cd9f33c3d5c8d1427c385c4f4e923f088c911444431d",
+        "history_count": 0,
+        "evidence_count": 0,
+        "tool_count": 1,
+        "prompt_injection_findings": [],
+        "step_id": "step_run_3345192c94be4d23b09296f452af3374_1",
+        "epoch_id": "epoch_step_run_3345192c94be4d23b09296f452af3374_1"
+      },
+      "model_message": {
+        "role": "user",
+        "content": "桌面交互测试：直接回答 2+2 的结果，不调用工具或知识库。",
+        "content_sha256": "1308b581d080d373b2c0f595311c45da30df8e543313821ad19e397effb06643",
+        "source": "runtime.prompt.task",
+        "redacted": true,
+        "truncated": false
+      }
+    },
+    {
+      "event_id": "rse_547ac37e6e5b4d44bce107ac81e4cf82",
+      "sequence": 12,
+      "event_type": "runtime.model.requested",
+      "occurred_at": "2026-08-26T15:29:35.273675Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "turn_run_3345192c94be4d23b09296f452af3374",
+      "step_id": "step_run_3345192c94be4d23b09296f452af3374_1",
+      "epoch_id": "epoch_step_run_3345192c94be4d23b09296f452af3374_1",
+      "attempt_id": "attempt_run_3345192c94be4d23b09296f452af3374",
+      "payload_version": "session-event/v1",
+      "status": "RUNNING",
+      "error_code": "",
+      "metadata": {
+        "logical_model": "deepseek-v4-flash",
+        "step_id": "step_run_3345192c94be4d23b09296f452af3374_1",
+        "epoch_id": "epoch_step_run_3345192c94be4d23b09296f452af3374_1"
+      },
+      "model_message": null
+    },
+    {
+      "event_id": "rse_495fd36170c047618e1cdb715ecc9ddd",
+      "sequence": 13,
+      "event_type": "runtime.model.responded",
+      "occurred_at": "2026-08-26T15:29:37.430592Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "turn_run_3345192c94be4d23b09296f452af3374",
+      "step_id": "step_run_3345192c94be4d23b09296f452af3374_1",
+      "epoch_id": "epoch_step_run_3345192c94be4d23b09296f452af3374_1",
+      "attempt_id": "attempt_run_3345192c94be4d23b09296f452af3374",
+      "payload_version": "session-event/v1",
+      "status": "RUNNING",
+      "error_code": "",
+      "metadata": {
+        "action": "ANSWER",
+        "step": 1,
+        "step_id": "step_run_3345192c94be4d23b09296f452af3374_1",
+        "epoch_id": "epoch_step_run_3345192c94be4d23b09296f452af3374_1"
+      },
+      "model_message": {
+        "role": "assistant",
+        "content": "{\"action\":\"ANSWER\",\"reason\":\"The request is a simple arithmetic question (2+2) and explicitly prohibits tool or knowledge base calls. The answer is computed directly by the model: 4.\",\"query\":\"\",\"tool_name\":\"\",\"tool_arguments\":{},\"subagent_id\":\"\",\"subagent_capability\":\"\",\"subagent_task\":\"\",\"capability_id\":\"\",\"capability_input\":{},\"require_independent_authority\":false,\"final_answer\":\"4\"}",
+        "content_sha256": "d9d895226a84e7ac25cbb2c8a5f11572c142baf81fb45b40cbc7592706895cc3",
+        "source": "runtime.model.decision",
+        "redacted": true,
+        "truncated": false
+      }
+    },
+    {
+      "event_id": "rse_b7bbcbb2aa6e4b9bb5d73e1be6ebd387",
+      "sequence": 14,
+      "event_type": "runtime.step.completed",
+      "occurred_at": "2026-08-26T15:29:37.441449Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "turn_run_3345192c94be4d23b09296f452af3374",
+      "step_id": "step_run_3345192c94be4d23b09296f452af3374_1",
+      "epoch_id": "",
+      "attempt_id": "attempt_run_3345192c94be4d23b09296f452af3374",
+      "payload_version": "session-event/v1",
+      "status": "RUNNING",
+      "error_code": "",
+      "metadata": {
+        "step_id": "step_run_3345192c94be4d23b09296f452af3374_1",
+        "outcome": "answer"
+      },
+      "model_message": null
+    },
+    {
+      "event_id": "rse_d95e7e42307a45c2b0dc4d1868641124",
+      "sequence": 15,
+      "event_type": "runtime.assistant.message",
+      "occurred_at": "2026-08-26T15:29:37.486743Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "turn_run_3345192c94be4d23b09296f452af3374",
+      "step_id": "",
+      "epoch_id": "",
+      "attempt_id": "attempt_run_3345192c94be4d23b09296f452af3374",
+      "payload_version": "session-event/v1",
+      "status": "COMPLETED",
+      "error_code": "",
+      "metadata": {
+        "termination_reason": "ANSWERED"
+      },
+      "model_message": {
+        "role": "assistant",
+        "content": "4",
+        "content_sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+        "source": "runtime-api.assistant-message",
+        "redacted": true,
+        "truncated": false
+      }
+    },
+    {
+      "event_id": "rse_8de456fa4be041ee9e8717b30dd66a1c",
+      "sequence": 16,
+      "event_type": "runtime.turn.completed",
+      "occurred_at": "2026-08-26T15:29:37.491112Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "turn_run_3345192c94be4d23b09296f452af3374",
+      "step_id": "",
+      "epoch_id": "",
+      "attempt_id": "attempt_run_3345192c94be4d23b09296f452af3374",
+      "payload_version": "session-event/v1",
+      "status": "COMPLETED",
+      "error_code": "",
+      "metadata": {
+        "termination_reason": "ANSWERED"
+      },
+      "model_message": null
+    },
+    {
+      "event_id": "rse_49ebd8e512c349249cf5db2cc08bfd6f",
+      "sequence": 17,
+      "event_type": "runtime.run.state_changed",
+      "occurred_at": "2026-08-26T15:29:37.538318Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "",
+      "step_id": "",
+      "epoch_id": "",
+      "attempt_id": "",
+      "payload_version": "session-event/v1",
+      "status": "COMPLETED",
+      "error_code": "",
+      "metadata": {
+        "previous_state": "REQUESTING_MODEL",
+        "current_state": "COMPLETED",
+        "trigger": "RUN_COMPLETED"
+      },
+      "model_message": null
+    },
+    {
+      "event_id": "rse_3bfe960e04ef4dde9fe423be207bfdbd",
+      "sequence": 18,
+      "event_type": "runtime.run.completed",
+      "occurred_at": "2026-08-26T15:29:37.538612Z",
+      "run_id": "run_3345192c94be4d23b09296f452af3374",
+      "parent_run_id": "",
+      "trace_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "tenant_id": "audit-desktop-1787758123018",
+      "agent_id": "desktop-audit",
+      "snapshot_id": "av_8a2caf09322a4b069a9e9359e1042b05",
+      "session_id": "interactive-872743913b8441c0886a4c4e1d724eeb",
+      "turn_id": "",
+      "step_id": "",
+      "epoch_id": "",
+      "attempt_id": "",
+      "payload_version": "session-event/v1",
+      "status": "COMPLETED",
+      "error_code": "",
+      "metadata": {
+        "steps": 1
+      },
+      "model_message": null
+    }
+  ]
+}

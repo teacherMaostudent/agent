@@ -8,7 +8,10 @@ from platform_sdk.contracts.capabilities import RuntimeCapability
 from platform_sdk.contracts.runtime_api import AgentRunRequest
 
 from agent_runtime_service.runtime.integration import ReleaseNotFoundError
-from agent_runtime_service.service_api.runtime_api import submit_interactive_agent_run
+from agent_runtime_service.service_api.runtime_api import (
+    _effective_attempt_budget,
+    submit_interactive_agent_run,
+)
 
 
 class _Queue:
@@ -96,3 +99,21 @@ def test_interactive_submit_reports_missing_release_as_404() -> None:
 
     assert captured.value.status_code == 404
     assert captured.value.detail["code"] == "agent_release_not_found"
+
+
+def test_default_attempt_budget_covers_published_action_budgets() -> None:
+    """默认总尝试预算不得早于 LLM、工具和检索三个已发布子预算耗尽。"""
+    settings = SimpleNamespace(
+        agent_attempt_budget=6,
+        agent_max_llm_calls=8,
+        agent_max_tool_calls=6,
+        agent_max_retrieval_rounds=4,
+    )
+    limits = {"max_llm_calls": 4, "max_tool_calls": 3, "max_retrieval_rounds": 3}
+    assert _effective_attempt_budget(AgentRunRequest(task="scan"), limits, settings) == 10
+    assert (
+        _effective_attempt_budget(
+            AgentRunRequest(task="scan", attempt_budget=3), limits, settings
+        )
+        == 3
+    )

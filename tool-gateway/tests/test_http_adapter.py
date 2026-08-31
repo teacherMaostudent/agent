@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.domain.errors import ToolUpstreamError
+from app.domain.errors import ToolUpstreamError, ToolValidationError
 from app.domain.models import HttpTransport, InvocationContext
 from app.infrastructure.adapters import HttpToolAdapter
 
@@ -79,4 +79,42 @@ async def test_http_adapter_does_not_follow_redirects() -> None:
     with pytest.raises(ToolUpstreamError, match="redirects are disabled"):
         await adapter.execute({}, context)
 
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_http_adapter_maps_upstream_422_to_non_retryable_argument_error() -> None:
+    """工具参数被下游拒绝时，Gateway 不得伪装成可重试的上游 500。"""
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                422,
+                json={
+                    "detail": {
+                        "code": "controlled_scan_arguments_invalid",
+                        "message": "advanced regex is not allowed",
+                        "hint": "use literal matching",
+                    }
+                },
+            )
+        )
+    )
+    adapter = HttpToolAdapter(
+        HttpTransport(
+            url="https://example.com/tool",
+            method="POST",
+            allowed_hosts=["example.com"],
+        ),
+        allow_private_networks=False,
+        max_response_bytes=10_000,
+        client=client,
+    )
+    context = InvocationContext(
+        tenant_id="tenant-a",
+        user_id="user-a",
+        request_id="request-a",
+    )
+
+    with pytest.raises(ToolValidationError, match="use literal matching"):
+        await adapter.execute({"pattern": "(?=unsafe)"}, context)
     await client.aclose()

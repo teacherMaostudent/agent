@@ -6,7 +6,7 @@
 
 ```powershell
 docker compose -f compose.platform.yaml up --build -d
-python scripts/platform_e2e.py
+python scripts/platform_e2e.py --bootstrap-desktop
 ```
 
 该配置用于开发和契约联调。它启动线上服务所需的进程、Model Lab、Agent Lab 和共享依赖。Context、

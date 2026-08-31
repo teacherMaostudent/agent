@@ -5,6 +5,26 @@ from fastapi.testclient import TestClient
 from tests.conftest import event
 
 
+def test_trace_and_run_filters_apply_before_pagination(client, auditor_headers) -> None:
+    """旧记录不能遮住本轮 Run；游标与租户条件必须在过滤后的集合上生效。"""
+    for index, run_id in enumerate(("old", "old", "target", "target")):
+        body = event(f"filter-{index}", "agent.run.completed", {
+            "run_id": run_id, "agent_id": "fixture", "status": "COMPLETED",
+        })
+        body["trace_id"] = "trace-" + run_id
+        assert client.post("/v1/governance/events", json=body).status_code == 202
+    response = client.get("/v1/governance/audit-events", headers=auditor_headers,
+                          params={"trace_id": "trace-target", "limit": 1}).json()
+    assert [item["event_id"] for item in response["items"]] == ["filter-2"]
+    path = "/internal/v1/governance/audit-events/runs/target"
+    first = client.get(path, headers={"X-Tenant-Id": "tenant-a"}, params={"limit": 1}).json()
+    assert [item["event_id"] for item in first["items"]] == ["filter-2"]
+    second = client.get(path, headers={"X-Tenant-Id": "tenant-a"},
+                        params={"limit": 1, "after_sequence": first["next_cursor"]}).json()
+    assert [item["event_id"] for item in second["items"]] == ["filter-3"]
+    assert client.get(path, headers={"X-Tenant-Id": "other"}).json()["items"] == []
+
+
 def test_ingestion_is_idempotent_and_audits_unapproved_high_risk_tool(
     client: TestClient, auditor_headers: dict[str, str]
 ) -> None:

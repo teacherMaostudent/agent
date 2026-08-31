@@ -58,6 +58,32 @@ def _release(
     return response.json()
 
 
+def test_agent_catalog_is_tenant_scoped_and_paginates_in_database(
+    client: TestClient,
+    headers: dict[str, str],
+    valid_spec: dict[str, object],
+) -> None:
+    """发布目录页返回稳定元数据与总数，不要求 Console 拉取全量 Draft。"""
+    for agent_id in ("agent-01", "agent-02", "agent-03"):
+        response = client.post(
+            "/v1/agents", headers=headers, json={"agent_id": agent_id, "spec": valid_spec}
+        )
+        assert response.status_code == 201, response.text
+
+    second_page = client.get("/v1/agents/catalog?limit=2&offset=2", headers=headers)
+    other_tenant = client.get(
+        "/v1/agents/catalog?limit=2&offset=0",
+        headers={**headers, "X-Tenant-Id": "tenant-b"},
+    )
+
+    assert second_page.status_code == 200
+    assert second_page.json()["total_items"] == 3
+    assert second_page.json()["limit"] == 2
+    assert len(second_page.json()["items"]) == 1
+    assert set(second_page.json()["items"][0]) == {"agent_id", "revision", "updated_at"}
+    assert other_tenant.json() == {"items": [], "total_items": 0, "limit": 2, "offset": 0}
+
+
 def test_release_requires_runtime_cluster_capability_when_catalog_is_enabled(
     client: TestClient,
     headers: dict[str, str],

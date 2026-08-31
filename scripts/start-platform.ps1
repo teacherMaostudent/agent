@@ -5,8 +5,9 @@ param(
     [switch]$NoBuild,
     [switch]$SkipE2E,
     [switch]$WithLabs,
-    # 本地身份联调是可选覆盖层：启用后 BFF 使用真实 OIDC/PKCE，而不再信任开发 Header。
+    # Web 默认启用真实 OIDC/PKCE。仅服务开发或故障隔离时才显式使用 -WithoutIdentity。
     [switch]$WithIdentity,
+    [switch]$WithoutIdentity,
     [ValidateRange(30, 900)]
     [int]$TimeoutSeconds = 240
 )
@@ -18,8 +19,13 @@ $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $composeFile = Join-Path $repositoryRoot "compose.platform.yaml"
 $identityComposeFile = Join-Path $repositoryRoot "compose.identity.yaml"
 $projectName = "agent-platform"
+$identityEnabled = -not $WithoutIdentity
+if ($WithIdentity -and $WithoutIdentity) {
+    throw "-WithIdentity 与 -WithoutIdentity 不能同时使用。"
+}
+if ($WithIdentity) { $identityEnabled = $true }
 $composeFileArguments = @("-f", $composeFile)
-if ($WithIdentity) {
+if ($identityEnabled) {
     if (-not (Test-Path -LiteralPath $identityComposeFile)) {
         throw "未找到本地身份覆盖文件：$identityComposeFile"
     }
@@ -49,7 +55,7 @@ $coreServices = @(
 # 本地使用共享开发卷上的轮询 Worker；生产模板构建独立 Temporal Worker Target，
 # 两种入口不会因同名镜像而在缺少 Temporal 时反复重启。
 $labServices = @("model-lab", "agent-lab")
-$identityServices = if ($WithIdentity) { @("keycloak") } else { @() }
+$identityServices = if ($identityEnabled) { @("keycloak", "keycloak-platform-init") } else { @() }
 $managedServices = if ($WithLabs) { $coreServices + $labServices + $identityServices } else { $coreServices + $identityServices }
 
 $healthChecks = [ordered]@{
@@ -62,7 +68,7 @@ $healthChecks = [ordered]@{
     "Tool Gateway"    = "http://127.0.0.1:9090/api/v1/health/ready"
     "Agent Web BFF"   = "http://127.0.0.1:9010/health/ready"
 }
-if ($WithIdentity) {
+if ($identityEnabled) {
     $healthChecks["Keycloak"] = "http://127.0.0.1:9110/realms/agent-platform"
 }
 
@@ -96,7 +102,7 @@ $baseImages = @(
     "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z",
     "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
 )
-if ($WithIdentity) { $baseImages += "quay.io/keycloak/keycloak:26.7.1" }
+if ($identityEnabled) { $baseImages += "quay.io/keycloak/keycloak:26.7.1" }
 
 function Resolve-DockerCli {
     if (Get-Command docker -ErrorAction SilentlyContinue) { return }
@@ -274,7 +280,7 @@ function Invoke-PlatformE2E {
         return
     }
     Write-Host "正在执行发布、Runtime、Tool 与 Governance 黑盒联调……" -ForegroundColor Cyan
-    & $python.Command @($python.Prefix) (Join-Path $repositoryRoot "scripts\platform_e2e.py")
+    & $python.Command @($python.Prefix) (Join-Path $repositoryRoot "scripts\platform_e2e.py") --bootstrap-desktop
     if ($LASTEXITCODE -ne 0) {
         throw "平台 E2E 未通过。"
     }
@@ -298,7 +304,7 @@ function Show-Endpoints {
     Write-Host "  Control Plane API http://127.0.0.1:9002/docs"
     Write-Host "  Runtime API       http://127.0.0.1:8001/docs"
     Write-Host "  Agent Web BFF     http://127.0.0.1:9010/health/ready"
-    if ($WithIdentity) {
+    if ($identityEnabled) {
         Write-Host "  Keycloak          http://127.0.0.1:9110（本地 OIDC 管理入口）"
     }
     Write-Host ""

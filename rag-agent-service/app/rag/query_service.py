@@ -4,7 +4,7 @@ from opentelemetry import trace
 
 from app.contracts.rag import RagSearchRequest, RagSearchResponse
 from app.ingestion.chunker import TextChunker
-from app.retrieval.controlled_scan import ControlledFileScanner
+from app.retrieval.controlled_scan import ControlledFileScanner, ControlledScanUnavailableError
 
 
 class RagQueryService:
@@ -42,7 +42,7 @@ class RagQueryService:
     def scan(self, scope: str, pattern: str, *, regex: bool = False, glob: str = "") -> list[dict]:
         """执行受控文本扫描；scope 必须是服务配置的目录别名而不是客户端路径。"""
         if self.scanner is None:
-            raise ValueError("controlled file scanning is not configured")
+            raise ControlledScanUnavailableError("controlled file scanning is not configured")
         return [
             item.__dict__
             for item in self.scanner.scan(scope, pattern, regex=regex, glob=glob or "**/*")

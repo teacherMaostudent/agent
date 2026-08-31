@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     agent_release_quality_gate_required: bool = False
     agent_release_knowledge_contract_required: bool = False
     model_release_monitor_interval_seconds: float = Field(default=30, gt=0, le=3_600)
+    # Local demo data only. Production leaves this empty and must create tenants through the
+    # authenticated catalog API rather than inheriting an implicit default tenant.
+    bootstrap_tenant_id: str = ""
+    bootstrap_tenant_display_name: str = Field(default="Demo 租户", min_length=1, max_length=120)
+    bootstrap_tenant_data_region: str = Field(default="local", min_length=1, max_length=64)
 
     @model_validator(mode="after")
     def validate_production_security(self) -> Settings:

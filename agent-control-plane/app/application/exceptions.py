@@ -25,6 +25,12 @@ class PolicyViolationError(ControlPlaneError):
     code = "policy_violation"
 
 
+class ForbiddenError(ControlPlaneError):
+    """The caller is authenticated but lacks a platform-level authority boundary."""
+
+    code = "forbidden"
+
+
 class InvalidStateError(ControlPlaneError):
     code = "invalid_state"
 

@@ -141,6 +141,19 @@ CREATE TABLE IF NOT EXISTS tenant_policies (
     updated_at TIMESTAMPTZ NOT NULL
 );
 
+-- Same immutable tenant key and soft lifecycle semantics as the local adapter.
+CREATE TABLE IF NOT EXISTS tenants (
+    tenant_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'suspended', 'retired')),
+    data_region TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_by TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status, tenant_id);
+
 CREATE TABLE IF NOT EXISTS outbox_events (
     sequence BIGSERIAL PRIMARY KEY,
     event_id TEXT NOT NULL UNIQUE,

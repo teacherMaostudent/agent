@@ -409,6 +409,48 @@ class LlmQuotaLimit(StrictModel):
     currency: Literal["USD"] = "USD"
 
 
+class TenantStatus(StrEnum):
+    """租户生命周期状态；不提供物理删除，避免破坏既有运行与审计证据。"""
+
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+    RETIRED = "retired"
+
+
+class Tenant(StrictModel):
+    """平台级租户目录记录，不与任何人的 ``user_id`` 或登录名混用。
+
+    ``tenant_id`` 是不可变的机器标识；展示名称可以修改。所有业务服务继续以该
+    标识隔离数据、策略与审计，而不是以人类账号名作为隔离键。
+    """
+
+    tenant_id: str = Field(pattern=r"^[a-z][a-z0-9-]{1,62}$")
+    display_name: str = Field(min_length=1, max_length=120)
+    status: TenantStatus = TenantStatus.ACTIVE
+    data_region: str = Field(default="local", min_length=1, max_length=64)
+    created_by: str = Field(min_length=1, max_length=255)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_by: str = Field(min_length=1, max_length=255)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class TenantCreate(StrictModel):
+    """最高管理员创建新租户时提交的受限字段。"""
+
+    tenant_id: str = Field(pattern=r"^[a-z][a-z0-9-]{1,62}$")
+    display_name: str = Field(min_length=1, max_length=120)
+    data_region: str = Field(default="local", min_length=1, max_length=64)
+
+
+class TenantUpdate(StrictModel):
+    """更新租户元数据或生命周期状态；tenant_id 永远不能在原地改名。"""
+
+    display_name: str = Field(min_length=1, max_length=120)
+    data_region: str = Field(min_length=1, max_length=64)
+    status: TenantStatus
+    reason: str = Field(min_length=3, max_length=1_000)
+
+
 class TenantPolicy(StrictModel):
     tenant_id: str
     allowed_models: list[str] = Field(default_factory=list)

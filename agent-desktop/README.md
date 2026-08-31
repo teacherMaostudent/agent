@@ -11,7 +11,9 @@
 - 展示 Runtime Session Ledger 的实时事件；
 - 将计划、快照、路由、证据、受控工具结果、成本/步骤和原始事件关联 ID 分区展示；
 - 查看最终结果、暂停式人工审批、Steering、恢复与取消；
-- 提供源码扫描、证据报告和文件整理预案三个演示入口；
+- 提供独立的空白“自定义发布任务”输入入口，并保留源码扫描、证据报告和文件整理预案
+  三个可编辑演示模板；自定义内容只提交给选定 Agent/环境的 Active Release，不会由桌面端
+  创建、修改或绕过 Release；
 - Electron 启用 `contextIsolation`、`sandbox` 并关闭 Renderer 的 Node 权限；
 - OIDC Token 只保存在 Electron 主进程内存，不写入前端存储；
 - 本地目录只生成最多 250 项、深度最多 3 层的清单，不上传绝对路径或文件正文。
@@ -49,6 +51,10 @@ OIDC/OPA 验证用户声明。内部目录与运维 API 仍要求工作负载凭
 配置到桌面端。
 
 ## Windows 安装器
+
+真实 Electron 交互回归入口为 `pnpm run e2e`。Playwright 已作为开发依赖锁定，命令会先生成
+独立打包产物，再使用独立测试 profile/租户执行回归，不操作已有用户实例。已验证与未验证项见
+[Desktop 交互测试记录](../docs/desktop-interaction-audit-2026-08-26.md)；组件测试通过不等于原生窗口和审批全链通过。
 
 ```powershell
 pnpm run dist

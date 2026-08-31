@@ -9,6 +9,10 @@ class AgentRunRequest(BaseModel):
     task: str
     agent_id: str = Field(default="general-agent", min_length=2, max_length=160)
     environment: str = Field(default="production", min_length=2, max_length=64)
+    # This is a published *logical route* (for example ``claude-sonnet-4``), never a
+    # provider URL or arbitrary upstream model identifier. Runtime resolves it against the
+    # immutable Snapshot before any provider request is made.
+    model_route: str | None = Field(default=None, min_length=1, max_length=100)
     document_id: str | None = None
     content: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

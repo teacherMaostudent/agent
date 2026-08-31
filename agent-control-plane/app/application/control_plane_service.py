@@ -31,6 +31,7 @@ from platform_sdk.contracts.workflow import compile_workflow_plan
 from app.application.exceptions import (
     ConflictError,
     DraftValidationError,
+    ForbiddenError,
     InvalidStateError,
     NotFoundError,
     PolicyViolationError,
@@ -58,6 +59,9 @@ from app.domain.models import (
     SkillStatusUpdate,
     SkillVersion,
     SkillVersionPublish,
+    Tenant,
+    TenantCreate,
+    TenantUpdate,
     TenantPolicy,
     TenantPolicyUpdate,
     ToolBinding,
@@ -162,6 +166,14 @@ class ControlPlaneService:
         List records within the caller tenant without changing release state.
         """
         return await self._repository.list_agents(identity.tenant_id)
+
+    async def list_agent_page(
+        self, identity: Identity, *, limit: int, offset: int
+    ) -> tuple[list[AgentDefinition], int]:
+        """返回当前租户的受限 Agent 目录页；不读取或编译任何 Snapshot。"""
+        return await self._repository.list_agent_page(
+            identity.tenant_id, limit=limit, offset=offset
+        )
 
     async def create_workflow(
         self, identity: Identity, request: WorkflowCreate, trace_id: str
@@ -1397,6 +1409,83 @@ class ControlPlaneService:
         policy = await self._repository.get_tenant_policy(identity.tenant_id)
         return policy or TenantPolicy(tenant_id=identity.tenant_id)
 
+    async def list_tenants(self, identity: Identity) -> list[Tenant]:
+        """列出独立租户目录；只有平台最高管理员可跨租户枚举。"""
+        self._require_platform_super_admin(identity)
+        return await self._repository.list_tenants()
+
+    async def get_tenant(self, identity: Identity, tenant_id: str) -> Tenant:
+        """读取目录中的一个租户；普通管理员只能读取自己的租户。"""
+        if tenant_id != identity.tenant_id:
+            self._require_platform_super_admin(identity)
+        tenant = await self._repository.get_tenant(tenant_id)
+        if tenant is None:
+            raise NotFoundError(f"Tenant '{tenant_id}' was not found.")
+        return tenant
+
+    async def create_tenant(
+        self, identity: Identity, request: TenantCreate, trace_id: str
+    ) -> Tenant:
+        """建立租户目录和默认发布策略；tenant_id 一经创建不可改名。"""
+        self._require_platform_super_admin(identity)
+        now = utc_now()
+        tenant = Tenant(
+            tenant_id=request.tenant_id,
+            display_name=request.display_name,
+            data_region=request.data_region,
+            created_by=identity.user_id,
+            created_at=now,
+            updated_by=identity.user_id,
+            updated_at=now,
+        )
+        policy = TenantPolicy(
+            tenant_id=tenant.tenant_id,
+            allowed_data_regions=[tenant.data_region],
+            updated_by=identity.user_id,
+            updated_at=now,
+        )
+        event = self._event(
+            "TenantCreated", trace_id, tenant.tenant_id, "tenant", tenant.tenant_id,
+            {"display_name": tenant.display_name, "data_region": tenant.data_region, "status": tenant.status.value},
+        )
+        try:
+            await self._repository.create_tenant(tenant, policy, event)
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError(f"Tenant '{tenant.tenant_id}' already exists.") from exc
+        return tenant
+
+    async def update_tenant(
+        self, identity: Identity, tenant_id: str, request: TenantUpdate, trace_id: str
+    ) -> Tenant:
+        """软冻结或退休租户，并保留其历史数据与审计链。"""
+        self._require_platform_super_admin(identity)
+        previous = await self._repository.get_tenant(tenant_id)
+        if previous is None:
+            raise NotFoundError(f"Tenant '{tenant_id}' was not found.")
+        now = utc_now()
+        tenant = previous.model_copy(
+            update={
+                "display_name": request.display_name,
+                "data_region": request.data_region,
+                "status": request.status,
+                "updated_by": identity.user_id,
+                "updated_at": now,
+            }
+        )
+        event = self._event(
+            "TenantStatusChanged" if previous.status != tenant.status else "TenantUpdated",
+            trace_id, tenant.tenant_id, "tenant", tenant.tenant_id,
+            {
+                "previous_status": previous.status.value,
+                "status": tenant.status.value,
+                "display_name": tenant.display_name,
+                "data_region": tenant.data_region,
+                "reason": request.reason,
+            },
+        )
+        await self._repository.update_tenant(tenant, event)
+        return tenant
+
     async def update_tenant_policy(
         self,
         identity: Identity,
@@ -1486,6 +1575,12 @@ class ControlPlaneService:
             pinned=pinned,
             snapshot=version.snapshot,
         )
+
+    @staticmethod
+    def _require_platform_super_admin(identity: Identity) -> None:
+        """限制全局租户目录操作，不能因 BFF 工作负载附加 agent-admin 而越权。"""
+        if "platform-super-admin" not in identity.roles:
+            raise ForbiddenError("The platform-super-admin role is required for tenant management.")
 
     @staticmethod
     def _event(

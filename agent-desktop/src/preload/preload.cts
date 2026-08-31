@@ -14,6 +14,7 @@ import type {
 const api: DesktopApi = {
   configure: (value: RuntimeConnection) => ipcRenderer.invoke("runtime:configure", value),
   capabilities: () => ipcRenderer.invoke("runtime:capabilities"),
+  modelRoutes: (agentId: string, environment: string, sessionId: string) => ipcRenderer.invoke("runtime:model-routes", agentId, environment, sessionId),
   pairConnector: (deviceName: string, capabilities: string[]) => ipcRenderer.invoke("runtime:pair", deviceName, capabilities),
   confirmConnector: (connectorId: string, pairingCode: string) => ipcRenderer.invoke("runtime:confirm-pair", connectorId, pairingCode),
   connectorStatus: (connectorId: string) => ipcRenderer.invoke("runtime:connector-status", connectorId),

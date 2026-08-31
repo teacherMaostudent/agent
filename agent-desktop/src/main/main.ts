@@ -174,6 +174,7 @@ function registerIpc(): void {
   const history = new RunHistoryStore(path.join(app.getPath("userData"), "history"));
   ipcMain.handle("runtime:configure", (_event, value: RuntimeConnection) => runtime.configure(value));
   ipcMain.handle("runtime:capabilities", () => runtime.capabilities());
+  ipcMain.handle("runtime:model-routes", (_event, agentId: string, environment: string, sessionId: string) => runtime.modelRoutes(agentId, environment, sessionId));
   ipcMain.handle("runtime:pair", (_event, deviceName: string, capabilities: string[]) => runtime.pairConnector(deviceName, capabilities));
   ipcMain.handle("runtime:confirm-pair", (_event, connectorId: string, code: string) => runtime.confirmConnector(connectorId, code));
   ipcMain.handle("runtime:connector-status", (_event, connectorId: string) => runtime.connectorStatus(connectorId));

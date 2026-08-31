@@ -10,6 +10,9 @@ from platform_sdk.contracts.runtime_api import (
     ReviewCommentRequest,
 )
 
+from agent_runtime_service.runtime.integration import RuntimeStoreOperations
+from platform_sdk.contracts.execution import ExecutionContext
+
 from agent_runtime_service.service_api.runtime_api import (
     add_review_collaborator,
     add_review_comment,
@@ -58,6 +61,72 @@ def test_review_assignment_requires_explicit_assignment_permission() -> None:
         )
 
     assert captured.value.status_code == 403
+
+
+def test_review_assignment_uses_atomic_assignment_and_governance_outbox_when_available() -> None:
+    """Production stores receive the reviewer grant and immutable audit fact in one operation."""
+
+    class Store:
+        assigned: tuple[object, ...] | None = None
+
+        def assign_reviewer_and_audit(self, *arguments: object) -> None:
+            self.assigned = arguments
+
+    store = Store()
+    assign_run_reviewer(
+        "run-a",
+        ReviewAssignmentRequest(reviewer_id="reviewer-a", reason="需要复核"),
+        _request(store),
+        x_tenant_id="tenant-a",
+        x_user_id="manager-a",
+        x_permissions="run:review:assign",
+    )
+
+    assert store.assigned == ("tenant-a", "run-a", "reviewer-a", "manager-a", "需要复核")
+
+
+def test_review_assignment_persists_assignment_and_governance_event_together(tmp_path) -> None:
+    """A durable assignment must leave its review record and audit fact in one commit.
+
+    If the process dies before ``commit()``, neither the queue-visible assignment nor
+    the Outbox event becomes visible.  Once committed, Governance can consume the
+    exact same assignment fact instead of reconstructing it from application logs.
+    """
+
+    store = RuntimeStoreOperations(tmp_path / "runtime.db")
+    context = ExecutionContext.create(
+        request_id="req-review-assignment",
+        trace_id="trace-review-assignment",
+        session_id="session-review-assignment",
+        tenant_id="tenant-a",
+        user_id="owner-a",
+        agent_id="general-agent",
+        agent_version="1.0.0",
+        snapshot_id="snapshot-1",
+        deadline_seconds=60,
+        attempt_budget=2,
+    )
+    store.create(context)
+
+    store.assign_reviewer_and_audit(
+        tenant_id="tenant-a",
+        run_id=context.run_id,
+        reviewer_id="reviewer-a",
+        assigned_by="manager-a",
+        reason="Please verify the evidence.",
+    )
+
+    assignment = store.review_assignment(
+        tenant_id="tenant-a", run_id=context.run_id, reviewer_id="reviewer-a"
+    )
+    assert assignment is not None
+    assert assignment["assigned_by"] == "manager-a"
+
+    events = store.pending_events()
+    assert len(events) == 1
+    assert events[0]["event_type"] == "agent.review.assigned"
+    assert events[0]["trace_id"] == f"review-assignment:{context.run_id}"
+    assert events[0]["payload"]["reviewer_id"] == "reviewer-a"
 
 
 def test_review_queue_is_bound_to_current_reviewer() -> None:

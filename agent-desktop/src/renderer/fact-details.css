@@ -1,0 +1,15 @@
+/* 一行摘要 → 按需报文。宽屏双列、窄屏单列，长标识不撑破面板。 */
+.full-detail > .inspection-grid {grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
+.fact-details.panel {min-height:0;padding:16px;min-width:0}
+.fact-details summary {cursor:pointer;list-style:none;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+.fact-details summary::-webkit-details-marker {display:none}
+.fact-details summary strong {color:#edf3ff;font-size:14px}
+.fact-details summary span {color:#b3c8ff;font-size:12px}
+.fact-details summary span::after {content:" ＋"}
+.fact-details[open] summary span::after {content:" −"}
+.fact-details summary small {grid-column:1/-1;font-size:12px;line-height:1.6;color:#a4b3cb}
+.fact-details summary:focus-visible {outline:2px solid #8facff;outline-offset:5px;border-radius:4px}
+.fact-details pre {max-height:360px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#0d1527;color:#d4dff2;padding:14px;border-radius:9px;font:12px/1.6 Consolas,monospace;margin:14px 0 0}
+.detail-item summary {cursor:pointer;color:#b3c8ff;font-size:12px;margin-top:8px}
+.status.limit_exceeded,.status.rejected {color:#ffb5a6;border-color:#795044}
+@media(max-width:1250px){.full-detail > .inspection-grid{grid-template-columns:minmax(0,1fr)}}

@@ -38,6 +38,9 @@ from app.domain.models import (
     SkillVersionPublish,
     TenantPolicy,
     TenantPolicyUpdate,
+    Tenant,
+    TenantCreate,
+    TenantUpdate,
     ValidationReport,
     WorkflowCreate,
     WorkflowDefinition,
@@ -286,6 +289,36 @@ async def list_agents(
     return await service(container).list_agents(identity)
 
 
+@router.get("/v1/agents/catalog", tags=["agents"])
+async def list_agent_catalog_page(
+    identity: ManagementIdentity,
+    container: Container,
+    limit: int = Query(default=8, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=125_000),
+) -> dict[str, Any]:
+    """分页返回发布目录元数据，避免 Console 为展示目录传输全量 Agent Draft。
+
+    该端点只投影 Agent ID、Draft 修订和更新时间；版本及 Release 摘要由
+    明确的子资源接口单独读取，防止把可执行快照混入目录页。
+    """
+    items, total_items = await service(container).list_agent_page(
+        identity, limit=limit, offset=offset
+    )
+    return {
+        "items": [
+            {
+                "agent_id": item.agent_id,
+                "revision": item.revision,
+                "updated_at": item.updated_at,
+            }
+            for item in items
+        ],
+        "total_items": total_items,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
 @router.get("/v1/agents/{agent_id}", response_model=AgentDefinition, tags=["agents"])
 async def get_agent(
     agent_id: str,
@@ -514,6 +547,43 @@ async def update_tenant_policy(
 ) -> TenantPolicy:
     """更新租户策略并写入审计 Outbox；策略在后续发布校验中生效。"""
     return await service(container).update_tenant_policy(identity, request, trace_id)
+
+
+@router.get("/v1/tenants", response_model=list[Tenant], tags=["tenants"])
+async def list_tenants(identity: ManagementIdentity, container: Container) -> list[Tenant]:
+    """列出平台租户目录；服务只允许最高管理员跨租户查看。"""
+    return await service(container).list_tenants(identity)
+
+
+@router.get("/v1/tenants/{tenant_id}", response_model=Tenant, tags=["tenants"])
+async def get_tenant(
+    tenant_id: str, identity: ManagementIdentity, container: Container
+) -> Tenant:
+    """读取一个租户的元数据与状态，不返回任何用户或业务内容。"""
+    return await service(container).get_tenant(identity, tenant_id)
+
+
+@router.post("/v1/tenants", response_model=Tenant, status_code=201, tags=["tenants"])
+async def create_tenant(
+    request: TenantCreate,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> Tenant:
+    """建立不可变 ID 的租户目录记录、默认策略和 Outbox 审计事实。"""
+    return await service(container).create_tenant(identity, request, trace_id)
+
+
+@router.put("/v1/tenants/{tenant_id}", response_model=Tenant, tags=["tenants"])
+async def update_tenant(
+    tenant_id: str,
+    request: TenantUpdate,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> Tenant:
+    """修改展示元数据或软冻结租户；不提供破坏审计链的删除接口。"""
+    return await service(container).update_tenant(identity, tenant_id, request, trace_id)
 
 
 @router.get("/v1/outbox", response_model=OutboxList, tags=["integration"])

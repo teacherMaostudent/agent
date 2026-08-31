@@ -9,6 +9,7 @@ description = "Asynchronous audit, evaluation, and compliance reporting for ente
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "agent-platform-infra>=0.1.0",
   "aiokafka>=0.12,<1",
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
@@ -33,6 +34,7 @@ dev = [
 packages = ["app"]
 
 [tool.pytest.ini_options]
+pythonpath = [".", "../platform-infra"]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 

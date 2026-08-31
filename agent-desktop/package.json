@@ -10,6 +10,7 @@
     "dev": "pnpm run build && node scripts/dev.mjs",
     "build": "node scripts/clean.mjs && vite build && node scripts/fix-file-protocol-html.mjs && tsc -p tsconfig.main.json",
     "dist": "pnpm run build && electron-builder --publish never",
+    "e2e": "pnpm run dist && node scripts/e2e.mjs --without-native",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
     "test": "vitest run --config vitest.config.ts"
   },
@@ -26,6 +27,7 @@
     "electron": "39.8.10",
     "electron-builder": "26.15.3",
     "jsdom": "30.0.1",
+    "playwright": "1.57.0",
     "typescript": "7.0.2",
     "vite": "8.2.2",
     "vitest": "4.1.11"

@@ -7,6 +7,7 @@ const electronOnly = async () => {
 export const browserPreviewApi: DesktopApi = {
   configure: async () => undefined,
   capabilities: async () => ({ service: "browser-layout-preview" }),
+  modelRoutes: electronOnly,
   pairConnector: electronOnly,
   confirmConnector: electronOnly,
   connectorStatus: electronOnly,

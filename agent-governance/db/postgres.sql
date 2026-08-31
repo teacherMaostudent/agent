@@ -13,6 +13,10 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_sequence
     ON audit_events (tenant_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_trace
+    ON audit_events (tenant_id, trace_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_run
+    ON audit_events (tenant_id, (payload_json::jsonb ->> 'run_id'), sequence);
 CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_occurred
     ON audit_events (tenant_id, occurred_at DESC);
 

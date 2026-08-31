@@ -24,6 +24,7 @@ from app.domain.models import (
     SkillDefinition,
     SkillStatus,
     SkillVersion,
+    Tenant,
     TenantPolicy,
     WorkflowDefinition,
     WorkflowRelease,
@@ -226,6 +227,33 @@ class ControlPlaneRepositoryOperations:
                 (tenant_id,),
             ).fetchall()
             return [_agent_from_row(row) for row in rows]
+
+        return await self._read(operation)
+
+    async def list_agent_page(
+        self, tenant_id: str, *, limit: int, offset: int
+    ) -> tuple[list[AgentDefinition], int]:
+        """读取一个租户下按更新时间倒序的 Agent 目录页及总数。
+
+        目录分页必须在数据层完成，而不是先把全量 Draft 送到浏览器再切片；
+        这样租户内 Agent 数量增长时，Console 仍保持有界查询和传输开销。
+        """
+
+        def operation(connection: sqlite3.Connection) -> tuple[list[AgentDefinition], int]:
+            """在同一只读连接中取页数据与总数，确保两个值属于相同可见快照。"""
+            total_row = connection.execute(
+                "SELECT COUNT(*) AS total FROM agents WHERE tenant_id = ?", (tenant_id,)
+            ).fetchone()
+            rows = connection.execute(
+                """
+                SELECT * FROM agents
+                WHERE tenant_id = ?
+                ORDER BY updated_at DESC, agent_id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (tenant_id, limit, offset),
+            ).fetchall()
+            return ([_agent_from_row(row) for row in rows], int(total_row["total"]))
 
         return await self._read(operation)
 
@@ -904,6 +932,94 @@ class ControlPlaneRepositoryOperations:
 
         return await self._read(operation)
 
+    async def ensure_tenant(self, tenant: Tenant) -> None:
+        """幂等插入本地/部署引导租户；绝不覆盖已由管理员维护的目录记录。"""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """
+                INSERT INTO tenants (
+                    tenant_id, display_name, status, data_region, created_by, created_at,
+                    updated_by, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (tenant_id) DO NOTHING
+                """,
+                (
+                    tenant.tenant_id, tenant.display_name, tenant.status.value,
+                    tenant.data_region, tenant.created_by, tenant.created_at.isoformat(),
+                    tenant.updated_by, tenant.updated_at.isoformat(),
+                ),
+            )
+
+        await self._write(operation)
+
+    async def get_tenant(self, tenant_id: str) -> Tenant | None:
+        """按不可变 tenant_id 查目录记录；调用方自行决定是否能跨租户读取。"""
+
+        def operation(connection: sqlite3.Connection) -> Tenant | None:
+            row = connection.execute("SELECT * FROM tenants WHERE tenant_id = ?", (tenant_id,)).fetchone()
+            return _tenant_from_row(row) if row else None
+
+        return await self._read(operation)
+
+    async def list_tenants(self) -> list[Tenant]:
+        """返回全局租户目录，专供最高管理员控制台使用。"""
+
+        def operation(connection: sqlite3.Connection) -> list[Tenant]:
+            rows = connection.execute("SELECT * FROM tenants ORDER BY tenant_id ASC").fetchall()
+            return [_tenant_from_row(row) for row in rows]
+
+        return await self._read(operation)
+
+    async def create_tenant(self, tenant: Tenant, policy: TenantPolicy, event: OutboxEvent) -> None:
+        """在同一事务建立租户目录、默认策略和可重放的创建事件。"""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """
+                INSERT INTO tenants (
+                    tenant_id, display_name, status, data_region, created_by, created_at,
+                    updated_by, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tenant.tenant_id, tenant.display_name, tenant.status.value,
+                    tenant.data_region, tenant.created_by, tenant.created_at.isoformat(),
+                    tenant.updated_by, tenant.updated_at.isoformat(),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO tenant_policies (tenant_id, policy_json, updated_by, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (policy.tenant_id, policy.model_dump_json(), policy.updated_by, policy.updated_at.isoformat()),
+            )
+            self._insert_event(connection, event)
+
+        await self._write(operation)
+
+    async def update_tenant(self, tenant: Tenant, event: OutboxEvent) -> None:
+        """原子更新租户元数据与生命周期，并同时记录不可变状态迁移事件。"""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            cursor = connection.execute(
+                """
+                UPDATE tenants
+                SET display_name = ?, status = ?, data_region = ?, updated_by = ?, updated_at = ?
+                WHERE tenant_id = ?
+                """,
+                (
+                    tenant.display_name, tenant.status.value, tenant.data_region,
+                    tenant.updated_by, tenant.updated_at.isoformat(), tenant.tenant_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(tenant.tenant_id)
+            self._insert_event(connection, event)
+
+        await self._write(operation)
+
     async def upsert_tenant_policy(self, policy: TenantPolicy, event: OutboxEvent) -> None:
         """原子写入租户策略及变更 Outbox 事件，使策略状态与审计事实一致。
         计/Outbox 一致性。 计/Outbox 一致性。
@@ -1127,6 +1243,22 @@ def _json(value: Any) -> str:
 
 class SqliteRepository(ControlPlaneRepositoryOperations):
     """本地 SQLite 事务实现；生产 PostgreSQL 不继承此具体后端类。"""
+
+
+def _tenant_from_row(row: sqlite3.Row) -> Tenant:
+    """将独立租户目录行转换为领域对象，防止人类账号字段误充当租户主键。"""
+    return Tenant.model_validate(
+        {
+            "tenant_id": row["tenant_id"],
+            "display_name": row["display_name"],
+            "status": row["status"],
+            "data_region": row["data_region"],
+            "created_by": row["created_by"],
+            "created_at": row["created_at"],
+            "updated_by": row["updated_by"],
+            "updated_at": row["updated_at"],
+        }
+    )
 
 
 def _agent_from_row(row: sqlite3.Row) -> AgentDefinition:

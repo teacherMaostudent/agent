@@ -28,6 +28,13 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from agent_web_bff.config import WebBffSettings
 
+# 两层认证共用精确白名单：仅页面资源和认证入口公开，根页面及所有业务 API 仍需会话。
+PUBLIC_OIDC_PATHS = (
+    "/health/ready", "/auth/login", "/auth/callback", "/auth/logout", "/auth/relogin",
+    "/auth/switch-account", "/auth/signout",
+    "/favicon.ico", "/app.js", "/styles.css", "/execution-details.css", "/identity.css",
+)
+
 
 def _b64url(value: bytes) -> str:
     """Encode PKCE material without padding as required by RFC 7636."""
@@ -36,7 +43,10 @@ def _b64url(value: bytes) -> str:
 
 def _safe_return_path(value: str) -> str:
     """Accept only same-origin relative paths so the login endpoint cannot become an open redirect."""
-    return value if value.startswith("/") and not value.startswith("//") else "/"
+    # 浏览器会把反斜杠归一化为斜杠；/\host 不能作为“站内路径”放行。
+    if not value.startswith("/") or value.startswith("//") or "\\" in value:
+        return "/"
+    return "/" if any(ord(char) < 32 or ord(char) == 127 for char in value) else value
 
 
 class BrowserSessionStore:
@@ -58,7 +68,10 @@ class BrowserSessionStore:
     async def create_session(self, access_token: str, expires_in: int) -> str:
         """Create an opaque session handle bounded by both token and configured session lifetime."""
         session_id = secrets.token_urlsafe(32)
-        ttl = min(max(expires_in - 30, 60), self.settings.session_ttl_seconds)
+        # 不用最小 60 秒把短期 Token 的会话延长到过期之后；预留 30 秒时钟偏差。
+        ttl = min(expires_in - 30, self.settings.session_ttl_seconds)
+        if ttl <= 0:
+            raise ValueError("OIDC access token lifetime is too short")
         await self.redis.setex(
             f"agent-web:session:{session_id}", ttl, json.dumps({"access_token": access_token})
         )
@@ -66,6 +79,8 @@ class BrowserSessionStore:
 
     async def access_token(self, session_id: str) -> str:
         """Resolve a live server-side session without extending its expiry on every request."""
+        if not session_id:
+            return ""
         raw = await self.redis.get(f"agent-web:session:{session_id}")
         if not raw:
             return ""
@@ -96,7 +111,7 @@ class BrowserOidcSessionMiddleware:
         path = scope.get("path", "")
         # Do not inject a known-bad legacy token into logout.  This gives a user a deterministic
         # recovery path after IdP claims, signing keys, or audience rules change.
-        if path in {"/health/ready", "/auth/login", "/auth/callback", "/auth/logout", "/auth/relogin"}:
+        if path in PUBLIC_OIDC_PATHS:
             await self.app(scope, receive, send)
             return
         request = Request(scope)
@@ -125,7 +140,7 @@ def build_auth_router(settings: WebBffSettings, store: BrowserSessionStore) -> A
     router = APIRouter(tags=["browser-auth"])
 
     @router.get("/auth/login")
-    async def login(return_to: str = "/") -> RedirectResponse:
+    async def login(return_to: str = "/", prompt: str = "") -> RedirectResponse:
         """Start Authorization Code flow with one-time state, nonce and S256 code challenge."""
         if not settings.oidc_enabled:
             return RedirectResponse(_safe_return_path(return_to), status_code=303)
@@ -137,8 +152,7 @@ def build_auth_router(settings: WebBffSettings, store: BrowserSessionStore) -> A
             state,
             {"nonce": nonce, "verifier": verifier, "return_to": _safe_return_path(return_to)},
         )
-        query = urlencode(
-            {
+        authorization_parameters = {
                 "response_type": "code",
                 "client_id": settings.oidc_client_id,
                 "redirect_uri": settings.oidc_redirect_uri,
@@ -148,7 +162,11 @@ def build_auth_router(settings: WebBffSettings, store: BrowserSessionStore) -> A
                 "code_challenge": challenge,
                 "code_challenge_method": "S256",
             }
-        )
+        # Account switching may request an explicit credential prompt. Arbitrary prompt values
+        # are rejected so this endpoint cannot become an IdP parameter injection surface.
+        if prompt in {"login", "select_account"}:
+            authorization_parameters["prompt"] = prompt
+        query = urlencode(authorization_parameters)
         return RedirectResponse(f"{settings.oidc_authorization_url}?{query}", status_code=303)
 
     @router.get("/auth/callback")
@@ -190,6 +208,8 @@ def build_auth_router(settings: WebBffSettings, store: BrowserSessionStore) -> A
             if not secrets.compare_digest(str(claims.get("nonce", "")), str(pending["nonce"])):
                 raise ValueError("OIDC nonce mismatch")
             expires_in = int(token_payload.get("expires_in", settings.session_ttl_seconds))
+            if expires_in <= 30:
+                raise ValueError("OIDC access token lifetime is too short")
         except (httpx.HTTPError, KeyError, TypeError, ValueError, jwt.PyJWTError) as exc:
             raise HTTPException(status_code=502, detail="OIDC token exchange or validation failed") from exc
         session_id = await store.create_session(access_token, expires_in)
@@ -197,7 +217,7 @@ def build_auth_router(settings: WebBffSettings, store: BrowserSessionStore) -> A
         response.set_cookie(
             settings.session_cookie_name,
             session_id,
-            max_age=min(expires_in, settings.session_ttl_seconds),
+            max_age=min(expires_in - 30, settings.session_ttl_seconds),
             httponly=True,
             secure=settings.environment.lower() in {"production", "prod"},
             samesite="lax",
@@ -216,6 +236,28 @@ def build_auth_router(settings: WebBffSettings, store: BrowserSessionStore) -> A
         """
         await store.revoke(request.cookies.get(settings.session_cookie_name, ""))
         response = RedirectResponse("/", status_code=303)
+        response.delete_cookie(settings.session_cookie_name, path="/")
+        return response
+
+    @router.get("/auth/switch-account")
+    async def switch_account(request: Request) -> RedirectResponse:
+        """Revoke the BFF session and force the IdP to authenticate a selected account again."""
+        await store.revoke(request.cookies.get(settings.session_cookie_name, ""))
+        response = RedirectResponse("/auth/login?return_to=/&prompt=login", status_code=303)
+        response.delete_cookie(settings.session_cookie_name, path="/")
+        return response
+
+    @router.get("/auth/signout")
+    async def signout(request: Request) -> RedirectResponse:
+        """Revoke both the BFF session and, when configured, the upstream IdP SSO session."""
+        await store.revoke(request.cookies.get(settings.session_cookie_name, ""))
+        target = "/"
+        if settings.oidc_end_session_url:
+            target = settings.oidc_end_session_url + "?" + urlencode({
+                "client_id": settings.oidc_client_id,
+                "post_logout_redirect_uri": settings.public_origin.rstrip("/") + "/",
+            })
+        response = RedirectResponse(target, status_code=303)
         response.delete_cookie(settings.session_cookie_name, path="/")
         return response
 

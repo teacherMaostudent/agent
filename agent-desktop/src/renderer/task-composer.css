@@ -1,0 +1,80 @@
+/* 自定义任务和演示模板最终都由同一 Active Release 执行。 */
+.template.active {
+  background: #121c31;
+  border-color: #425b91;
+}
+
+.section-caption {
+  margin: 16px 10px 6px;
+  color: #65738d;
+  font-size: 10px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.custom-task-entry {
+  width: 100%;
+  margin: 5px 0 2px;
+  padding: 13px;
+  border: 1px solid #3a4d76;
+  background: #111b30;
+  text-align: left;
+}
+
+.custom-task-entry:hover,
+.custom-task-entry.active {
+  border-color: #6684e8;
+  background: #172443;
+}
+
+.custom-task-entry b,
+.custom-task-entry span,
+.task-editor-head strong,
+.task-editor-head small {
+  display: block;
+}
+
+.custom-task-entry b { color: #dce6ff; }
+.custom-task-entry span {
+  margin-top: 5px;
+  color: #8fa0bf;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.task-editor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #273653;
+}
+
+.task-editor-head strong { color: #edf3ff; font-size: 15px; }
+.task-editor-head small { margin-top: 5px; color: #7f8da7; font-size: 11px; }
+.task-source {
+  padding: 5px 8px;
+  border-radius: 99px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .12em;
+}
+.task-source.custom { color: #9fd5ff; background: #163354; border: 1px solid #275b8b; }
+.task-source.template-source { color: #b7c4e2; background: #222d46; border: 1px solid #394967; }
+.task-editor-label { margin-top: 14px; }
+.composer textarea { height: 150px; }
+.composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 10px;
+}
+.composer-footer > span { color: #71809a; font-size: 11px; }
+.composer-footer .actions { flex-shrink: 0; margin-top: 0; }
+
+@media (max-width: 1250px) {
+  .composer-footer { align-items: stretch; flex-direction: column; }
+  .composer-footer .actions { justify-content: flex-start; }
+}

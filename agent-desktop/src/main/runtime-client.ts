@@ -1,4 +1,4 @@
-import type { AgentRunRequest, RuntimeConnection, RuntimeEvent, RunSnapshot } from "../shared/contracts.js";
+import type { AgentRunRequest, ModelRouteCatalog, RuntimeConnection, RuntimeEvent, RunSnapshot } from "../shared/contracts.js";
 
 export class RuntimeClient {
   private connection?: RuntimeConnection;
@@ -12,6 +12,12 @@ export class RuntimeClient {
 
   async capabilities(): Promise<Record<string, unknown>> {
     return this.request("/agent/capabilities", { method: "GET" });
+  }
+
+  /** Resolve the exact Release once, then return only its Snapshot-declared logical routes. */
+  async modelRoutes(agentId: string, environment: string, sessionId: string): Promise<ModelRouteCatalog> {
+    const query = new URLSearchParams({ agent_id: agentId, environment, session_id: sessionId });
+    return this.request(`/agent/model-routes?${query.toString()}`, { method: "GET" }) as Promise<ModelRouteCatalog>;
   }
 
   async pairConnector(deviceName: string, capabilities: string[]): Promise<Record<string, unknown>> {

@@ -228,6 +228,8 @@ def test_llm_call_limit_is_enforced_outside_the_decision_engine() -> None:
 
     assert result.status == "LIMIT_EXCEEDED"
     assert result.termination_reason == "MAX_LLM_CALLS"
+    assert "模型调用次数" in result.answer
+    assert result.budget["max_llm_calls"] == 0
     assert len(engine.decisions) == 1
 
 

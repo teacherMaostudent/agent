@@ -22,6 +22,8 @@ T = TypeVar("T")
 class GovernanceRepositoryOperations:
     """与数据库方言无关的治理聚合操作；具体连接、锁与迁移由适配器负责。"""
 
+    audit_run_id_expression = "json_extract(payload_json, '$.run_id')"
+
     def __init__(self, database_path: Path, schema_path: Path) -> None:
         """保存数据库与建表脚本路径，并初始化串行写锁以维护审计链前序关系。"""
         self._database_path = database_path
@@ -196,17 +198,25 @@ class GovernanceRepositoryOperations:
         return await self._read(operation)
 
     async def list_audit_events(
-        self, tenant_id: str, after_sequence: int, limit: int
+        self, tenant_id: str, after_sequence: int, limit: int,
+        *, trace_id: str | None = None, run_id: str | None = None,
     ) -> tuple[list[AuditEvent], int | None]:
         """按租户和游标分页读取审计事件，避免跨租户暴露审计记录。"""
 
         def operation(connection: sqlite3.Connection) -> tuple[list[AuditEvent], int | None]:
             """查询当前页事件并返回下一页游标所需的最后序号。"""
-            rows = connection.execute(
-                """SELECT * FROM audit_events WHERE tenant_id = ? AND sequence > ?
-                   ORDER BY sequence ASC LIMIT ?""",
-                (tenant_id, after_sequence, limit),
-            ).fetchall()
+            # 在 LIMIT 之前过滤; 避免较新 Run 被租户最早一页日志挤出结果。
+            query = "SELECT * FROM audit_events WHERE tenant_id = ? AND sequence > ?"
+            params: list[object] = [tenant_id, after_sequence]
+            if trace_id is not None:
+                query += " AND trace_id = ?"
+                params.append(trace_id)
+            if run_id is not None:
+                query += f" AND {self.audit_run_id_expression} = ?"
+                params.append(run_id)
+            query += " ORDER BY sequence ASC LIMIT ?"
+            params.append(limit)
+            rows = connection.execute(query, params).fetchall()
             return [_audit_from_row(row) for row in rows], int(
                 rows[-1]["sequence"]
             ) if rows else None
