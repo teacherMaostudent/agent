@@ -19,7 +19,13 @@ class Settings(BaseSettings):
     database_backend: str = "sqlite"
     database_url: str = Field(default="", repr=False)
     database_schema: str = "tool_gateway"
-    tools_config_path: Path = _SERVICE_ROOT / "config" / "tools.json"
+    # Gateway consumes only a Control Plane runtime projection or its durable cache.
+    catalog_projection_mode: str = "file"
+    catalog_projection_cache_path: Path = _SERVICE_ROOT / "config" / "tools.json"
+    control_plane_base_url: str = "http://localhost:8001"
+    control_plane_runtime_api_key: str = Field(default="", repr=False)
+    catalog_projection_tenant_id: str = "system"
+    catalog_projection_timeout_seconds: float = Field(default=5, gt=0, le=60)
     contracts_schema_dir: Path = _SERVICE_ROOT.parent / "platform-contracts" / "schemas"
     require_service_auth: bool = True
     service_api_key: str = "local-tool-gateway-key"
@@ -97,10 +103,16 @@ class Settings(BaseSettings):
                 unsafe.append("TOOL_GATEWAY_MTLS_ENABLED must be true")
             elif not all((self.mtls_ca_file, self.mtls_cert_file, self.mtls_key_file)):
                 unsafe.append("TOOL_GATEWAY mTLS certificate paths are required")
+            if self.catalog_projection_mode != "control_plane":
+                unsafe.append("TOOL_GATEWAY_CATALOG_PROJECTION_MODE must be control_plane")
+            if not self.control_plane_runtime_api_key:
+                unsafe.append("TOOL_GATEWAY_CONTROL_PLANE_RUNTIME_API_KEY is required")
             if unsafe:
                 raise ValueError("Unsafe production configuration: " + "; ".join(unsafe))
         if self.governance_delivery_mode not in {"direct", "cdc"}:
             raise ValueError("TOOL_GATEWAY_GOVERNANCE_DELIVERY_MODE must be direct or cdc")
+        if self.catalog_projection_mode not in {"file", "control_plane"}:
+            raise ValueError("TOOL_GATEWAY_CATALOG_PROJECTION_MODE must be file or control_plane")
         return self
 
     def ensure_directories(self) -> None:

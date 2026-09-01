@@ -42,6 +42,7 @@ from app.domain.models import (
     AgentDraftUpdate,
     AgentVersion,
     AgentVersionPublish,
+    GovernanceReleaseAction,
     Identity,
     OutboxEvent,
     OutboxList,
@@ -61,10 +62,18 @@ from app.domain.models import (
     SkillVersionPublish,
     Tenant,
     TenantCreate,
-    TenantUpdate,
     TenantPolicy,
     TenantPolicyUpdate,
+    TenantUpdate,
     ToolBinding,
+    ToolDefinition,
+    ToolDraftCreate,
+    ToolDraftUpdate,
+    ToolReviewCreate,
+    ToolVersion,
+    ToolVersionPublish,
+    ToolVersionStatus,
+    ToolVersionStatusUpdate,
     ValidationReport,
     WorkflowCreate,
     WorkflowDefinition,
@@ -737,11 +746,9 @@ class ControlPlaneService:
         report = validate_agent_spec(agent.draft, policy)
         if not report.valid:
             raise DraftValidationError(report)
-        if self._tool_catalog_validator is not None:
+        if self._tool_catalog_validator is not None and self._tool_catalog_validator.required:
             try:
-                self._tool_catalog_validator.validate_bindings(
-                    [item.model_dump(mode="json") for item in agent.draft.tools]
-                )
+                await self._resolve_published_tool_bindings(identity, agent.draft.tools)
             except ValueError as exc:
                 raise DraftValidationError(
                     ValidationReport(
@@ -757,10 +764,10 @@ class ControlPlaneService:
                     )
                 ) from exc
         frozen_spec = agent.draft
-        if self._tool_catalog_validator is not None:
+        if self._tool_catalog_validator is not None and self._tool_catalog_validator.required:
             try:
-                resolved_tools = self._tool_catalog_validator.resolve_bindings(
-                    [item.model_dump(mode="json") for item in agent.draft.tools]
+                resolved_tools = await self._resolve_published_tool_bindings(
+                    identity, agent.draft.tools
                 )
                 frozen_spec = agent.draft.model_copy(
                     update={"tools": [ToolBinding.model_validate(item) for item in resolved_tools]}
@@ -1230,6 +1237,46 @@ class ControlPlaneService:
             raise ConflictError("Release changed concurrently; reload and retry.")
         return updated
 
+    async def apply_governance_release_action(
+        self,
+        identity: Identity,
+        release_id: str,
+        request: GovernanceReleaseAction,
+        trace_id: str,
+    ) -> ReleaseManifest:
+        """消费 Governance 的持久化 GateDecision，并由 Control Plane 独占执行流量状态机。
+
+        Governance 不能直接改 Release；本方法重新校验租户、Release、冻结 AgentVersion，
+        再把批准的动作委托给已有 promote/pause/rollback 原子迁移。
+        """
+        if self._governance is None:
+            raise PolicyViolationError("Governance decision client is unavailable.")
+        release = await self.get_release(identity, release_id)
+        decision = await self._governance.gate_decision(identity.tenant_id, request.decision_id)
+        if str(decision.get("releaseId") or "") != release_id:
+            raise PolicyViolationError("GateDecision does not belong to the target Release.")
+        if str(decision.get("snapshotId") or "") != release.version_id:
+            raise PolicyViolationError("GateDecision Snapshot does not match the target Release version.")
+        action = str(decision.get("decision") or "").upper()
+        if action == "PROMOTE":
+            if request.promote_to_percentage is None:
+                raise PolicyViolationError("PROMOTE requires promote_to_percentage.")
+            return await self.promote_release(
+                identity,
+                release_id,
+                ReleasePromote(rollout_percentage=request.promote_to_percentage),
+                trace_id,
+            )
+        if action == "PAUSE":
+            return await self.pause_release(identity, release_id, trace_id)
+        if action == "ROLLBACK":
+            return await self.rollback_release(identity, release_id, trace_id)
+        if action == "HOLD":
+            # HOLD is deliberately a no-op: it records no synthetic state transition and leaves
+            # a human/operator free to wait for more samples or create a later decision.
+            return release
+        raise PolicyViolationError(f"GateDecision action '{action}' cannot control a Release.")
+
     async def pause_release(
         self,
         identity: Identity,
@@ -1445,8 +1492,16 @@ class ControlPlaneService:
             updated_at=now,
         )
         event = self._event(
-            "TenantCreated", trace_id, tenant.tenant_id, "tenant", tenant.tenant_id,
-            {"display_name": tenant.display_name, "data_region": tenant.data_region, "status": tenant.status.value},
+            "TenantCreated",
+            trace_id,
+            tenant.tenant_id,
+            "tenant",
+            tenant.tenant_id,
+            {
+                "display_name": tenant.display_name,
+                "data_region": tenant.data_region,
+                "status": tenant.status.value,
+            },
         )
         try:
             await self._repository.create_tenant(tenant, policy, event)
@@ -1474,7 +1529,10 @@ class ControlPlaneService:
         )
         event = self._event(
             "TenantStatusChanged" if previous.status != tenant.status else "TenantUpdated",
-            trace_id, tenant.tenant_id, "tenant", tenant.tenant_id,
+            trace_id,
+            tenant.tenant_id,
+            "tenant",
+            tenant.tenant_id,
             {
                 "previous_status": previous.status.value,
                 "status": tenant.status.value,
@@ -1552,6 +1610,305 @@ class ControlPlaneService:
             limit,
         )
         return OutboxList(items=items, next_cursor=next_cursor)
+
+    async def _resolve_published_tool_bindings(
+        self, identity: Identity, bindings: list[ToolBinding]
+    ) -> list[dict[str, Any]]:
+        """由工具资产 Release 解析 Agent 绑定，不再读取静态 JSON 作为生产事实源。"""
+        resolved: list[dict[str, Any]] = []
+        for binding in bindings:
+            version = await self._repository.get_tool_version_by_semantic(
+                identity.tenant_id, binding.tool_name, binding.version
+            )
+            if version is None or version.status is not ToolVersionStatus.PUBLISHED:
+                raise ValueError(
+                    f"published Tool Runtime Snapshot is unavailable: {binding.tool_name}:{binding.version}"
+                )
+            definition = version.runtime_definition
+            value = binding.model_dump(mode="json")
+            value.update(
+                {
+                    "risk": definition.get("risk", "read_only"),
+                    "approval_required": bool(definition.get("approval_required", False)),
+                    "idempotent": bool(definition.get("idempotent", False)),
+                    "required_permissions": list(definition.get("required_permissions", [])),
+                    "output_schema": definition.get("output_schema"),
+                    "side_effect": definition.get("risk", "read_only") != "read_only",
+                }
+            )
+            resolved.append(value)
+        return resolved
+
+    def _validate_tool_definition(self, tool_id: str, definition: dict[str, Any]) -> None:
+        """在 Draft 入库和版本冻结前执行同一份 Catalog Schema 校验。"""
+        if str(definition.get("name", "")) != tool_id:
+            raise PolicyViolationError("tool definition name must equal tool_id")
+        if self._tool_catalog_validator is None:
+            return
+        try:
+            # The schema validates execution contract only; no static catalog lookup occurs here.
+            self._tool_catalog_validator.registry.validate(
+                "tool-catalog.v1.json", {"tools": [definition]}
+            )
+        except ValueError as exc:
+            raise PolicyViolationError(f"invalid tool runtime definition: {exc}") from exc
+
+    async def create_tool(
+        self, identity: Identity, request: ToolDraftCreate, trace_id: str
+    ) -> ToolDefinition:
+        """创建租户级 Tool Draft；可变草稿还没有任何执行权限。"""
+        self._validate_tool_definition(request.tool_id, request.definition)
+        now = utc_now()
+        tool = ToolDefinition(
+            tenant_id=identity.tenant_id,
+            tool_id=request.tool_id,
+            revision=1,
+            definition=request.definition,
+            owner_team=request.owner_team,
+            created_by=identity.user_id,
+            updated_by=identity.user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        event = self._event(
+            "ToolDraftCreated",
+            trace_id,
+            identity.tenant_id,
+            "tool",
+            tool.tool_id,
+            {"tool_id": tool.tool_id, "revision": 1, "owner_team": tool.owner_team},
+        )
+        try:
+            await self._repository.create_tool(tool, event)
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError(f"Tool '{request.tool_id}' already exists.") from exc
+        return tool
+
+    async def get_tool(self, identity: Identity, tool_id: str) -> ToolDefinition:
+        """读取本租户工具 Draft；这一对象不会被 Gateway 使用。"""
+        tool = await self._repository.get_tool(identity.tenant_id, tool_id)
+        if tool is None:
+            raise NotFoundError(f"Tool '{tool_id}' was not found.")
+        return tool
+
+    async def update_tool_draft(
+        self, identity: Identity, tool_id: str, request: ToolDraftUpdate, trace_id: str
+    ) -> ToolDefinition:
+        """使用 revision CAS 修改 Draft，避免审核中的定义被悄然覆盖。"""
+        current = await self.get_tool(identity, tool_id)
+        if current.revision != request.expected_revision:
+            raise ConflictError(
+                "Tool draft revision is stale.",
+                expected_revision=request.expected_revision,
+                current_revision=current.revision,
+            )
+        self._validate_tool_definition(tool_id, request.definition)
+        updated = current.model_copy(
+            update={
+                "revision": current.revision + 1,
+                "definition": request.definition,
+                "updated_by": identity.user_id,
+                "updated_at": utc_now(),
+            }
+        )
+        event = self._event(
+            "ToolDraftUpdated",
+            trace_id,
+            identity.tenant_id,
+            "tool",
+            tool_id,
+            {
+                "tool_id": tool_id,
+                "previous_revision": current.revision,
+                "revision": updated.revision,
+                "change_summary": request.change_summary,
+            },
+        )
+        if not await self._repository.update_tool(updated, request.expected_revision, event):
+            raise ConflictError("Tool draft was changed concurrently.")
+        return updated
+
+    async def publish_tool_version(
+        self, identity: Identity, tool_id: str, request: ToolVersionPublish, trace_id: str
+    ) -> ToolVersion:
+        """冻结经 Schema 校验的 Draft；候选版本必须经过独立审核才可 Release。"""
+        tool = await self.get_tool(identity, tool_id)
+        self._validate_tool_definition(tool_id, tool.definition)
+        now = utc_now()
+        version = ToolVersion(
+            tenant_id=identity.tenant_id,
+            version_id=f"tv_{uuid4().hex}",
+            tool_id=tool_id,
+            semantic_version=request.semantic_version,
+            source_revision=tool.revision,
+            content_sha256=_hash(tool.definition),
+            runtime_definition=tool.definition,
+            change_summary=request.change_summary,
+            published_by=identity.user_id,
+            published_at=now,
+            updated_at=now,
+        )
+        event = self._event(
+            "ToolVersionPublished",
+            trace_id,
+            identity.tenant_id,
+            "tool_version",
+            version.version_id,
+            {
+                "tool_id": tool_id,
+                "version_id": version.version_id,
+                "semantic_version": version.semantic_version,
+                "content_sha256": version.content_sha256,
+                "status": version.status.value,
+            },
+        )
+        try:
+            await self._repository.create_tool_version(version, event)
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError(
+                f"Tool semantic version already exists: {tool_id}:{request.semantic_version}."
+            ) from exc
+        return version
+
+    async def list_tool_versions(self, identity: Identity, tool_id: str) -> list[ToolVersion]:
+        """列出工具所有冻结版本，让管理员在发布前有可追溯选择。"""
+        await self.get_tool(identity, tool_id)
+        return await self._repository.list_tool_versions(identity.tenant_id, tool_id)
+
+    async def review_tool_version(
+        self,
+        identity: Identity,
+        tool_id: str,
+        version_id: str,
+        request: ToolReviewCreate,
+        trace_id: str,
+    ) -> ToolVersion:
+        """审核只能处理 Candidate；审核人、意见和状态迁移在一个事务提交。"""
+        version = await self._repository.get_tool_version(identity.tenant_id, tool_id, version_id)
+        if version is None:
+            raise NotFoundError(f"Tool version '{version_id}' was not found.")
+        if version.status is not ToolVersionStatus.CANDIDATE:
+            raise InvalidStateError("Only candidate Tool versions can be reviewed.")
+        target = (
+            ToolVersionStatus.APPROVED
+            if request.decision == "approve"
+            else ToolVersionStatus.REJECTED
+        )
+        reviewed = version.model_copy(update={"status": target, "updated_at": utc_now()})
+        event = self._event(
+            "ToolVersionReviewed",
+            trace_id,
+            identity.tenant_id,
+            "tool_version",
+            version_id,
+            {
+                "tool_id": tool_id,
+                "version_id": version_id,
+                "decision": request.decision,
+                "reviewer_id": identity.user_id,
+            },
+        )
+        await self._repository.review_tool_version(
+            review_id=f"tr_{uuid4().hex}",
+            version=reviewed,
+            decision=request.decision,
+            comment=request.comment,
+            reviewer_id=identity.user_id,
+            reviewed_at=reviewed.updated_at,
+            event=event,
+        )
+        return reviewed
+
+    async def release_tool_version(
+        self, identity: Identity, tool_id: str, version_id: str, trace_id: str
+    ) -> ToolVersion:
+        """把已审核版本变成唯一 Active Runtime Snapshot；未审核或已退役版本 fail-closed。"""
+        version = await self._repository.get_tool_version(identity.tenant_id, tool_id, version_id)
+        if version is None:
+            raise NotFoundError(f"Tool version '{version_id}' was not found.")
+        if version.status is not ToolVersionStatus.APPROVED:
+            raise InvalidStateError("Only approved Tool versions can be released.")
+        existing = await self._repository.find_published_tool_name_version(
+            tool_id, version.semantic_version
+        )
+        if existing is not None and existing.tenant_id != identity.tenant_id:
+            raise ConflictError(
+                "Tool name/version is already published by another tenant; "
+                "use a tenant-qualified tool name or coordinate a platform release."
+            )
+        now = utc_now()
+        snapshot_sha256 = _hash(
+            {
+                "tool_id": tool_id,
+                "version": version.semantic_version,
+                "content_sha256": version.content_sha256,
+                "runtime_definition": version.runtime_definition,
+            }
+        )
+        released = version.model_copy(
+            update={"status": ToolVersionStatus.PUBLISHED, "updated_at": now}
+        )
+        release_id = f"toolrel_{uuid4().hex}"
+        event = self._event(
+            "ToolRuntimeReleased",
+            trace_id,
+            identity.tenant_id,
+            "tool_runtime_release",
+            release_id,
+            {
+                "release_id": release_id,
+                "tool_id": tool_id,
+                "version_id": version_id,
+                "semantic_version": version.semantic_version,
+                "snapshot_sha256": snapshot_sha256,
+            },
+        )
+        await self._repository.create_tool_runtime_release(
+            release_id=release_id,
+            version=released,
+            snapshot_sha256=snapshot_sha256,
+            created_by=identity.user_id,
+            created_at=now,
+            event=event,
+        )
+        return released
+
+    async def update_tool_version_status(
+        self,
+        identity: Identity,
+        tool_id: str,
+        version_id: str,
+        request: ToolVersionStatusUpdate,
+        trace_id: str,
+    ) -> ToolVersion:
+        """弃用保留执行快照以便迁移；退役则立即撤销 Active Runtime Release。"""
+        version = await self._repository.get_tool_version(identity.tenant_id, tool_id, version_id)
+        if version is None:
+            raise NotFoundError(f"Tool version '{version_id}' was not found.")
+        if version.status not in {ToolVersionStatus.PUBLISHED, ToolVersionStatus.DEPRECATED}:
+            raise InvalidStateError("Only released Tool versions can be deprecated or retired.")
+        target = ToolVersionStatus(request.status)
+        if (
+            version.status is ToolVersionStatus.DEPRECATED
+            and target is ToolVersionStatus.DEPRECATED
+        ):
+            raise InvalidStateError("Tool version is already deprecated.")
+        updated = version.model_copy(update={"status": target, "updated_at": utc_now()})
+        event = self._event(
+            "ToolVersionStatusChanged",
+            trace_id,
+            identity.tenant_id,
+            "tool_version",
+            version_id,
+            {
+                "tool_id": tool_id,
+                "version_id": version_id,
+                "status": target.value,
+                "reason": request.reason,
+            },
+        )
+        await self._repository.update_tool_version_status(updated, event)
+        return updated
 
     async def _resolution(
         self,

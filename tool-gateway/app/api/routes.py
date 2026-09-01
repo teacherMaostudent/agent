@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import json
 from typing import Annotated
 from uuid import uuid4
 
@@ -58,6 +59,8 @@ def _context(
     x_attempt_budget_remaining: int | None = Header(
         default=None, ge=0, alias="X-Attempt-Budget-Remaining"
     ),
+    x_execution_mode: str = Header(default="production", alias="X-Execution-Mode"),
+    x_simulation_profile: str = Header(default="{}", alias="X-Simulation-Profile"),
 ) -> InvocationContext:
     # When OIDC is enabled, middleware has already verified the JWT and
     # reconstructed these identity headers.  The route intentionally remains
@@ -88,7 +91,20 @@ def _context(
         connector_grant=x_connector_grant,
         deadline_at=x_deadline_at,
         attempt_budget_remaining=x_attempt_budget_remaining,
+        execution_mode=x_execution_mode,
+        simulation_profile=_simulation_profile(x_simulation_profile),
     )
+
+
+def _simulation_profile(raw: str) -> dict:
+    """只接受对象形式的受控故障脚本；无效 JSON 不能降级为生产调用。"""
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("X-Simulation-Profile must be valid JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError("X-Simulation-Profile must be a JSON object")
+    return value
 
 
 @router.get("/tools", response_model=list[ToolManifest], tags=["tools"])

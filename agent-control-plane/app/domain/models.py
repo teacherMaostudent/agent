@@ -41,6 +41,17 @@ class ToolRisk(StrEnum):
     HUMAN_APPROVAL_REQUIRED = "human_approval_required"
 
 
+class ToolVersionStatus(StrEnum):
+    """冻结工具版本的生命周期；只有 PUBLISHED 版本能进入 Gateway 投影。"""
+
+    CANDIDATE = "candidate"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    PUBLISHED = "published"
+    DEPRECATED = "deprecated"
+    RETIRED = "retired"
+
+
 class ReleaseStatus(StrEnum):
     ACTIVE = "active"
     PAUSED = "paused"
@@ -89,7 +100,78 @@ class ToolBinding(StrictModel):
     side_effect: bool = False
     idempotent: bool = False
     required_permissions: list[str] = Field(default_factory=list, max_length=200)
+    # Catalog output contract frozen in the Snapshot; Runtime never reads a live catalog.
+    output_schema: dict[str, Any] | None = None
     config: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolDraftCreate(StrictModel):
+    """创建可变工具资产草稿；definition 必须符合平台 Tool Catalog Schema。"""
+
+    tool_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,149}$")
+    definition: dict[str, Any]
+    owner_team: str = Field(default="platform", min_length=1, max_length=120)
+    change_summary: str = Field(default="", max_length=2_000)
+
+
+class ToolDraftUpdate(StrictModel):
+    """以 revision CAS 更新工具草稿，避免并发编辑覆盖安全契约。"""
+
+    expected_revision: int = Field(ge=1)
+    definition: dict[str, Any]
+    change_summary: str = Field(default="", max_length=2_000)
+
+
+class ToolDefinition(StrictModel):
+    """租户范围的工具管理面聚合；运行时绝不直接使用此可变对象。"""
+
+    tenant_id: str
+    tool_id: str
+    revision: int
+    definition: dict[str, Any]
+    owner_team: str
+    created_by: str
+    updated_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ToolVersionPublish(StrictModel):
+    """冻结工具草稿为不可变候选版本，等待独立审核。"""
+
+    semantic_version: str = Field(pattern=r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+    change_summary: str = Field(default="", max_length=2_000)
+
+
+class ToolVersion(StrictModel):
+    """工具不可变版本；runtime_definition 是 Gateway 唯一可执行契约。"""
+
+    tenant_id: str
+    version_id: str
+    tool_id: str
+    semantic_version: str
+    source_revision: int
+    content_sha256: str
+    runtime_definition: dict[str, Any]
+    status: ToolVersionStatus = ToolVersionStatus.CANDIDATE
+    change_summary: str
+    published_by: str
+    published_at: datetime
+    updated_at: datetime
+
+
+class ToolReviewCreate(StrictModel):
+    """审核候选版本；批准和拒绝都作为不可变审计记录保留。"""
+
+    decision: Literal["approve", "reject"]
+    comment: str = Field(default="", max_length=4_000)
+
+
+class ToolVersionStatusUpdate(StrictModel):
+    """用于已发布版本的弃用/退役，不允许重写版本内容。"""
+
+    status: Literal["deprecated", "retired"]
+    reason: str = Field(default="", max_length=2_000)
 
 
 class KnowledgeBinding(StrictModel):
@@ -527,6 +609,13 @@ class ReleaseCreate(StrictModel):
 
 class ReleasePromote(StrictModel):
     rollout_percentage: int = Field(ge=1, le=100)
+
+
+class GovernanceReleaseAction(StrictModel):
+    """Control Plane 消费已保存 GateDecision 的受控动作请求。"""
+
+    decision_id: str = Field(min_length=1, max_length=160)
+    promote_to_percentage: int | None = Field(default=None, ge=1, le=100)
 
 
 class ReleaseManifest(StrictModel):

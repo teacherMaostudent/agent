@@ -296,7 +296,11 @@ services:
       dockerfile: tool-gateway/Dockerfile
     environment:
       TOOL_GATEWAY_DATABASE_PATH: /service/data/tool-gateway.db
-      TOOL_GATEWAY_TOOLS_CONFIG_PATH: /service/config/tools.json
+      # Gateway 仅消费 Control Plane 发布投影；其数据卷保存上一次已验证投影以隔离控制面故障。
+      TOOL_GATEWAY_CATALOG_PROJECTION_MODE: control_plane
+      TOOL_GATEWAY_CATALOG_PROJECTION_CACHE_PATH: /service/data/tool-runtime-projection.json
+      TOOL_GATEWAY_CONTROL_PLANE_BASE_URL: http://agent-control-plane:8080
+      TOOL_GATEWAY_CONTROL_PLANE_RUNTIME_API_KEY: local-control-plane-key
       TOOL_GATEWAY_REQUIRE_SERVICE_AUTH: "true"
       TOOL_GATEWAY_SERVICE_API_KEY: local-tool-gateway-key
       TOOL_GATEWAY_ADMIN_API_KEY: local-tool-gateway-admin-key
@@ -306,7 +310,7 @@ services:
       TOOL_GATEWAY_GOVERNANCE_EVENT_KEY: local-governance-key
     ports: ["9090:8090"]
     volumes: ["tool-gateway-data:/service/data"]
-    depends_on: [agent-governance, ingestion-api]
+    depends_on: [agent-control-plane, agent-governance, ingestion-api]
 
   model-lab:
     build: ./model-lab
@@ -331,10 +335,29 @@ services:
       AGENT_LAB_GOVERNANCE_AUDITOR_KEY: local-governance-auditor-key
       AGENT_LAB_SERVICE_API_KEY: local-agent-lab-key
       AGENT_LAB_TEMPORAL_ENABLED: "false"
+      # Local demonstration only: sandbox cases use Docker's restricted runner, never host mounts.
+      AGENT_LAB_SANDBOX_PROVIDER: docker
+      AGENT_LAB_SANDBOX_IMAGE_ALLOWLIST: '["python:3.12-slim"]'
     ports:
       - "9092:8092"
     volumes: [agent-lab-data:/data]
-    depends_on: [agent-control-plane, agent-runtime, agent-governance]
+    depends_on:
+      agent-control-plane:
+        condition: service_started
+      agent-runtime:
+        condition: service_started
+      agent-governance:
+        condition: service_started
+      agent-lab-data-init:
+        condition: service_completed_successfully
+
+  # Docker named volumes are root-owned when first created. Keep the API unprivileged and
+  # perform this one-purpose ownership setup before its local SQLite repository starts.
+  agent-lab-data-init:
+    image: busybox:1.37
+    restart: "no"
+    command: ["sh", "-c", "chown -R 10006:10006 /data"]
+    volumes: [agent-lab-data:/data]
 
   postgres:
     image: postgres:17-alpine

@@ -85,6 +85,34 @@ Graph 分支、重试或迟到结果绕过运行限制。
 副作用、幂等和审批要求）。低风险调用默认按租户与工具资源键顺序执行，快照中声明
 审批或高风险的调用使用 `exclusive` 资源锁；显式标记为 `parallel` 的独立只读调用才可并行。它不替代
 Tool Gateway 的权限、审批、幂等与跨副本互斥，而是在同一 Runtime Worker 内消除 Graph 间的无序竞争。
+
+### Tool Observation → Evidence 准入
+
+工具已返回不等于其结果可以作为模型事实。每个 `tool` 节点完成后，LangGraph 都会进入
+`tool_evidence` 节点，严格执行：`Tool Observation → Parser → Schema Validator → Security / ACL /
+Freshness Validator → Evidence Extractor → Evidence Verifier → Evidence Store → ExecutionState → Context
+Projection → LLM`。Parser 只接受受限、可确定性 JSON 化的结果；Schema 使用冻结在 Release Snapshot
+中的 Tool Catalog `output_schema`（旧快照没有 Schema 时仅校验通用 JSON 信封）。随后 Runtime 复核调用
+身份、发布权限、结果时效和高置信提示注入。任一失败只写入 `runtime.tool.evidence_rejected` 与
+`tool_evidence` 拒绝记录，原始 Observation 仍可审计，但不能进入 `evidence` 或下一次模型 Prompt。
+
+成功内容产生带 `evidence_id`、内容摘要、来源版本、Run/Step、观察时间和 `fresh_until` 的
+`runtime.tool.evidence_stored` 记录。当前 Evidence Store 是 LangGraph 可恢复 ExecutionState，
+`persistence=ephemeral`；它不会自动写入 RAG。需要长期保留的文件/扫描产物仍只能经 Artifact 审批、
+摄取 Outbox 和 RAG 的 ACL/索引版本链路进入知识库，防止一次性工具输出绕过数据治理。
+
+### Tool Proposal → Enterprise Resource 授权链
+
+模型只产生 `AgentDecision`。随后 `ToolCapabilityEvaluator` 从已编译计划或同一不可变
+Snapshot 解析精确工具版本；`RuntimeReferenceMonitor` 再检查准入计划范围、稳定执行 ID、
+取消/Steering 和副作用屏障。它们不拥有企业权限，也不可以直接执行 Adapter。真正的最终
+`ToolPolicyEvaluator` 位于 Tool Gateway：它重新判断目录租户可见性、调用主体权限、写操作的
+Snapshot/Plan/Step 身份、外部策略引擎和输入 Schema；之后才进入审批一次性消费、幂等账本、
+限流/熔断和版本固定的 HTTP/MCP Adapter。
+
+因此，授权链是：`LLM Proposal → Runtime Reference Monitor → Capability Evaluator → Tool Gateway
+Policy Evaluator → HTTP/MCP Adapter → Enterprise API/Service`。不向模型或 Runtime 开放直连企业
+数据库；如需数据库能力，必须包装为受目录、工作负载身份和审计保护的企业服务或工具。
 `GET /api/v1/agent/runs/{run_id}/events` 以 SSE 从已提交 Session Ledger 输出该 Run 的事件；它轮询共享
 SQLite/PostgreSQL 账本而非依赖本地 Event Bus，因此在多副本、断线重连时可用 `after_sequence` 恢复。
 

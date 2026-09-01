@@ -216,6 +216,15 @@ Uvicorn。Compose 为两个 API 工作负载分别注入服务器证书、私钥
    `release-evidence` 仍额外验证服务密钥，供凭据迁移期间纵深防御；
 5. 实验聚合与调度任务分表保存，Temporal 不是事实存储，因此重放、审计和故障恢复不依赖工作流历史。
 
+### Sandbox Case 执行池
+
+Agent Lab 的普通回放 Worker 不执行任意宿主机命令。只有实验计划显式声明的 `sandbox_cases` 才会进入
+`SandboxProvider`：计划使用镜像白名单、argv、最长运行时间和期望退出码；Provider 一律禁用网络，结果只
+保留命令/输出摘要和退出码。Docker Provider 用于本地或预生产验证，运行在专用、可销毁的 Worker 主机，且不
+允许挂载宿主目录。生产 Compose 默认选择 `microvm` 并失败关闭；它是指向独立 MicroVM/Kata/Firecracker 执行
+池的 Provider 接口，平台 API、Temporal Worker、数据库凭据节点均不得挂载 Docker Socket。运维团队需要为
+执行池单独配置镜像准入、出站 NetworkPolicy、短期工作负载身份、审计导出和异常资源告警。
+
 运行生产模板前必须提供 `AGENT_LAB_WORKLOAD_CLIENT_SECRET`、Agent Lab 独立客户端证书、OIDC 配置和
 PostgreSQL/Temporal 可用性。部署层仍应实现 NetworkPolicy、实验输出分级脱敏、对象存储归档、保留期和
 DLQ 告警/重放演练；代码不能替代这些基础设施控制。

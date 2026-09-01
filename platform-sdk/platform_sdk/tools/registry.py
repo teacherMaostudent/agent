@@ -53,6 +53,9 @@ class ToolContext:
     tool_version: str = ""
     connector_id: str = ""
     connector_grant: str = ""
+    # Runtime derives this from a published evaluation/release stage; models cannot select it.
+    execution_mode: str = "production"
+    simulation_profile: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

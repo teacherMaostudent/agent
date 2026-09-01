@@ -40,6 +40,19 @@ Runtime 的脱敏 Session Ledger 确定性计算任务成功率、工具/模型�
 Plan-Execute、Context 压缩和失败恢复策略。Judge 负责回答质量，轨迹指标负责 Harness
 行为，两者不能相互替代。
 
+## 受限 Sandbox Case
+
+`ExperimentPlan.sandbox_cases` 可为工具适配器、解析器或确定性代码声明独立验证。每条用例只接收
+`image + argv + timeout + expected_exit_code`，禁止 Shell 字符串、宿主机挂载和网络访问；镜像必须精确命中
+`AGENT_LAB_SANDBOX_IMAGE_ALLOWLIST`。结果只保存镜像、命令 SHA-256、Provider、退出码和 stdout/stderr 的
+长度与 SHA-256，不保存原始输出，以免把工具输出的秘密或业务数据写进实验记录。
+
+Docker Provider 仅适合一台**独立、一次性实验 Worker 主机**上的本地/预生产验证：它以只读根文件系统、
+无网络、无 Linux capability、非 root UID、PID/CPU/内存/tmpfs 限制运行容器。不要把 Docker Socket 挂进
+Agent Lab API 或普通 Worker 容器；拥有该 Socket 等价于拥有宿主机控制权。生产应将 `SandboxProvider` 接到
+单独的 MicroVM/Kata/Firecracker 执行池，并把该池放在不含业务数据库凭证的网络隔离节点。当前
+`microvm` Provider 是明确的部署扩展点；没有安装外部执行器时会失败关闭，不会悄悄回退到宿主机执行。
+
 本地模式使用 SQLite 和同步本地队列，只用于开发、教学与契约测试。生产模式启动时强制要求
 PostgreSQL、Temporal、OIDC、工作负载令牌与 mTLS。API 只创建并提交任务；独立 Temporal Worker 通过
 数据库租约领取任务，避免长时间回放占用 Web 进程，也避免 Worker 故障后出现双重结算。

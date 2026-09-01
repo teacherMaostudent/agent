@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     mtls_ca_file: str = ""
     mtls_cert_file: str = ""
     mtls_key_file: str = Field(default="", repr=False)
+    sandbox_provider: str = "docker"
+    # JSON list in environment variables, e.g. ["python:3.12-slim","node:22-alpine"].
+    # Exact matching prevents a submitted experiment from selecting arbitrary images.
+    sandbox_image_allowlist: list[str] = Field(default_factory=lambda: ["python:3.12-slim"])
 
     @model_validator(mode="after")
     def validate_production_boundary(self) -> Settings:
@@ -71,6 +75,8 @@ class Settings(BaseSettings):
             unsafe.append(
                 "AGENT_LAB_SERVICE_API_KEY is required for Control Plane release evidence"
             )
+        if not self.sandbox_image_allowlist:
+            unsafe.append("AGENT_LAB_SANDBOX_IMAGE_ALLOWLIST must not be empty")
         if unsafe:
             raise ValueError("Unsafe production configuration: " + "; ".join(unsafe))
         return self

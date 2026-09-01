@@ -26,6 +26,9 @@ from app.domain.models import (
     SkillVersion,
     Tenant,
     TenantPolicy,
+    ToolDefinition,
+    ToolVersion,
+    ToolVersionStatus,
     WorkflowDefinition,
     WorkflowRelease,
     WorkflowVersion,
@@ -288,6 +291,286 @@ class ControlPlaneRepositoryOperations:
             self._insert_event(connection, event)
 
         await self._write(operation)
+
+    async def create_tool(self, tool: ToolDefinition, event: OutboxEvent) -> None:
+        """原子创建工具 Draft 与 Outbox 事实；Draft 从不被 Gateway 直接读取。"""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """INSERT INTO tools (
+                   tenant_id, tool_id, revision, definition_json, owner_team,
+                   created_by, updated_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    tool.tenant_id,
+                    tool.tool_id,
+                    tool.revision,
+                    _json(tool.definition),
+                    tool.owner_team,
+                    tool.created_by,
+                    tool.updated_by,
+                    tool.created_at.isoformat(),
+                    tool.updated_at.isoformat(),
+                ),
+            )
+            self._insert_event(connection, event)
+
+        await self._write(operation)
+
+    async def get_tool(self, tenant_id: str, tool_id: str) -> ToolDefinition | None:
+        """读取指定租户的可编辑工具 Draft，避免被其他租户探测工具资产。"""
+
+        def operation(connection: sqlite3.Connection) -> ToolDefinition | None:
+            row = connection.execute(
+                "SELECT * FROM tools WHERE tenant_id = ? AND tool_id = ?", (tenant_id, tool_id)
+            ).fetchone()
+            return _tool_from_row(row) if row else None
+
+        return await self._read(operation)
+
+    async def update_tool(
+        self, tool: ToolDefinition, expected_revision: int, event: OutboxEvent
+    ) -> bool:
+        """通过 CAS 更新 Tool Draft，并与审计事件保持相同事务边界。"""
+
+        def operation(connection: sqlite3.Connection) -> bool:
+            cursor = connection.execute(
+                """UPDATE tools SET revision = ?, definition_json = ?, updated_by = ?, updated_at = ?
+                   WHERE tenant_id = ? AND tool_id = ? AND revision = ?""",
+                (
+                    tool.revision,
+                    _json(tool.definition),
+                    tool.updated_by,
+                    tool.updated_at.isoformat(),
+                    tool.tenant_id,
+                    tool.tool_id,
+                    expected_revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return False
+            self._insert_event(connection, event)
+            return True
+
+        return await self._write(operation)
+
+    async def create_tool_version(self, version: ToolVersion, event: OutboxEvent) -> None:
+        """持久化不可变工具版本；执行定义、摘要和 Outbox 事件不可分离。"""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """INSERT INTO tool_versions (
+                   tenant_id, version_id, tool_id, semantic_version, source_revision, content_sha256,
+                   runtime_definition_json, status, change_summary, published_by, published_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    version.tenant_id,
+                    version.version_id,
+                    version.tool_id,
+                    version.semantic_version,
+                    version.source_revision,
+                    version.content_sha256,
+                    _json(version.runtime_definition),
+                    version.status.value,
+                    version.change_summary,
+                    version.published_by,
+                    version.published_at.isoformat(),
+                    version.updated_at.isoformat(),
+                ),
+            )
+            self._insert_event(connection, event)
+
+        await self._write(operation)
+
+    async def get_tool_version(
+        self, tenant_id: str, tool_id: str, version_id: str
+    ) -> ToolVersion | None:
+        """按内部版本 ID 读取工具工件，用于审核和状态迁移。"""
+
+        def operation(connection: sqlite3.Connection) -> ToolVersion | None:
+            row = connection.execute(
+                """SELECT * FROM tool_versions
+                   WHERE tenant_id = ? AND tool_id = ? AND version_id = ?""",
+                (tenant_id, tool_id, version_id),
+            ).fetchone()
+            return _tool_version_from_row(row) if row else None
+
+        return await self._read(operation)
+
+    async def get_tool_version_by_semantic(
+        self, tenant_id: str, tool_id: str, semantic_version: str
+    ) -> ToolVersion | None:
+        """按 Agent Snapshot 引用的精确语义版本读取，不存在“最新版本”回退。"""
+
+        def operation(connection: sqlite3.Connection) -> ToolVersion | None:
+            row = connection.execute(
+                """SELECT * FROM tool_versions
+                   WHERE tenant_id = ? AND tool_id = ? AND semantic_version = ?""",
+                (tenant_id, tool_id, semantic_version),
+            ).fetchone()
+            return _tool_version_from_row(row) if row else None
+
+        return await self._read(operation)
+
+    async def list_tool_versions(self, tenant_id: str, tool_id: str) -> list[ToolVersion]:
+        """按发布时间返回版本历史，供管理面展示而不暴露其他租户资产。"""
+
+        def operation(connection: sqlite3.Connection) -> list[ToolVersion]:
+            rows = connection.execute(
+                """SELECT * FROM tool_versions WHERE tenant_id = ? AND tool_id = ?
+                   ORDER BY published_at DESC""",
+                (tenant_id, tool_id),
+            ).fetchall()
+            return [_tool_version_from_row(row) for row in rows]
+
+        return await self._read(operation)
+
+    async def review_tool_version(
+        self,
+        *,
+        review_id: str,
+        version: ToolVersion,
+        decision: str,
+        comment: str,
+        reviewer_id: str,
+        reviewed_at: datetime,
+        event: OutboxEvent,
+    ) -> None:
+        """把审核记录和 Candidate→Approved/Rejected 状态原子落库。"""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """INSERT INTO tool_reviews (
+                   review_id, tenant_id, tool_id, version_id, decision, comment, reviewer_id, reviewed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    review_id,
+                    version.tenant_id,
+                    version.tool_id,
+                    version.version_id,
+                    decision,
+                    comment,
+                    reviewer_id,
+                    reviewed_at.isoformat(),
+                ),
+            )
+            connection.execute(
+                """UPDATE tool_versions SET status = ?, updated_at = ?
+                   WHERE tenant_id = ? AND tool_id = ? AND version_id = ?""",
+                (
+                    version.status.value,
+                    version.updated_at.isoformat(),
+                    version.tenant_id,
+                    version.tool_id,
+                    version.version_id,
+                ),
+            )
+            self._insert_event(connection, event)
+
+        await self._write(operation)
+
+    async def create_tool_runtime_release(
+        self,
+        *,
+        release_id: str,
+        version: ToolVersion,
+        snapshot_sha256: str,
+        created_by: str,
+        created_at: datetime,
+        event: OutboxEvent,
+    ) -> None:
+        """原子替换同一工具的 Active Release，旧投影保留为 retired 供追溯。"""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """UPDATE tool_runtime_releases SET status = 'retired', retired_at = ?
+                   WHERE tenant_id = ? AND tool_id = ? AND status = 'active'""",
+                (created_at.isoformat(), version.tenant_id, version.tool_id),
+            )
+            connection.execute(
+                """INSERT INTO tool_runtime_releases (
+                   release_id, tenant_id, tool_id, version_id, snapshot_sha256, status, created_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)""",
+                (
+                    release_id,
+                    version.tenant_id,
+                    version.tool_id,
+                    version.version_id,
+                    snapshot_sha256,
+                    created_by,
+                    created_at.isoformat(),
+                ),
+            )
+            connection.execute(
+                """UPDATE tool_versions SET status = ?, updated_at = ?
+                   WHERE tenant_id = ? AND tool_id = ? AND version_id = ?""",
+                (
+                    ToolVersionStatus.PUBLISHED.value,
+                    created_at.isoformat(),
+                    version.tenant_id,
+                    version.tool_id,
+                    version.version_id,
+                ),
+            )
+            self._insert_event(connection, event)
+
+        await self._write(operation)
+
+    async def update_tool_version_status(self, version: ToolVersion, event: OutboxEvent) -> None:
+        """弃用或退役冻结版本；退役时同步撤销它的 Active Release。"""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """UPDATE tool_versions SET status = ?, updated_at = ?
+                   WHERE tenant_id = ? AND tool_id = ? AND version_id = ?""",
+                (
+                    version.status.value,
+                    version.updated_at.isoformat(),
+                    version.tenant_id,
+                    version.tool_id,
+                    version.version_id,
+                ),
+            )
+            if version.status is ToolVersionStatus.RETIRED:
+                connection.execute(
+                    """UPDATE tool_runtime_releases SET status = 'retired', retired_at = ?
+                       WHERE tenant_id = ? AND version_id = ? AND status = 'active'""",
+                    (version.updated_at.isoformat(), version.tenant_id, version.version_id),
+                )
+            self._insert_event(connection, event)
+
+        await self._write(operation)
+
+    async def list_published_tool_versions(self) -> list[ToolVersion]:
+        """只返回 Active Runtime Release 所指的不可变定义，作为 Gateway 全局只读投影。"""
+
+        def operation(connection: sqlite3.Connection) -> list[ToolVersion]:
+            rows = connection.execute(
+                """SELECT tv.* FROM tool_versions tv JOIN tool_runtime_releases tr
+                   ON tr.version_id = tv.version_id
+                   WHERE tr.status = 'active' AND tv.status = 'published'
+                   ORDER BY tv.tenant_id, tv.tool_id"""
+            ).fetchall()
+            return [_tool_version_from_row(row) for row in rows]
+
+        return await self._read(operation)
+
+    async def find_published_tool_name_version(
+        self, tool_name: str, semantic_version: str
+    ) -> ToolVersion | None:
+        """检查 Gateway 全局 Registry 是否已有同名版本，避免不同租户投影碰撞。"""
+
+        def operation(connection: sqlite3.Connection) -> ToolVersion | None:
+            row = connection.execute(
+                """SELECT tv.* FROM tool_versions tv JOIN tool_runtime_releases tr
+                   ON tr.version_id = tv.version_id
+                   WHERE tr.status = 'active' AND tv.status = 'published'
+                     AND tv.tool_id = ? AND tv.semantic_version = ?""",
+                (tool_name, semantic_version),
+            ).fetchone()
+            return _tool_version_from_row(row) if row else None
+
+        return await self._read(operation)
 
     async def create_skill(self, skill: SkillDefinition, event: OutboxEvent) -> None:
         """在与 Outbox 相同的事务中创建租户级 Skill 草稿。"""
@@ -945,9 +1228,14 @@ class ControlPlaneRepositoryOperations:
                 ON CONFLICT (tenant_id) DO NOTHING
                 """,
                 (
-                    tenant.tenant_id, tenant.display_name, tenant.status.value,
-                    tenant.data_region, tenant.created_by, tenant.created_at.isoformat(),
-                    tenant.updated_by, tenant.updated_at.isoformat(),
+                    tenant.tenant_id,
+                    tenant.display_name,
+                    tenant.status.value,
+                    tenant.data_region,
+                    tenant.created_by,
+                    tenant.created_at.isoformat(),
+                    tenant.updated_by,
+                    tenant.updated_at.isoformat(),
                 ),
             )
 
@@ -957,7 +1245,9 @@ class ControlPlaneRepositoryOperations:
         """按不可变 tenant_id 查目录记录；调用方自行决定是否能跨租户读取。"""
 
         def operation(connection: sqlite3.Connection) -> Tenant | None:
-            row = connection.execute("SELECT * FROM tenants WHERE tenant_id = ?", (tenant_id,)).fetchone()
+            row = connection.execute(
+                "SELECT * FROM tenants WHERE tenant_id = ?", (tenant_id,)
+            ).fetchone()
             return _tenant_from_row(row) if row else None
 
         return await self._read(operation)
@@ -983,9 +1273,14 @@ class ControlPlaneRepositoryOperations:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    tenant.tenant_id, tenant.display_name, tenant.status.value,
-                    tenant.data_region, tenant.created_by, tenant.created_at.isoformat(),
-                    tenant.updated_by, tenant.updated_at.isoformat(),
+                    tenant.tenant_id,
+                    tenant.display_name,
+                    tenant.status.value,
+                    tenant.data_region,
+                    tenant.created_by,
+                    tenant.created_at.isoformat(),
+                    tenant.updated_by,
+                    tenant.updated_at.isoformat(),
                 ),
             )
             connection.execute(
@@ -993,7 +1288,12 @@ class ControlPlaneRepositoryOperations:
                 INSERT INTO tenant_policies (tenant_id, policy_json, updated_by, updated_at)
                 VALUES (?, ?, ?, ?)
                 """,
-                (policy.tenant_id, policy.model_dump_json(), policy.updated_by, policy.updated_at.isoformat()),
+                (
+                    policy.tenant_id,
+                    policy.model_dump_json(),
+                    policy.updated_by,
+                    policy.updated_at.isoformat(),
+                ),
             )
             self._insert_event(connection, event)
 
@@ -1010,8 +1310,12 @@ class ControlPlaneRepositoryOperations:
                 WHERE tenant_id = ?
                 """,
                 (
-                    tenant.display_name, tenant.status.value, tenant.data_region,
-                    tenant.updated_by, tenant.updated_at.isoformat(), tenant.tenant_id,
+                    tenant.display_name,
+                    tenant.status.value,
+                    tenant.data_region,
+                    tenant.updated_by,
+                    tenant.updated_at.isoformat(),
+                    tenant.tenant_id,
                 ),
             )
             if cursor.rowcount != 1:
@@ -1293,6 +1597,43 @@ def _version_from_row(row: sqlite3.Row) -> AgentVersion:
             "change_summary": row["change_summary"],
             "published_by": row["published_by"],
             "published_at": row["published_at"],
+        }
+    )
+
+
+def _tool_from_row(row: sqlite3.Row) -> ToolDefinition:
+    """将工具 Draft 行恢复为严格领域对象，防止未校验 JSON 进入应用服务。"""
+    return ToolDefinition.model_validate(
+        {
+            "tenant_id": row["tenant_id"],
+            "tool_id": row["tool_id"],
+            "revision": row["revision"],
+            "definition": json.loads(row["definition_json"]),
+            "owner_team": row["owner_team"],
+            "created_by": row["created_by"],
+            "updated_by": row["updated_by"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+    )
+
+
+def _tool_version_from_row(row: sqlite3.Row) -> ToolVersion:
+    """将冻结工具工件恢复为不可变版本；定义内容不会从当前 Draft 回填。"""
+    return ToolVersion.model_validate(
+        {
+            "tenant_id": row["tenant_id"],
+            "version_id": row["version_id"],
+            "tool_id": row["tool_id"],
+            "semantic_version": row["semantic_version"],
+            "source_revision": row["source_revision"],
+            "content_sha256": row["content_sha256"],
+            "runtime_definition": json.loads(row["runtime_definition_json"]),
+            "status": row["status"],
+            "change_summary": row["change_summary"],
+            "published_by": row["published_by"],
+            "published_at": row["published_at"],
+            "updated_at": row["updated_at"],
         }
     )
 

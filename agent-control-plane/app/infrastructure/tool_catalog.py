@@ -64,6 +64,8 @@ class ToolCatalogValidator:
                     "approval_required": bool(catalog_item.get("approval_required", False)),
                     "idempotent": bool(catalog_item.get("idempotent", False)),
                     "required_permissions": list(catalog_item.get("required_permissions", [])),
+                    # Freeze the verified output contract; Runtime must not read a drifting catalog.
+                    "output_schema": catalog_item.get("output_schema"),
                 }
             )
             value["side_effect"] = value["risk"] != "read_only"

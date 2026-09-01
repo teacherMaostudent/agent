@@ -32,6 +32,7 @@ from app.domain.models import (
     ToolSpec,
 )
 from app.infrastructure.repository import SqliteRepository
+from app.policy_evaluator import ToolPolicyEvaluator
 from app.registry import ToolRegistry
 from app.resilience import CircuitBreaker, FixedWindowRateLimiter
 
@@ -64,6 +65,7 @@ class ToolExecutionService:
         self.event_publisher = event_publisher
         self.rate_limiter = rate_limiter or FixedWindowRateLimiter()
         self.policy_authorizer = policy_authorizer
+        self.policy_evaluator = ToolPolicyEvaluator(registry, policy_authorizer)
         self.circuit_breaker = CircuitBreaker()
 
     async def invoke(
@@ -89,8 +91,14 @@ class ToolExecutionService:
                 and context.attempt_budget_remaining <= 0
             ):
                 raise ToolUpstreamError("downstream attempt budget is exhausted", retryable=False)
-            self.registry.assert_visible(spec, context.tenant_id)
-            self._authorize(spec, context)
+            await self.policy_evaluator.evaluate(
+                spec,
+                context,
+                payload.arguments,
+                validate_input=lambda schema, value: self._validate_json(
+                    schema, value, arguments=True
+                ),
+            )
             if context.connector_id and (
                 not context.connector_grant or not self.repository.consume_connector_grant(
                     context.tenant_id, context.user_id, context.connector_id,
@@ -101,33 +109,6 @@ class ToolExecutionService:
                 raise ToolPermissionError(
                     "connector grant is missing, expired, or already consumed"
                 )
-            self._validate_runtime_action_identity(spec, context)
-            if self.policy_authorizer is not None:
-                await asyncio.to_thread(
-                    self.policy_authorizer.authorize,
-                    {
-                        "subject": {
-                            "tenant_id": context.tenant_id,
-                            "user_id": context.user_id,
-                            "permissions": sorted(context.permissions),
-                        },
-                        "resource": {
-                            "type": "tool",
-                            "name": spec.name,
-                            "version": spec.version,
-                            "risk": spec.risk.value,
-                        },
-                        "action": "execute",
-                        "execution": {
-                            "operation_id": context.operation_id,
-                            "step_id": context.step_id,
-                            "plan_id": context.plan_id,
-                            "plan_admission_id": context.plan_admission_id,
-                            "snapshot_id": context.snapshot_id,
-                        },
-                    },
-                )
-            self._validate_json(spec.input_schema, payload.arguments, arguments=True)
             request_hash = _request_hash(spec, payload.arguments, context)
 
             if spec.requires_idempotency_key and not context.idempotency_key:
@@ -203,12 +184,15 @@ class ToolExecutionService:
             breaker_key = f"{spec.name}:{spec.version}"
             self.rate_limiter.acquire(limiter_key, spec.rate_limit_per_minute)
             self.circuit_breaker.allow(breaker_key, spec.breaker_reset_seconds)
-            output, attempts = await self._execute_with_retry(
-                spec,
-                adapter,
-                payload.arguments,
-                context,
-            )
+            if self._must_simulate(spec, context):
+                output, attempts = self._simulated_output(spec, payload.arguments, context), 1
+            else:
+                output, attempts = await self._execute_with_retry(
+                    spec,
+                    adapter,
+                    payload.arguments,
+                    context,
+                )
             self._validate_json(spec.output_schema, output, arguments=False)
             invocation.output = output
             invocation.attempt_count = attempts
@@ -255,6 +239,33 @@ class ToolExecutionService:
                 approval_granted=bool(payload.approval_id),
             )
             raise
+
+    @staticmethod
+    def _must_simulate(spec: ToolSpec, context: InvocationContext) -> bool:
+        """Shadow 只允许真实只读调用；实验 simulated 模式绝不触达任何外部 Adapter。"""
+        return context.execution_mode == "simulated" or (
+            context.execution_mode == "shadow" and spec.risk.value != "read_only"
+        )
+
+    @staticmethod
+    def _simulated_output(
+        spec: ToolSpec, arguments: dict[str, Any], context: InvocationContext
+    ) -> Any:
+        """解释固定故障脚本或返回 Dry-run receipt；任何脚本都不能请求真实上游。"""
+        profile = context.simulation_profile
+        fault = str(profile.get("fault", "")).lower()
+        if fault in {"timeout", "500", "upstream_error", "permission_denied"}:
+            raise ToolUpstreamError(f"simulated tool fault: {fault}", retryable=fault != "permission_denied")
+        if "output" in profile:
+            return profile["output"]
+        return {
+            "simulated": True,
+            "would_execute": spec.name,
+            "arguments_sha256": hashlib.sha256(
+                json.dumps(arguments, sort_keys=True, default=str).encode()
+            ).hexdigest(),
+            "execution_mode": context.execution_mode,
+        }
 
     async def record_connector_result(
         self, name: str, version: str, task_id: str, result_sha256: str, context: InvocationContext
@@ -346,25 +357,6 @@ class ToolExecutionService:
         return None
 
     @staticmethod
-    def _validate_runtime_action_identity(spec: ToolSpec, context: InvocationContext) -> None:
-        """生产 Runtime 的写操作必须绑定准入计划和单步 operation;
-        禁止漂移调用。
-        """
-        if spec.risk.value == "read_only" or not context.snapshot_id:
-            return
-        required = {
-            "operation_id": context.operation_id,
-            "step_id": context.step_id,
-            "plan_id": context.plan_id,
-            "plan_admission_id": context.plan_admission_id,
-        }
-        missing = sorted(name for name, value in required.items() if not value.strip())
-        if missing:
-            raise ToolPermissionError(
-                "runtime write action is missing admitted operation identity: " + ", ".join(missing)
-            )
-
-    @staticmethod
     def _authorization_facts(
         spec: ToolSpec,
         context: InvocationContext,
@@ -425,18 +417,6 @@ class ToolExecutionService:
             if attempt < attempts:
                 await asyncio.sleep(min(0.05 * (2 ** (attempt - 1)), 0.5))
         raise last_error or ToolUpstreamError("tool execution failed")
-
-    @staticmethod
-    def _authorize(spec: ToolSpec, context: InvocationContext) -> None:
-        """校验调用主体具备工具声明的权限集合；权限不足时在进入适配器前失败关闭。
-
-        Reject before execution when the caller lacks any catalogued permission.
-        """
-        missing = sorted(set(spec.required_permissions) - context.permissions)
-        if missing:
-            raise ToolPermissionError(
-                f"missing permissions for tool {spec.name}: {', '.join(missing)}"
-            )
 
     @staticmethod
     def _validate_json(

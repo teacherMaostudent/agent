@@ -143,6 +143,32 @@ class GovernanceQualityClient:
             response.raise_for_status()
             return response.json()
 
+    async def gate_decision(self, tenant_id: str, decision_id: str) -> dict[str, Any]:
+        """读取 Governance 已持久化的线上决策；不接受 Console 传入的伪造指标。"""
+        headers = {
+            "X-Tenant-Id": tenant_id,
+            "X-User-Id": self._settings.governance_user_id,
+            "X-Roles": "governance-auditor",
+        }
+        headers.update(self._workload_identity.authorization_header())
+        if self._settings.governance_auditor_api_key:
+            headers["X-Governance-Auditor-Key"] = self._settings.governance_auditor_api_key
+        async with httpx.AsyncClient(
+            base_url=self._settings.governance_base_url,
+            timeout=30,
+            **mtls_httpx_options(
+                enabled=self._settings.mtls_enabled,
+                ca_file=self._settings.mtls_ca_file,
+                cert_file=self._settings.mtls_cert_file,
+                key_file=self._settings.mtls_key_file,
+            ),
+        ) as client:
+            response = await client.get(
+                f"/internal/v1/governance/gate-decisions/{decision_id}", headers=headers
+            )
+            response.raise_for_status()
+            return response.json()
+
 
 class ModelLabClient:
     """Verify that an offline model artifact passed evaluation before online rollout."""

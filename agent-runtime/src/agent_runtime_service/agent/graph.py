@@ -43,6 +43,7 @@ from agent_runtime_service.agent.models import (
 )
 from agent_runtime_service.runtime.agent_manager import AgentManager
 from agent_runtime_service.runtime.budget import BudgetGuard
+from agent_runtime_service.runtime.capability_evaluator import ToolCapabilityEvaluator
 from agent_runtime_service.runtime.capability_resolver import BusinessCapabilityResolver
 from agent_runtime_service.runtime.collaboration import CollaborationError, ResultResolver
 from agent_runtime_service.runtime.event_bus import RuntimeHookPhase, RuntimeInterceptionPipeline
@@ -62,6 +63,7 @@ from agent_runtime_service.runtime.plan_admission import (
 )
 from agent_runtime_service.runtime.planner import HeuristicSemanticAnalyzer, RuntimePlanner
 from agent_runtime_service.runtime.prompt_security import PromptSecurityGuard
+from agent_runtime_service.runtime.reference_monitor import RuntimeReferenceMonitor
 from agent_runtime_service.runtime.runtime_context import RuntimeContext
 from agent_runtime_service.runtime.session_events import (
     ModelVisibleMessage,
@@ -77,10 +79,10 @@ from agent_runtime_service.runtime.stop_policy import (
     StopPolicy,
 )
 from agent_runtime_service.runtime.subagents import SubAgentPolicyError
+from agent_runtime_service.runtime.tool_evidence import ToolEvidencePipeline
 from agent_runtime_service.runtime.tool_execution import (
     SideEffectBarrier,
     SideEffectBarrierOutcome,
-    SideEffectBarrierRejected,
     ToolExecutionEngine,
     ToolExecutionPolicy,
 )
@@ -151,11 +153,15 @@ class AgentGraph:
         self.interception_pipeline = interception_pipeline or RuntimeInterceptionPipeline()
         self.tool_execution_engine = tool_execution_engine or ToolExecutionEngine()
         self.prompt_security = PromptSecurityGuard()
+        # 工具执行成功不等于其输出可被模型当作事实；该流水线只写入本次执行状态。
+        self.tool_evidence_pipeline = ToolEvidencePipeline(self.prompt_security)
         self.mailbox = mailbox
         self.side_effect_barrier = side_effect_barrier or SideEffectBarrier(
             cancellation_checker=cancellation_checker,
             inbox=mailbox,
         )
+        self.capability_evaluator = ToolCapabilityEvaluator()
+        self.reference_monitor = RuntimeReferenceMonitor(self.side_effect_barrier)
         self.capability_handler_factory = capability_handler_factory
         # Planner 只能提出计划；准入服务在执行图进入任何业务节点前生成独立凭证。
         self.plan_admission = plan_admission or PlanAdmissionService()
@@ -182,6 +188,7 @@ class AgentGraph:
         graph.add_node("retrieve", self._retrieve)
         graph.add_node("tool_guard", self._tool_guard)
         graph.add_node("tool", self._tool)
+        graph.add_node("tool_evidence", self._tool_evidence)
         graph.add_node("resolve_capability", self._resolve_capability)
         graph.add_node("execute_capability", self._execute_capability)
         graph.add_node("clarify", self._clarify)
@@ -238,8 +245,9 @@ class AgentGraph:
             self._after_tool_guard,
             {"tool": "tool", "defer": "poll_mailbox"},
         )
+        graph.add_edge("tool", "tool_evidence")
         graph.add_conditional_edges(
-            "tool",
+            "tool_evidence",
             self._after_tool,
             {"continue": "poll_mailbox", "finish": "safety"},
         )
@@ -1127,13 +1135,7 @@ class AgentGraph:
             budget = self.budget_guard.reserve_tool(self._budget(state))
             self._reserve_and_settle_root_tool_budget(state, decision, budget)
             return {"budget": budget.model_dump(mode="json"), "tool_deferred": False}
-        if state.get("compiled_plan", {}).get("contract_hash"):
-            allowed = set(state.get("plan_admission", {}).get("allowed_tool_scope", []))
-            if decision.tool_name not in allowed:
-                raise RuntimeLimitExceeded(
-                    "TOOL_OUTSIDE_ADMITTED_SCOPE",
-                    f"Tool '{decision.tool_name}' is outside the admitted plan scope.",
-                )
+        binding = self.capability_evaluator.resolve(state, decision.tool_name)
         policy = self._tool_execution_policy(state, decision.tool_name)
         execution_id = deterministic_tool_execution_id(
             str(state.get("run_id", "")),
@@ -1141,12 +1143,13 @@ class AgentGraph:
             decision.tool_name,
             decision.tool_arguments,
         )
-        try:
-            outcome = self.side_effect_barrier.before_dispatch(
-                state, policy, tool_execution_id=execution_id
-            )
-        except SideEffectBarrierRejected as exc:
-            raise RuntimeLimitExceeded("SIDE_EFFECT_BARRIER_REJECTED", str(exc)) from exc
+        outcome = self.reference_monitor.evaluate(
+            state,
+            tool_name=decision.tool_name,
+            binding=binding,
+            policy=policy,
+            tool_execution_id=execution_id,
+        ).outcome
         if outcome == SideEffectBarrierOutcome.REPLAN_REQUIRED:
             self._record_session_event(
                 state,
@@ -1180,18 +1183,20 @@ class AgentGraph:
         decision = AgentDecision.model_validate(state["decision"])
         if decision.action == AgentAction.SUBAGENT:
             return self._subagent(state, decision)
-        published_version = self._published_tool_version(state, decision.tool_name)
+        binding = self.capability_evaluator.resolve(state, decision.tool_name)
+        published_version = str(binding["version"])
         step_id = self._step_id(state)
         tool_execution_id = deterministic_tool_execution_id(
             str(state.get("run_id", "")), step_id, decision.tool_name, decision.tool_arguments
         )
         tool_policy = self._tool_execution_policy(state, decision.tool_name)
-        try:
-            outcome = self.side_effect_barrier.before_dispatch(
-                state, tool_policy, tool_execution_id=tool_execution_id
-            )
-        except SideEffectBarrierRejected as exc:
-            raise RuntimeLimitExceeded("SIDE_EFFECT_BARRIER_REJECTED", str(exc)) from exc
+        outcome = self.reference_monitor.evaluate(
+            state,
+            tool_name=decision.tool_name,
+            binding=binding,
+            policy=tool_policy,
+            tool_execution_id=tool_execution_id,
+        ).outcome
         if outcome == SideEffectBarrierOutcome.REPLAN_REQUIRED:
             self._record_session_event(
                 state,
@@ -1375,8 +1380,6 @@ class AgentGraph:
                     int(state.get("metadata", {}).get("tool_result_max_chars", 12_000)),
                 ),
             }
-        except SideEffectBarrierRejected as exc:
-            raise RuntimeLimitExceeded("SIDE_EFFECT_BARRIER_REJECTED", str(exc)) from exc
         except GraphInterrupt:
             raise
         except Exception as exc:
@@ -1563,6 +1566,73 @@ class AgentGraph:
             ),
         }
 
+    def _tool_evidence(self, state: AgentState) -> dict:
+        """把最新 Tool Observation 送入显式证据准入链路。
+
+        顺序固定为 Parser → Schema → Security/ACL/Freshness → Extractor → Verifier
+        → ExecutionState Store。失败只记录拒绝事实，既不进入 ``evidence``，也不会被
+        Context Projection 交给 LLM。长期 RAG 摄取仍由 Artifact 审批流负责。
+        """
+        observations = state.get("observations", [])
+        observation = observations[-1] if observations and isinstance(observations[-1], dict) else {}
+        # 子 Agent 的回执由其自身 Runtime/Evidence 链路治理，不能伪装为本地工具证据。
+        if observation.get("type") != "tool":
+            return {}
+        tool_name = str(observation.get("tool", ""))
+        binding = self.capability_evaluator.resolve(state, tool_name)
+        outcome = self.tool_evidence_pipeline.process(
+            observation=observation,
+            binding=binding,
+            tenant_id=str(state.get("tenant_id", "")),
+            user_id=str(state.get("user_id", "")),
+            permissions=[str(item) for item in state.get("permissions", [])],
+            run_id=str(state.get("run_id", "")),
+            step_id=self._step_id(state),
+        )
+        record = outcome.record
+        if outcome.evidence is None:
+            self._record_session_event(
+                state,
+                RuntimeEventType.TOOL_EVIDENCE_REJECTED,
+                {
+                    "tool_name": tool_name,
+                    "tool_version": record.get("tool_version", ""),
+                    "reason": record.get("reason", "UNKNOWN"),
+                    "step_id": self._step_id(state),
+                },
+            )
+            return {
+                "tool_evidence": [*state.get("tool_evidence", []), record],
+                "execution_trace": self._trace(
+                    state,
+                    "tool_evidence_rejected",
+                    {"tool": tool_name, "reason": record.get("reason", "UNKNOWN")},
+                ),
+            }
+        self._record_session_event(
+            state,
+            RuntimeEventType.TOOL_EVIDENCE_STORED,
+            {
+                "tool_name": tool_name,
+                "tool_version": record.get("tool_version", ""),
+                "evidence_id": outcome.evidence["evidence_id"],
+                "store": "runtime_execution_state",
+                "persistence": "ephemeral",
+                "step_id": self._step_id(state),
+            },
+        )
+        return {
+            "tool_evidence": [*state.get("tool_evidence", []), record],
+            # Context Projection 由 PromptSecurityGuard 在下一次 Decision 中读取这个
+            # state.evidence；未通过准入的 Observation 永远不会走这条分支。
+            "evidence": [*state.get("evidence", []), outcome.evidence],
+            "execution_trace": self._trace(
+                state,
+                "tool_evidence_stored",
+                {"tool": tool_name, "evidence_id": outcome.evidence["evidence_id"]},
+            ),
+        }
+
     @staticmethod
     def _after_tool(state: AgentState) -> str:
         """按发布图决定工具后的安全去向，人工拒绝仍优先终止。"""
@@ -1632,24 +1702,9 @@ class AgentGraph:
         )
 
     @staticmethod
-    def _published_tool_version(state: AgentState, tool_name: str) -> str:
-        """返回快照绑定的工具版本；未绑定工具必须显式拒绝执行。"""
-        spec = state.get("agent_snapshot", {}).get("spec", {})
-        if "tools" not in spec:
-            return ""
-        for binding in spec.get("tools", []):
-            if binding.get("tool_name") == tool_name:
-                return str(binding.get("version", ""))
-        raise RuntimeLimitExceeded(
-            "TOOL_NOT_PUBLISHED",
-            f"Tool '{tool_name}' is not bound in the published Agent snapshot.",
-        )
-
-    @staticmethod
     def _tool_execution_policy(state: AgentState, tool_name: str) -> ToolExecutionPolicy:
         """由冻结工具绑定解析副作用策略，模型不能覆盖调度、审批或资源键。"""
-        bindings = state.get("compiled_plan", {}).get("tools", [])
-        binding = next((item for item in bindings if str(item.get("tool_name")) == tool_name), {})
+        binding = ToolCapabilityEvaluator.resolve(state, tool_name)
         return ToolExecutionPolicy.from_published_binding(
             binding,
             tenant_id=str(state.get("tenant_id", "")),
@@ -1771,6 +1826,7 @@ class AgentGraph:
                     termination_reason="USER_INPUT_REQUIRED",
                     evidence=result.get("evidence", []),
                     observations=result.get("observations", []),
+                    tool_evidence=result.get("tool_evidence", []),
                     execution_plan=result.get("execution_plan", {}),
                     budget=result.get("budget", {}),
                     execution_trace=result.get("execution_trace", []),
@@ -1784,6 +1840,7 @@ class AgentGraph:
                 termination_reason="HUMAN_APPROVAL_REQUIRED",
                 evidence=result.get("evidence", []),
                 observations=result.get("observations", []),
+                tool_evidence=result.get("tool_evidence", []),
                 execution_plan=result.get("execution_plan", {}),
                 budget=result.get("budget", {}),
                 execution_trace=result.get("execution_trace", []),
@@ -1797,6 +1854,7 @@ class AgentGraph:
             termination_reason=result.get("termination_reason", "ANSWERED"),
             evidence=result.get("evidence", []),
             observations=result.get("observations", []),
+            tool_evidence=result.get("tool_evidence", []),
             execution_plan=result.get("execution_plan", {}),
             budget=result.get("budget", {}),
             execution_trace=result.get("execution_trace", []),
@@ -1847,6 +1905,7 @@ class AgentGraph:
             termination_reason=error.code,
             evidence=state.get("evidence", []),
             observations=state.get("observations", []),
+            tool_evidence=state.get("tool_evidence", []),
             execution_plan=state.get("execution_plan", {}),
             budget=state.get("budget", {}),
             execution_trace=state.get("execution_trace", []),
@@ -1862,6 +1921,7 @@ class AgentGraph:
             termination_reason="CANCELLED",
             evidence=state.get("evidence", []),
             observations=state.get("observations", []),
+            tool_evidence=state.get("tool_evidence", []),
             execution_plan=state.get("execution_plan", {}),
             budget=state.get("budget", {}),
             execution_trace=state.get("execution_trace", []),

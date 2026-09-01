@@ -17,9 +17,11 @@ from app.models import (
     ExperimentPlan,
     ExperimentRecord,
     ExperimentStatus,
+    SandboxCaseRun,
     SnapshotBinding,
 )
 from app.repository import ExperimentRepositoryPort
+from app.sandbox import SandboxProvider, SandboxRequest
 
 
 class RetryableExperimentError(RuntimeError):
@@ -36,6 +38,9 @@ class AgentLabService:
         runtime: RuntimeClient,
         governance: GovernanceClient,
         max_cases: int,
+        *,
+        sandbox: SandboxProvider | None = None,
+        sandbox_image_allowlist: set[str] | None = None,
     ) -> None:
         """注入跨服务客户端，令测试可用假客户端验证编排边界。"""
         self._repository = repository
@@ -43,6 +48,8 @@ class AgentLabService:
         self._runtime = runtime
         self._governance = governance
         self._max_cases = max_cases
+        self._sandbox = sandbox
+        self._sandbox_image_allowlist = sandbox_image_allowlist or set()
 
     def create(self, plan: ExperimentPlan) -> ExperimentRecord:
         """登记实验计划；重复用例标识会在执行前被拒绝以确保结果可对齐。"""
@@ -51,6 +58,9 @@ class AgentLabService:
         case_ids = [case.case_id for case in plan.cases]
         if len(case_ids) != len(set(case_ids)):
             raise ValueError("case_id must be unique within one experiment")
+        sandbox_case_ids = [case.case_id for case in plan.sandbox_cases]
+        if len(sandbox_case_ids) != len(set(sandbox_case_ids)):
+            raise ValueError("sandbox case_id must be unique within one experiment")
         record = ExperimentRecord(experiment_id=f"alx_{uuid4().hex}", plan=plan)
         return self._repository.create(record)
 
@@ -128,8 +138,16 @@ class AgentLabService:
             raise ValueError("experiment has no complete frozen snapshot bindings")
         record.status = ExperimentStatus.RUNNING
         record.case_runs = []
+        record.sandbox_runs = []
         record.updated_at = datetime.now(UTC)
         self._repository.save(record)
+        if not self._run_sandbox_cases(record):
+            # Sandbox assertions are deterministic experiment evidence. They are not a Runtime
+            # transport problem and therefore must not be retried by the regular replay queue.
+            record.status = ExperimentStatus.FAILED
+            record.error = "sandbox_validation_failed"
+            record.updated_at = datetime.now(UTC)
+            return self._repository.save(record)
         transport_failures: list[str] = []
         for case in record.plan.cases:
             binding = bindings[case.case_id]
@@ -248,6 +266,71 @@ class AgentLabService:
         record.updated_at = datetime.now(UTC)
         return self._repository.save(record)
 
+    def _run_sandbox_cases(self, record: ExperimentRecord) -> bool:
+        """执行计划声明的隔离验证，并仅持久化输出摘要以避免实验库收集原始秘密。"""
+        if not record.plan.sandbox_cases:
+            return True
+        if self._sandbox is None:
+            raise ValueError("sandbox cases require an Agent Lab sandbox provider")
+        passed = True
+        for case in record.plan.sandbox_cases:
+            if case.image not in self._sandbox_image_allowlist:
+                record.sandbox_runs.append(
+                    SandboxCaseRun(
+                        case_id=case.case_id,
+                        image=case.image,
+                        command_sha256=_sha256_json(case.command),
+                        provider="unavailable",
+                        status="ERROR",
+                        expected_exit_code=case.expected_exit_code,
+                        error="sandbox_image_not_allowlisted",
+                    )
+                )
+                passed = False
+                continue
+            try:
+                result = self._sandbox.execute(
+                    SandboxRequest(
+                        image=case.image,
+                        command=tuple(case.command),
+                        timeout_seconds=case.timeout_seconds,
+                        network="none",
+                    )
+                )
+                status = "PASSED" if result.exit_code == case.expected_exit_code else "FAILED"
+                record.sandbox_runs.append(
+                    SandboxCaseRun(
+                        case_id=case.case_id,
+                        image=case.image,
+                        command_sha256=_sha256_json(case.command),
+                        provider=result.provider,
+                        status=status,
+                        exit_code=result.exit_code,
+                        expected_exit_code=case.expected_exit_code,
+                        stdout_sha256=_sha256_text(result.stdout),
+                        stderr_sha256=_sha256_text(result.stderr),
+                        stdout_bytes=len(result.stdout.encode("utf-8")),
+                        stderr_bytes=len(result.stderr.encode("utf-8")),
+                    )
+                )
+                passed = passed and status == "PASSED"
+            except (OSError, RuntimeError, TimeoutError) as exc:
+                record.sandbox_runs.append(
+                    SandboxCaseRun(
+                        case_id=case.case_id,
+                        image=case.image,
+                        command_sha256=_sha256_json(case.command),
+                        provider="unavailable",
+                        status="ERROR",
+                        expected_exit_code=case.expected_exit_code,
+                        error=f"sandbox_execution_error: {str(exc)[:500]}",
+                    )
+                )
+                passed = False
+            record.updated_at = datetime.now(UTC)
+            self._repository.save(record)
+        return passed
+
     def submit(self, tenant_id: str, experiment_id: str, *, max_attempts: int) -> ExperimentJob:
         """冻结实验后创建唯一持久化任务；API 只提交，不在 Web 进程执行长时回放。"""
         record = self.get(tenant_id, experiment_id)
@@ -350,6 +433,17 @@ def _snapshot_hash(snapshot: dict) -> str:
 
     normalized = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(normalized).hexdigest()
+
+
+def _sha256_json(value: object) -> str:
+    """对命令 argv 等结构化输入求稳定摘要，审计可比对但不会把原始命令散落到结果页。"""
+    normalized = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _sha256_text(value: str) -> str:
+    """仅保存输出内容哈希，避免工具输出中的凭证或业务数据进入长期实验记录。"""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _evidence_ids(result: dict) -> list[str]:

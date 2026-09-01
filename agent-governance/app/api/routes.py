@@ -368,6 +368,22 @@ async def online_evaluation_snapshot(identity: Auditor, container: Container) ->
     return await container.evaluation.online_snapshot(identity.tenant_id)
 
 
+@router.post("/v1/governance/evaluations/online/gate", tags=["online-evaluation"])
+async def evaluate_online_gate(
+    request: dict[str, Any], identity: Auditor, container: Container
+) -> dict[str, Any]:
+    """根据冻结 Release/Snapshot 的线上窗口计算 HOLD、PAUSE、ROLLBACK 或 PROMOTE。"""
+    return await container.evaluation.online_gate(identity.tenant_id, request)
+
+
+@router.get("/internal/v1/governance/gate-decisions/{decision_id}", tags=["internal"])
+async def get_gate_decision(
+    decision_id: str, identity: Auditor, container: Container
+) -> dict[str, Any]:
+    """向受认证 Release Controller 提供已保存的治理结论，不接受调用方伪造指标。"""
+    return await container.evaluation.get_gate_decision(identity.tenant_id, decision_id)
+
+
 @router.post(
     "/v1/governance/evaluations/online/samples/{sample_id}/judge",
     tags=["online-evaluation"],

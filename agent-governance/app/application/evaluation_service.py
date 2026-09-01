@@ -34,6 +34,9 @@ ONLINE_SAMPLE = "eval-online-sample"
 GOLDEN_CANDIDATE = "eval-golden-candidate"
 EVALUATION_SNAPSHOT = "eval-execution-snapshot"
 CALIBRATION_RUN = "eval-calibration-run"
+GATE_DECISION = "governance-gate-decision"
+ONLINE_WINDOW = "online-metric-window"
+BAD_CASE = "governance-bad-case"
 
 JUDGE_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -109,6 +112,9 @@ class EvaluationService:
                 tenant_id, EVALUATION_SNAPSHOT
             ),
             "calibrationRuns": await self._repository.list_documents(tenant_id, CALIBRATION_RUN),
+            "gateDecisions": await self._repository.list_documents(tenant_id, GATE_DECISION),
+            "onlineWindows": await self._repository.list_documents(tenant_id, ONLINE_WINDOW),
+            "badCases": await self._repository.list_documents(tenant_id, BAD_CASE),
         }
 
     async def upsert_asset(
@@ -194,6 +200,15 @@ class EvaluationService:
             "tenantId": tenant_id,
             "userId": request.get("userId"),
             "model": request.get("requestedModel"),
+            # Release/Snapshot are producer-supplied immutable identifiers.  They let
+            # online windows compare canary and baseline without inspecting prompt content.
+            "releaseId": request.get("releaseId"),
+            "snapshotId": request.get("snapshotId"),
+            # These flags are emitted by Runtime/Tool policy events after deterministic
+            # enforcement; governance treats any one of them as an immediate hard stop.
+            "forbiddenTool": bool(request.get("forbiddenTool")),
+            "piiLeak": bool(request.get("piiLeak")),
+            "crossTenantAccess": bool(request.get("crossTenantAccess")),
             "request": protected_request,
             "response": protected_response,
             "success": bool(request.get("success")),
@@ -254,7 +269,73 @@ class EvaluationService:
             ],
             "samplePool": [item for item in samples if item.get("disposition") == "SAMPLE_POOL"],
             "goldenCandidates": candidates,
+            "windows": await self._repository.list_documents(tenant_id, ONLINE_WINDOW),
+            "gateDecisions": await self._repository.list_documents(tenant_id, GATE_DECISION),
+            "badCases": await self._repository.list_documents(tenant_id, BAD_CASE),
         }
+
+    async def online_gate(self, tenant_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        """按 Release/Snapshot 汇总线上观察窗口并产生可审计 GateDecision。
+
+        此方法只做判断，绝不修改线上流量；Control Plane 必须重新验证该
+        Decision 的租户、发布和快照后才可以执行 promote/pause/rollback。
+        """
+        release_id = str(request.get("releaseId") or "")
+        snapshot_id = str(request.get("snapshotId") or "")
+        if not release_id or not snapshot_id:
+            raise ValueError("releaseId and snapshotId are required")
+        samples = [
+            item for item in await self._repository.list_documents(tenant_id, ONLINE_SAMPLE, 10_000)
+            if item.get("releaseId") == release_id and item.get("snapshotId") == snapshot_id
+        ]
+        policy = request.get("policy") or {}
+        min_samples = max(1, int(policy.get("minSamples", 100)))
+        max_error_rate = float(policy.get("maxErrorRate", 0.05))
+        max_latency_ms = float(policy.get("maxP95LatencyMs", 15_000))
+        max_cost = float(policy.get("maxAverageCost", 3.0))
+        forbidden = sum(bool(item.get("forbiddenTool")) for item in samples)
+        pii = sum(bool(item.get("piiLeak")) for item in samples)
+        cross_tenant = sum(bool(item.get("crossTenantAccess")) for item in samples)
+        failures = sum(not bool(item.get("success")) for item in samples)
+        latencies = sorted(float(item.get("latencyMs") or 0) for item in samples)
+        p95 = latencies[max(0, math.ceil(len(latencies) * 0.95) - 1)] if latencies else 0.0
+        average_cost = _average(float(item.get("cost") or 0) for item in samples)
+        reasons: list[str] = []
+        action = "HOLD"
+        if forbidden or pii or cross_tenant:
+            action = "ROLLBACK"
+            reasons.append("hard safety violation in online window")
+        elif len(samples) < min_samples:
+            reasons.append("minimum sample size not reached")
+        elif failures / len(samples) > max_error_rate:
+            action = "PAUSE"
+            reasons.append("error rate exceeds policy")
+        elif p95 > max_latency_ms or average_cost > max_cost:
+            reasons.append("latency or cost exceeds promotion policy")
+        else:
+            action = "PROMOTE"
+        window = {
+            "id": f"window_{uuid4().hex}", "tenantId": tenant_id, "releaseId": release_id,
+            "snapshotId": snapshot_id, "sampleCount": len(samples), "failedCount": failures,
+            "forbiddenToolCount": forbidden, "piiLeakCount": pii, "crossTenantCount": cross_tenant,
+            "errorRate": round(failures / len(samples), 4) if samples else 0.0,
+            "p95LatencyMs": p95, "averageCost": average_cost, "policy": policy, "createdAt": _now(),
+        }
+        await self._repository.upsert_document(tenant_id, ONLINE_WINDOW, window["id"], window)
+        decision = {
+            "id": f"gate_{uuid4().hex}", "stage": "online", "tenantId": tenant_id,
+            "releaseId": release_id, "snapshotId": snapshot_id, "decision": action,
+            "reasons": reasons, "windowId": window["id"], "metrics": window,
+            "createdAt": _now(),
+        }
+        return await self._repository.upsert_document(tenant_id, GATE_DECISION, decision["id"], decision)
+
+    async def get_gate_decision(self, tenant_id: str, decision_id: str) -> dict[str, Any]:
+        """供 Release Controller 读取冻结治理结论；未知 ID 一律拒绝。"""
+        decision = await self._repository.get_document(tenant_id, GATE_DECISION, decision_id)
+        if not decision:
+            raise NotFoundError(f"Unknown gate decision: {decision_id}")
+        return decision
 
     async def judge_online(self, tenant_id: str, user_id: str, sample_id: str) -> dict[str, Any]:
         """用已冻结 Judge
@@ -329,6 +410,20 @@ class EvaluationService:
         )
         decision = str(request.get("decision") or "").upper()
         if decision in {"CONFIRMED_FAILURE", "GOLDEN_CANDIDATE"}:
+            # A confirmed production failure is a durable governance asset first; Golden
+            # publication remains a separate expert decision so noisy feedback cannot pollute regression.
+            await self._repository.upsert_document(
+                tenant_id,
+                BAD_CASE,
+                f"bad_{sample_id}",
+                {
+                    "id": f"bad_{sample_id}", "sampleId": sample_id,
+                    "releaseId": sample.get("releaseId"), "snapshotId": sample.get("snapshotId"),
+                    "category": request.get("category", "unclassified"),
+                    "severity": request.get("severity", "medium"), "status": "CONFIRMED",
+                    "reviewedBy": user_id, "reviewedAt": _now(), "createdAt": _now(),
+                },
+            )
             candidate = {
                 "id": uuid4().hex,
                 "sampleId": sample_id,
@@ -810,7 +905,20 @@ class EvaluationService:
             "calibrationRunId": calibration_id,
             "reasons": reasons,
         }
-        return await self._repository.upsert_document(tenant_id, QUALITY_GATE, result["id"], result)
+        saved = await self._repository.upsert_document(tenant_id, QUALITY_GATE, result["id"], result)
+        # Offline decisions are stored separately from raw quality metrics so a release can
+        # reference one immutable governance verdict instead of reinterpreting thresholds later.
+        await self._repository.upsert_document(
+            tenant_id,
+            GATE_DECISION,
+            f"gate_{result['id']}",
+            {
+                "id": f"gate_{result['id']}", "stage": "offline", "tenantId": tenant_id,
+                "runId": run_id, "decision": "PASS" if result["passed"] else "FAIL",
+                "reasons": reasons, "metrics": result["metrics"], "createdAt": result["timestamp"],
+            },
+        )
+        return saved
 
     async def _rubric(self, tenant_id: str, rubric_id: object) -> dict[str, Any]:
         """按租户解析指定 Rubric

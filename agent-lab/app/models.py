@@ -76,6 +76,23 @@ class EvaluationBinding(StrictModel):
     calibration_run_id: str | None = Field(default=None, max_length=160)
 
 
+class SandboxCase(StrictModel):
+    """声明一项在隔离环境验证的工具或代码用例，而不是把任意 Shell 字符串交给 Worker。"""
+
+    case_id: str = Field(min_length=1, max_length=160)
+    image: str = Field(min_length=1, max_length=300)
+    command: list[str] = Field(min_length=1, max_length=40)
+    timeout_seconds: int = Field(default=60, ge=1, le=600)
+    expected_exit_code: int = Field(default=0, ge=0, le=255)
+
+    @model_validator(mode="after")
+    def validate_argv(self) -> SandboxCase:
+        """拒绝换行和空参数，确保 Provider 永远以 argv 而非 shell 解释命令。"""
+        if any(not item.strip() or "\n" in item or "\r" in item for item in self.command):
+            raise ValueError("sandbox command must contain non-empty single-line argv entries")
+        return self
+
+
 class ExperimentPlan(StrictModel):
     """定义 Agent 或 Skill 回放；两类目标都只能引用已发布工件。"""
 
@@ -88,6 +105,7 @@ class ExperimentPlan(StrictModel):
     skill_capability_id: str = Field(default="", max_length=160)
     environment: str = Field(default="laboratory", min_length=2, max_length=64)
     cases: list[ReplayCase] = Field(min_length=1, max_length=200)
+    sandbox_cases: list[SandboxCase] = Field(default_factory=list, max_length=50)
     evaluation: EvaluationBinding = Field(default_factory=EvaluationBinding)
     baseline_experiment_id: str | None = Field(default=None, max_length=160)
     max_steps: int = Field(default=12, ge=2, le=30)
@@ -134,6 +152,23 @@ class CaseRun(StrictModel):
     error: str | None = None
 
 
+class SandboxCaseRun(StrictModel):
+    """保存隔离验证的可审计摘要；默认不把可能敏感的标准输出写进实验数据库。"""
+
+    case_id: str
+    image: str
+    command_sha256: str
+    provider: str
+    status: Literal["PASSED", "FAILED", "ERROR"]
+    exit_code: int | None = None
+    expected_exit_code: int
+    stdout_sha256: str | None = None
+    stderr_sha256: str | None = None
+    stdout_bytes: int = Field(default=0, ge=0)
+    stderr_bytes: int = Field(default=0, ge=0)
+    error: str | None = None
+
+
 class ExperimentRecord(StrictModel):
     """聚合实验计划、冻结快照、回放结果及 Governance 评测引用。"""
 
@@ -141,6 +176,7 @@ class ExperimentRecord(StrictModel):
     plan: ExperimentPlan
     status: ExperimentStatus = ExperimentStatus.DRAFT
     snapshot_bindings: list[SnapshotBinding] = Field(default_factory=list)
+    sandbox_runs: list[SandboxCaseRun] = Field(default_factory=list)
     case_runs: list[CaseRun] = Field(default_factory=list)
     judge_run_id: str | None = None
     quality_gate: dict[str, Any] | None = None

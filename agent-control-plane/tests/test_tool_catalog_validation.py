@@ -41,3 +41,5 @@ def test_control_plane_freezes_tool_catalog_governance_facts() -> None:
     assert resolved["required_permissions"] == ["file:scan"]
     assert resolved["approval_required"] is False
     assert resolved["idempotent"] is True
+    # The output schema is frozen into the Release Snapshot for Runtime evidence validation.
+    assert resolved["output_schema"] == {"type": "object", "required": ["scope", "matches"]}

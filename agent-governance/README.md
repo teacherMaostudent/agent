@@ -110,3 +110,19 @@ python -m ruff check .
 python -m ruff format --check .
 python -m pytest
 ```
+# 双阶段连续治理
+
+Governance 将发布质量拆成两个不可互相替代的阶段：
+
+1. **Pre-production**：冻结 Snapshot、Golden/Red-Team Dataset、Judge、Rubric、模型修订和
+   检索策略后执行离线评测，并输出 `PASS` 或 `FAIL` 的 GateDecision；Control Plane 以该证据创建 Release。
+2. **Online**：按 `releaseId + snapshotId` 聚合 Shadow/Canary Trace，检查最小样本量、错误率、
+   P95 延迟、成本和硬安全信号，输出 `HOLD`、`PROMOTE`、`PAUSE` 或 `ROLLBACK`。
+
+Governance 只保存证据、计算指标和做决策；它不直接改变流量。Control Plane 通过
+`POST /v1/releases/{release_id}/governance-action` 拉取 GateDecision，再校验租户、Release 与
+冻结 Agent Version 一致后才调用自己的 Promote/Pause/Rollback 状态机。
+
+`forbiddenTool`、`piiLeak` 与 `crossTenantAccess` 是线上 Hard Gate：任一非零即 `ROLLBACK`；
+样本不足只会 `HOLD`，不会因偶然的 100% 成功率提升流量。人工确认的线上失败保存为 `BadCase`，
+随后可作为 Golden Candidate 审核并进入下一轮回归集。

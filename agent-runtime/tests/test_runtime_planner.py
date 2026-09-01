@@ -357,14 +357,27 @@ def test_tool_session_facts_distinguish_intent_dispatch_commit_and_result() -> N
             del name, arguments, context
             return {"status": "accepted", "refund_id": "refund-001"}
 
+    class CapturingEngine(SequenceEngine):
+        """记录第二次 Decision 所见 Evidence，证明图节点顺序没有被后续改动绕过。"""
+
+        def __init__(self, decisions):
+            super().__init__(decisions)
+            self.evidence_before_final_decision: list[dict] = []
+
+        def decide(self, current_state, tool_registry):
+            if len(self.decisions) == 1:
+                self.evidence_before_final_decision = list(current_state.get("evidence", []))
+            return super().decide(current_state, tool_registry)
+
     facts: list[RuntimeEventType] = []
+    engine = CapturingEngine(
+        [
+            AgentDecision(action=AgentAction.TOOL, tool_name="payments.refund"),
+            AgentDecision(action=AgentAction.ANSWER, final_answer="Refund accepted."),
+        ]
+    )
     graph = AgentGraph(
-        SequenceEngine(
-            [
-                AgentDecision(action=AgentAction.TOOL, tool_name="payments.refund"),
-                AgentDecision(action=AgentAction.ANSWER, final_answer="Refund accepted."),
-            ]
-        ),
+        engine,
         runtime_context(tools=ImmediateTool()),
         session_event_recorder=lambda _state, event_type, _metadata, _message: facts.append(event_type),
     )
@@ -372,6 +385,9 @@ def test_tool_session_facts_distinguish_intent_dispatch_commit_and_result() -> N
     result = graph.run(state("Refund order ORD-123"), "tool-facts")
 
     assert result.status == "COMPLETED"
+    assert result.tool_evidence[-1]["status"] == "STORED"
+    assert result.evidence[-1]["source_type"] == "tool_observation"
+    assert engine.evidence_before_final_decision[-1]["evidence_id"] == result.evidence[-1]["evidence_id"]
     assert [
         event
         for event in facts
@@ -381,12 +397,14 @@ def test_tool_session_facts_distinguish_intent_dispatch_commit_and_result() -> N
             RuntimeEventType.TOOL_DISPATCHED,
             RuntimeEventType.TOOL_COMMITTED,
             RuntimeEventType.TOOL_RESULT,
+            RuntimeEventType.TOOL_EVIDENCE_STORED,
         }
     ] == [
         RuntimeEventType.TOOL_INTENT_RECORDED,
         RuntimeEventType.TOOL_DISPATCHED,
         RuntimeEventType.TOOL_COMMITTED,
         RuntimeEventType.TOOL_RESULT,
+        RuntimeEventType.TOOL_EVIDENCE_STORED,
     ]
 
 

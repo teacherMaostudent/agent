@@ -94,6 +94,8 @@ class AgentState(TypedDict, total=False):
     step_count: int
     max_steps: int
     observations: list[dict[str, Any]]
+    # 工具 Observation 的准入账本：拒绝原因也保留，但只有 STORED 项会进入 evidence。
+    tool_evidence: list[dict[str, Any]]
     evidence: list[dict[str, Any]]
     conversation_history: list[dict[str, Any]]
     user_context: dict[str, Any]
@@ -118,6 +120,7 @@ class AgentRunResult(BaseModel):
     termination_reason: str
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     observations: list[dict[str, Any]] = Field(default_factory=list)
+    tool_evidence: list[dict[str, Any]] = Field(default_factory=list)
     execution_plan: dict[str, Any] = Field(default_factory=dict)
     budget: dict[str, Any] = Field(default_factory=dict)
     execution_trace: list[dict[str, Any]] = Field(default_factory=list)

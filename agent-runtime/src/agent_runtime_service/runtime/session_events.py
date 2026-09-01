@@ -53,6 +53,9 @@ class RuntimeEventType(StrEnum):
     TOOL_COMMITTED = "runtime.tool.committed"
     TOOL_EXECUTION_OBSERVED = "runtime.tool.execution_observed"
     TOOL_RESULT = "runtime.tool.result"
+    # Observation 只表示工具已返回；Evidence 事件证明结果已通过 Runtime 的二次准入。
+    TOOL_EVIDENCE_STORED = "runtime.tool.evidence_stored"
+    TOOL_EVIDENCE_REJECTED = "runtime.tool.evidence_rejected"
     SUBAGENT_DELEGATED = "runtime.subagent.delegated"
     SUBAGENT_RESULT = "runtime.subagent.result"
     ARTIFACT_DOWNLOAD_AUTHORIZED = "runtime.artifact.download_authorized"

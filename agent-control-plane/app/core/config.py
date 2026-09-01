@@ -24,7 +24,8 @@ class Settings(BaseSettings):
     database_schema: str = "control_plane"
     postgres_schema_path: Path = _PROJECT_ROOT / "db" / "postgres.sql"
     contracts_schema_dir: Path = _PROJECT_ROOT.parent / "platform-contracts" / "schemas"
-    tool_catalog_path: Path = _PROJECT_ROOT.parent / "tool-gateway" / "config" / "tools.json"
+    # Tool Catalog 的权威发布工件归 Control Plane 所有，Gateway 只能消费其运行时投影。
+    tool_catalog_path: Path = _PROJECT_ROOT / "config" / "tool-catalog.json"
     tool_catalog_required: bool = False
     runtime_executor_catalog_path: Path = _PROJECT_ROOT / "config" / "runtime-executors.json"
     runtime_executor_catalog_required: bool = False

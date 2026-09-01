@@ -36,6 +36,10 @@ Gateway 执行灰度策略，监控 Gateway 性能后提升或回滚。Gateway �
   时校验 Governance Profile 不得降低其内部 Tool 的真实风险
 - 租户策略可声明 `llm_quotas`，Control Plane 保存权威配置并将租户/用户 Token 与 USD 日配额
   投影到 LLM Gateway；模型供应商密钥仍只由 Gateway 持有，Console 不接触密钥。
+- Tool Asset 生命周期：`Draft -> Candidate Version -> Approved -> Runtime Release -> Deprecated/Retired`；
+  Draft 用 revision CAS 编辑，版本内容和 SHA-256 不可变，审核与 Release 都写事务性 Outbox。
+- Tool Gateway 通过受工作负载身份保护的 `/internal/v1/tool-catalog/runtime-projection` 拉取已发布
+  Release 的最小执行契约并持久化缓存；未审核、被拒绝、弃用中的 Draft 与审核意见不会离开 Control Plane。
 
 ## 边界
 
@@ -72,6 +76,26 @@ flowchart LR
     Runtime 实例的 `/api/v1/agent/capabilities` 返回同一 Catalog 版本和该 Profile。
 11. `AgentVersion` 生成时会在同一事务内把 `PublishedSnapshot` 编译为 `runtime-snapshot/v1`
     Artifact；生产 Runtime 只加载并校验该 Artifact 的快照哈希，缺失或漂移即拒绝执行。
+12. 生产环境下 Agent 的 `ToolBinding(name, version)` 必须能解析到同租户、同语义版本且状态为
+    `PUBLISHED` 的 Tool Runtime Release；缺失、未审核或已退役版本会在 AgentVersion 冻结前失败。
+
+## Tool Asset 生命周期
+
+Tool Catalog 的管理面在本服务，执行面在 Tool Gateway。推荐按以下 API 顺序管理一个工具：
+
+1. `POST /v1/tools` 创建 Draft，`PUT /v1/tools/{tool_id}/draft` 携带 `expected_revision` 做 CAS 编辑；
+2. `POST /v1/tools/{tool_id}/versions` 冻结 Candidate Version，正文与 `content_sha256` 不可再修改；
+3. `POST .../review` 记录 approve/reject、审查人和评论；未通过审核的版本不能发布；
+4. `POST .../release` 生成该工具唯一 Active Runtime Release，并使 Gateway 下次投影刷新后可执行；
+5. `POST .../status` 可先 `deprecated` 再 `retired`；`retired` 会撤销 Active Release，Gateway 不再获得该定义。
+
+本地 Compose 中的 `config/tool-catalog.json` 仅作为 `demo` 租户的一次性迁移种子；服务启动时把它
+导入为完整的 Draft/Version/Review/Release 记录，随后运行时不再把该文件当作权威目录。生产不配置
+`CONTROL_PLANE_BOOTSTRAP_TENANT_ID`，必须由管理员通过上述 API 创建并发布工具资产。
+
+当前 Tool Gateway Registry 以 `tool_name + semantic_version` 全局键控；因此不同租户不能同时发布
+同名同版本但正文不同的工具。Control Plane 在 Release 前会拒绝这种冲突。若确有隔离需求，应使用
+租户限定的工具名，或发布一条平台统一工具并通过 `enabled_tenants` 控制可见范围。
 
 发布后的快照同时包含可观察版本号和完整配置：
 

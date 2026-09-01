@@ -36,10 +36,12 @@
 | 默认拒绝 | 缺少快照、工具版本、能力 Provider、目标集群证明、OIDC/mTLS 或审批时均拒绝，不做隐式回退。 |
 | 服务边界优先 | Runtime 只经 `platform-sdk` 的 HTTP/契约访问 Context、RAG、LLM、Tool，不 import 其他应用包。 |
 | 模型无特权 | 模型只能提出动作；Graph、预算、Workflow DSL、Tool Gateway 与审批链路决定是否真的执行。 |
+| 工具提议分层授权 | Runtime 的 Reference Monitor 与 Capability Evaluator 约束发布范围和副作用时机；Tool Gateway 的 Policy Evaluator 重新执行最终租户、权限、策略和协议判定。 |
 | 一份事实，多种投影 | Run、Session、Outbox、Trace 使用关联 ID 串联；审计与回放从已提交事实派生，不依赖内存回调。 |
 | 实验与生产分离 | Model Lab 与 Agent Lab 可试验、回放和评估；Control Plane 才能正式发布，Runtime 不承担实验平台职责。 |
 | 双轴执行 | 发布快照用 `lifecycle × reasoning` 描述“是否耐久”和“如何推理”；Profile 只是已部署执行器的受控别名。 |
 | 向量空间不可漂移 | 知识绑定固定索引版本与嵌入契约；摄取、查询、Runtime 和发布门禁拒绝不同模型/维度的混用。 |
+| 工具资产受控发布 | Tool Draft 经 CAS 编辑、Schema 校验、不可变 Version、独立 Review 与 Runtime Release 后，才被投影给 Tool Gateway；Gateway 不读取草稿、审核记录或本地静态目录。 |
 
 ## 新执行基线：双 Owner + 能力层
 
@@ -109,7 +111,9 @@ Workflow 不加载 Planner 或 Agent Session，支持重试、补偿、Human Sig
 `agent-lab` 是离线 Agent 回放编排服务：冻结 Control Plane 发布快照，对受限用例调用 Agent
 Runtime，并将 Judge 与质量门禁委托给 Governance。它不训练模型、不承接线上用户流量，也不直接
 发布 Agent；Control Plane 只接受其已通过门禁的 release evidence。详见
-[Agent Lab](agent-lab/README.md)。
+[Agent Lab](agent-lab/README.md)。实验可声明无网络、只读、镜像白名单约束的 Sandbox Case；本地/预生产
+可用受限 Docker Worker 验证，生产 MicroVM/Kata/Firecracker 执行池必须由独立 Linux 基础设施部署，未配置
+时 Provider 会失败关闭而非回退到宿主机执行。
 
 RAG ingestion treats image OCR as labelled derived evidence: it is searchable,
 but keeps provenance and visual-review metadata while the original artifact

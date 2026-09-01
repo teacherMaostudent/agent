@@ -22,6 +22,7 @@ from app.domain.models import (
     AgentVersion,
     AgentVersionPublish,
     HealthStatus,
+    GovernanceReleaseAction,
     Identity,
     OutboxList,
     PublishedSnapshot,
@@ -36,11 +37,18 @@ from app.domain.models import (
     SkillStatusUpdate,
     SkillVersion,
     SkillVersionPublish,
-    TenantPolicy,
-    TenantPolicyUpdate,
     Tenant,
     TenantCreate,
+    TenantPolicy,
+    TenantPolicyUpdate,
     TenantUpdate,
+    ToolDefinition,
+    ToolDraftCreate,
+    ToolDraftUpdate,
+    ToolReviewCreate,
+    ToolVersion,
+    ToolVersionPublish,
+    ToolVersionStatusUpdate,
     ValidationReport,
     WorkflowCreate,
     WorkflowDefinition,
@@ -159,6 +167,118 @@ async def readiness(container: Container, response: Response) -> HealthStatus:
     if not await container.repository.healthcheck():
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return HealthStatus(status="ok")
+
+
+@router.get("/internal/v1/tool-catalog/runtime-projection", tags=["runtime"])
+async def get_tool_runtime_projection(
+    identity: RuntimeIdentity, container: Container
+) -> dict[str, Any]:
+    """向已认证 Gateway 分发只读 Tool Runtime Projection，而不是管理面 Draft。"""
+    del identity
+    return await container.tool_runtime_projection.current()
+
+
+@router.post(
+    "/v1/tools", response_model=ToolDefinition, status_code=status.HTTP_201_CREATED, tags=["tools"]
+)
+async def create_tool(
+    request: ToolDraftCreate, identity: ManagementIdentity, container: Container, trace_id: TraceId
+) -> ToolDefinition:
+    """创建工具管理面 Draft；它尚未对 Tool Gateway 或 Agent 可见。"""
+    return await service(container).create_tool(identity, request, trace_id)
+
+
+@router.get("/v1/tools/{tool_id}", response_model=ToolDefinition, tags=["tools"])
+async def get_tool(
+    tool_id: str, identity: ManagementIdentity, container: Container
+) -> ToolDefinition:
+    """读取当前租户的工具 Draft。"""
+    return await service(container).get_tool(identity, tool_id)
+
+
+@router.put("/v1/tools/{tool_id}/draft", response_model=ToolDefinition, tags=["tools"])
+async def update_tool_draft(
+    tool_id: str,
+    request: ToolDraftUpdate,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> ToolDefinition:
+    """按 revision CAS 更新工具 Draft，不能影响已发布版本。"""
+    return await service(container).update_tool_draft(identity, tool_id, request, trace_id)
+
+
+@router.post(
+    "/v1/tools/{tool_id}/versions",
+    response_model=ToolVersion,
+    status_code=status.HTTP_201_CREATED,
+    tags=["tools"],
+)
+async def publish_tool_version(
+    tool_id: str,
+    request: ToolVersionPublish,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> ToolVersion:
+    """冻结 Draft 为不可变 Candidate Version。"""
+    return await service(container).publish_tool_version(identity, tool_id, request, trace_id)
+
+
+@router.get("/v1/tools/{tool_id}/versions", response_model=list[ToolVersion], tags=["tools"])
+async def list_tool_versions(
+    tool_id: str, identity: ManagementIdentity, container: Container
+) -> list[ToolVersion]:
+    """列出可用于审核与发布选择的版本历史。"""
+    return await service(container).list_tool_versions(identity, tool_id)
+
+
+@router.post(
+    "/v1/tools/{tool_id}/versions/{version_id}/review", response_model=ToolVersion, tags=["tools"]
+)
+async def review_tool_version(
+    tool_id: str,
+    version_id: str,
+    request: ToolReviewCreate,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> ToolVersion:
+    """记录独立审核结论；发布只能接受 Approved 版本。"""
+    return await service(container).review_tool_version(
+        identity, tool_id, version_id, request, trace_id
+    )
+
+
+@router.post(
+    "/v1/tools/{tool_id}/versions/{version_id}/release", response_model=ToolVersion, tags=["tools"]
+)
+async def release_tool_version(
+    tool_id: str,
+    version_id: str,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> ToolVersion:
+    """生成唯一 Active Runtime Snapshot，供 Gateway 的只读投影消费。"""
+    return await service(container).release_tool_version(identity, tool_id, version_id, trace_id)
+
+
+@router.post(
+    "/v1/tools/{tool_id}/versions/{version_id}/status", response_model=ToolVersion, tags=["tools"]
+)
+async def update_tool_version_status(
+    tool_id: str,
+    version_id: str,
+    request: ToolVersionStatusUpdate,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> ToolVersion:
+    """弃用或退役已发布工具，退役会撤销运行时发布。"""
+    return await service(container).update_tool_version_status(
+        identity, tool_id, version_id, request, trace_id
+    )
 
 
 @router.post(
@@ -466,6 +586,24 @@ async def promote_release(
 
 
 @router.post(
+    "/v1/releases/{release_id}/governance-action",
+    response_model=ReleaseManifest,
+    tags=["releases"],
+)
+async def apply_governance_release_action(
+    release_id: str,
+    request: GovernanceReleaseAction,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> ReleaseManifest:
+    """由 Control Plane 拉取 GateDecision 后推进、暂停或回滚，Governance 不直接修改流量。"""
+    return await service(container).apply_governance_release_action(
+        identity, release_id, request, trace_id
+    )
+
+
+@router.post(
     "/v1/releases/{release_id}/pause",
     response_model=ReleaseManifest,
     tags=["releases"],
@@ -556,9 +694,7 @@ async def list_tenants(identity: ManagementIdentity, container: Container) -> li
 
 
 @router.get("/v1/tenants/{tenant_id}", response_model=Tenant, tags=["tenants"])
-async def get_tenant(
-    tenant_id: str, identity: ManagementIdentity, container: Container
-) -> Tenant:
+async def get_tenant(tenant_id: str, identity: ManagementIdentity, container: Container) -> Tenant:
     """读取一个租户的元数据与状态，不返回任何用户或业务内容。"""
     return await service(container).get_tenant(identity, tenant_id)
 

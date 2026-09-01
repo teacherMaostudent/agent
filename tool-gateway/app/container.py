@@ -14,8 +14,9 @@ from app.core.config import Settings, get_settings
 from app.governance import GovernanceOutboxPublisher
 from app.infrastructure.postgres_repository import PostgresRepository
 from app.infrastructure.repository import SqliteRepository
-from app.registry import ToolRegistry, load_registry
+from app.registry import ToolRegistry
 from app.resilience import RedisFixedWindowRateLimiter
+from app.runtime_projection import load_runtime_projection
 
 
 class Container:
@@ -36,11 +37,8 @@ class Container:
             if self.settings.database_backend == "postgres"
             else SqliteRepository(self.settings.database_path)
         )
-        self.registry = registry or load_registry(
-            self.settings.tools_config_path,
-            allow_private_networks=self.settings.allow_private_networks,
-            max_response_bytes=self.settings.max_response_bytes,
-            schema_dir=self.settings.contracts_schema_dir,
+        self.registry = registry or load_runtime_projection(
+            self.settings,
             client_options=mtls_httpx_options(
                 enabled=self.settings.mtls_enabled,
                 ca_file=self.settings.mtls_ca_file,

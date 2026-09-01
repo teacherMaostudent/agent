@@ -8,6 +8,7 @@ from platform_infra.mtls import mtls_httpx_options
 from app.clients import ControlPlaneClient, GovernanceClient, RuntimeClient
 from app.main_settings import Settings
 from app.repository import ExperimentRepository, PostgresExperimentRepository
+from app.sandbox import DockerSandboxProvider, MicroVmSandboxProvider, SandboxProvider
 from app.service import AgentLabService
 from app.temporal_queue import LocalExperimentQueue, TemporalExperimentQueue
 from app.worker import AgentLabWorker
@@ -33,6 +34,13 @@ class AgentLabContainer:
             cert_file=settings.mtls_cert_file,
             key_file=settings.mtls_key_file,
         )
+        sandbox: SandboxProvider
+        if settings.sandbox_provider.lower() == "docker":
+            sandbox = DockerSandboxProvider()
+        elif settings.sandbox_provider.lower() == "microvm":
+            sandbox = MicroVmSandboxProvider()
+        else:
+            raise ValueError("AGENT_LAB_SANDBOX_PROVIDER must be docker or microvm")
         self.service = AgentLabService(
             self.repository,
             ControlPlaneClient(
@@ -56,6 +64,8 @@ class AgentLabContainer:
                 mtls_options,
             ),
             settings.max_cases,
+            sandbox=sandbox,
+            sandbox_image_allowlist=set(settings.sandbox_image_allowlist),
         )
         self.worker = AgentLabWorker(
             self.repository,

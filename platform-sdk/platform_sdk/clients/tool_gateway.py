@@ -270,5 +270,7 @@ def _execution_headers(context: ToolContext) -> dict[str, str]:
         "X-Connector-Grant": context.connector_grant,
         "X-Deadline-At": context.deadline_at,
         "X-Attempt-Budget-Remaining": str(context.attempt_budget_remaining),
+        "X-Execution-Mode": context.execution_mode,
+        "X-Simulation-Profile": json.dumps(context.simulation_profile, separators=(",", ":")),
     }
     return {key: value for key, value in values.items() if value}

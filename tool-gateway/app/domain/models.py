@@ -264,6 +264,8 @@ class InvocationContext(StrictModel):
     attempt_budget_remaining: int | None = Field(default=None, ge=0)
     connector_id: str = ""
     connector_grant: str = ""
+    execution_mode: Literal["production", "shadow", "simulated"] = "production"
+    simulation_profile: dict[str, Any] = Field(default_factory=dict)
 
 
 class ApprovalRecord(StrictModel):

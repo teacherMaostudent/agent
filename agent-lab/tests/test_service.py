@@ -1,8 +1,15 @@
 from pathlib import Path
 
 from app.main_settings import Settings
-from app.models import EvaluationBinding, ExperimentJobStatus, ExperimentPlan, ReplayCase
+from app.models import (
+    EvaluationBinding,
+    ExperimentJobStatus,
+    ExperimentPlan,
+    ReplayCase,
+    SandboxCase,
+)
 from app.repository import ExperimentRepository
+from app.sandbox import SandboxProvider, SandboxResult
 from app.service import AgentLabService
 from app.worker import AgentLabWorker
 
@@ -48,6 +55,20 @@ class FakeGovernance:
         """返回通过的 Hard Gate 结论。"""
         del tenant_id, run_id, request
         return {"id": "gate-1", "passed": True}
+
+
+class FakeSandbox(SandboxProvider):
+    """记录隔离请求而不启动真实容器，确保单测只验证 Agent Lab 编排语义。"""
+
+    def __init__(self, exit_code: int = 0) -> None:
+        """允许测试构造成功或受控失败的 Sandbox 结果。"""
+        self.exit_code = exit_code
+        self.requests = []
+
+    def execute(self, request):
+        """返回无敏感内容的固定结果，并保留请求以验证网络禁用和 argv 边界。"""
+        self.requests.append(request)
+        return SandboxResult(self.exit_code, "safe output", "", "fake")
 
 
 def test_replay_freezes_snapshot_runs_cases_and_delegates_gate(tmp_path: Path):
@@ -132,6 +153,79 @@ def test_trajectory_metrics_are_included_in_baseline_comparison(tmp_path: Path):
     assert report["current"]["taskSuccessRate"] == 1.0
     assert report["current"]["totalToolCalls"] == 2
     assert report["baseline"]["totalToolCalls"] == 3
+
+
+def test_sandbox_cases_are_allowlisted_summarized_and_block_failed_experiment(tmp_path: Path):
+    """Sandbox 用例必须无网络运行，原始输出不得进入记录，失败也不得进入质量门禁。"""
+    repository = ExperimentRepository(tmp_path / "sandbox-lab.db")
+    sandbox = FakeSandbox(exit_code=7)
+    service = AgentLabService(
+        repository,
+        FakeControlPlane(),
+        FakeRuntime(),
+        FakeGovernance(),
+        max_cases=10,
+        sandbox=sandbox,
+        sandbox_image_allowlist={"python:3.12-slim"},
+    )
+    record = service.create(
+        ExperimentPlan(
+            name="sandbox",
+            tenant_id="tenant-a",
+            agent_id="general-agent",
+            cases=[ReplayCase(case_id="replay-1", task="explain this")],
+            sandbox_cases=[
+                SandboxCase(
+                    case_id="sandbox-1",
+                    image="python:3.12-slim",
+                    command=["python", "-c", "print('ok')"],
+                )
+            ],
+        )
+    )
+
+    completed = service.run("tenant-a", record.experiment_id)
+
+    assert completed.status == "FAILED"
+    assert completed.error == "sandbox_validation_failed"
+    assert completed.sandbox_runs[0].status == "FAILED"
+    assert completed.sandbox_runs[0].stdout_sha256
+    assert "safe output" not in completed.model_dump_json()
+    assert sandbox.requests[0].network == "none"
+
+
+def test_sandbox_rejects_unallowlisted_image_without_starting_provider(tmp_path: Path):
+    """实验创建可登记请求，但执行前必须通过 Worker 的镜像白名单边界。"""
+    sandbox = FakeSandbox()
+    service = AgentLabService(
+        ExperimentRepository(tmp_path / "sandbox-denied.db"),
+        FakeControlPlane(),
+        FakeRuntime(),
+        FakeGovernance(),
+        max_cases=10,
+        sandbox=sandbox,
+        sandbox_image_allowlist={"python:3.12-slim"},
+    )
+    record = service.create(
+        ExperimentPlan(
+            name="sandbox-denied",
+            tenant_id="tenant-a",
+            agent_id="general-agent",
+            cases=[ReplayCase(case_id="replay-1", task="explain this")],
+            sandbox_cases=[
+                SandboxCase(
+                    case_id="sandbox-1",
+                    image="untrusted:latest",
+                    command=["echo", "unsafe"],
+                )
+            ],
+        )
+    )
+
+    failed = service.run("tenant-a", record.experiment_id)
+
+    assert failed.sandbox_runs[0].error == "sandbox_image_not_allowlisted"
+    assert not sandbox.requests
 
 
 def test_skill_replay_resolves_exact_artifact_and_uses_governed_runtime(tmp_path: Path):

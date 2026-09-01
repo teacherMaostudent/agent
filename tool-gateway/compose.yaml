@@ -4,7 +4,9 @@ services:
     restart: unless-stopped
     environment:
       TOOL_GATEWAY_DATABASE_PATH: /service/data/tool-gateway.db
-      TOOL_GATEWAY_TOOLS_CONFIG_PATH: /service/config/tools.json
+      # Standalone local compose uses a previously published projection, never a mutable Draft.
+      TOOL_GATEWAY_CATALOG_PROJECTION_MODE: file
+      TOOL_GATEWAY_CATALOG_PROJECTION_CACHE_PATH: /service/config/tools.json
       TOOL_GATEWAY_REQUIRE_SERVICE_AUTH: "true"
       TOOL_GATEWAY_SERVICE_API_KEY: ${TOOL_GATEWAY_SERVICE_API_KEY:?set TOOL_GATEWAY_SERVICE_API_KEY}
       TOOL_GATEWAY_ADMIN_API_KEY: ${TOOL_GATEWAY_ADMIN_API_KEY:?set TOOL_GATEWAY_ADMIN_API_KEY}

@@ -31,6 +31,67 @@ CREATE TABLE IF NOT EXISTS agent_versions (
 CREATE INDEX IF NOT EXISTS idx_agent_versions_lookup
     ON agent_versions (tenant_id, agent_id, published_at DESC);
 
+-- Tool assets follow the same draft -> immutable version -> reviewed release boundary as agents.
+CREATE TABLE IF NOT EXISTS tools (
+    tenant_id TEXT NOT NULL,
+    tool_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    definition_json TEXT NOT NULL,
+    owner_team TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, tool_id)
+);
+
+CREATE TABLE IF NOT EXISTS tool_versions (
+    tenant_id TEXT NOT NULL,
+    version_id TEXT PRIMARY KEY,
+    tool_id TEXT NOT NULL,
+    semantic_version TEXT NOT NULL,
+    source_revision INTEGER NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    runtime_definition_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    change_summary TEXT NOT NULL,
+    published_by TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (tenant_id, tool_id, semantic_version),
+    FOREIGN KEY (tenant_id, tool_id) REFERENCES tools (tenant_id, tool_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tool_versions_lookup
+    ON tool_versions (tenant_id, tool_id, published_at DESC);
+
+CREATE TABLE IF NOT EXISTS tool_reviews (
+    review_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    tool_id TEXT NOT NULL,
+    version_id TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('approve', 'reject')),
+    comment TEXT NOT NULL,
+    reviewer_id TEXT NOT NULL,
+    reviewed_at TEXT NOT NULL,
+    FOREIGN KEY (version_id) REFERENCES tool_versions (version_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tool_reviews_version ON tool_reviews (tenant_id, version_id, reviewed_at DESC);
+
+CREATE TABLE IF NOT EXISTS tool_runtime_releases (
+    release_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    tool_id TEXT NOT NULL,
+    version_id TEXT NOT NULL,
+    snapshot_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('active', 'retired')),
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    retired_at TEXT,
+    FOREIGN KEY (version_id) REFERENCES tool_versions (version_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_active_release
+    ON tool_runtime_releases (tenant_id, tool_id) WHERE status = 'active';
+
 CREATE TABLE IF NOT EXISTS skills (
     tenant_id TEXT NOT NULL,
     skill_id TEXT NOT NULL,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
 from contextlib import suppress
@@ -10,7 +11,14 @@ from contextlib import suppress
 from app.application.control_plane_service import ControlPlaneService
 from app.application.model_release_service import ModelReleaseService
 from app.core.config import Settings
-from app.domain.models import Tenant, utc_now
+from app.domain.models import (
+    Identity,
+    Tenant,
+    ToolDraftCreate,
+    ToolReviewCreate,
+    ToolVersionPublish,
+    utc_now,
+)
 from app.infrastructure.platform_clients import (
     AgentLabClient,
     GatewayPolicyClient,
@@ -22,6 +30,7 @@ from app.infrastructure.runtime_executor_catalog import RuntimeExecutorCatalog
 from app.infrastructure.sqlite_repository import SqliteRepository
 from app.infrastructure.temporal_release import TemporalReleaseOrchestrator
 from app.infrastructure.tool_catalog import ToolCatalogValidator
+from app.infrastructure.tool_runtime_projection import ToolRuntimeProjectionPublisher
 
 
 class AppContainer:
@@ -63,6 +72,10 @@ class AppContainer:
             ),
             gateway_policy=self.gateway_policy if settings.llm_quota_sync_enabled else None,
         )
+        # Published projection is Gateway input; Draft and review data cannot cross this boundary.
+        self.tool_runtime_projection = ToolRuntimeProjectionPublisher(
+            self.repository, settings.contracts_schema_dir
+        )
         self.model_releases = ModelReleaseService(
             self.repository, settings, self.gateway_policy, self.governance_quality, self.model_lab
         )
@@ -100,8 +113,51 @@ class AppContainer:
                     updated_at=now,
                 )
             )
+            await self._bootstrap_tool_assets()
         if not self.settings.temporal_enabled:
             self._monitor_task = asyncio.create_task(self._monitor_model_releases())
+
+    async def _bootstrap_tool_assets(self) -> None:
+        """仅为显式本地 demo 租户导入历史 JSON 为正式 Tool Release。
+
+        该迁移幂等且不会覆盖管理员维护的 Draft/Version；生产环境未设置
+        bootstrap_tenant_id，因此不会从文件隐式创建工具资产。
+        """
+        path = self.settings.tool_catalog_path
+        if not path.exists():
+            return
+        identity = Identity(
+            tenant_id=self.settings.bootstrap_tenant_id,
+            user_id="bootstrap",
+            roles=["agent-admin"],
+        )
+        for definition in json.loads(path.read_text(encoding="utf-8")).get("tools", []):
+            tool_id = str(definition.get("name", ""))
+            if not tool_id or await self.repository.get_tool(identity.tenant_id, tool_id):
+                continue
+            try:
+                await self.service.create_tool(
+                    identity,
+                    ToolDraftCreate(tool_id=tool_id, definition=definition, owner_team="bootstrap"),
+                    "bootstrap-tool-assets",
+                )
+                version = await self.service.publish_tool_version(
+                    identity,
+                    tool_id,
+                    ToolVersionPublish(semantic_version=str(definition["version"]), change_summary="local seed"),
+                    "bootstrap-tool-assets",
+                )
+                await self.service.review_tool_version(
+                    identity, tool_id, version.version_id,
+                    ToolReviewCreate(decision="approve", comment="local bootstrap seed"),
+                    "bootstrap-tool-assets",
+                )
+                await self.service.release_tool_version(
+                    identity, tool_id, version.version_id, "bootstrap-tool-assets"
+                )
+            except Exception:
+                # Startup must not mask a malformed explicit local seed; fail ready instead.
+                raise
 
     async def stop(self) -> None:
         """按逆序停止后台任务并关闭连接池；关闭过程不推进任何业务状态。

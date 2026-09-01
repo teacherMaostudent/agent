@@ -393,6 +393,9 @@ services:
       AGENT_LAB_MTLS_CA_FILE: /run/secrets/agent_ca_pem
       AGENT_LAB_MTLS_CERT_FILE: /run/secrets/agent_lab_cert
       AGENT_LAB_MTLS_KEY_FILE: /run/secrets/agent_lab_key
+      # Production Sandbox cases fail closed until a dedicated MicroVM runner is installed.
+      # Do not mount a Docker socket into either Agent Lab workload.
+      AGENT_LAB_SANDBOX_PROVIDER: ${AGENT_LAB_SANDBOX_PROVIDER:-microvm}
       PLATFORM_MTLS_SERVER_ENABLED: "true"
       PLATFORM_MTLS_CA_FILE: /run/secrets/agent_ca_pem
       PLATFORM_MTLS_CERT_FILE: /run/secrets/agent_lab_cert
@@ -461,7 +464,7 @@ services:
       - control_plane_key
     depends_on: [postgres, temporal, otel-collector]
     volumes:
-      - ./tool-gateway/config/tools.json:/service/tool-catalog/tools.json:ro
+      - ./agent-control-plane/config/tool-catalog.json:/service/tool-catalog/tools.json:ro
       - ./agent-control-plane/config/runtime-executors.json:/service/runtime-catalog/runtime-executors.json:ro
       - ./platform-contracts/schemas:/service/platform-contracts/schemas:ro
 
@@ -743,6 +746,10 @@ services:
       TOOL_GATEWAY_ENVIRONMENT: production
       TOOL_GATEWAY_DATABASE_BACKEND: postgres
       TOOL_GATEWAY_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/agent_platform
+      TOOL_GATEWAY_CATALOG_PROJECTION_MODE: control_plane
+      TOOL_GATEWAY_CATALOG_PROJECTION_CACHE_PATH: /service/data/tool-runtime-projection.json
+      TOOL_GATEWAY_CONTROL_PLANE_BASE_URL: https://agent-control-plane:8080
+      TOOL_GATEWAY_CONTROL_PLANE_RUNTIME_API_KEY: ${CONTROL_PLANE_RUNTIME_API_KEY}
       TOOL_GATEWAY_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
       TOOL_GATEWAY_OIDC_ENABLED: "true"
       TOOL_GATEWAY_OIDC_ISSUER: ${OIDC_ISSUER}
@@ -776,9 +783,8 @@ services:
       - agent_ca_pem
       - tool_gateway_cert
       - tool_gateway_key
-    depends_on: [postgres, redis, opa, rag-query-api]
+    depends_on: [postgres, redis, opa, rag-query-api, agent-control-plane]
     volumes:
-      - ./tool-gateway/config/tools.json:/service/config/tools.json:ro
       - ./platform-contracts/schemas:/service/platform-contracts/schemas:ro
 
   llm-gateway:
