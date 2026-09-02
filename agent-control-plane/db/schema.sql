@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS releases (
     environment TEXT NOT NULL,
     rollout_percentage INTEGER NOT NULL,
     tenant_allowlist_json TEXT NOT NULL,
+    release_projection_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL,
     previous_release_id TEXT,
     reason TEXT NOT NULL,

@@ -49,6 +49,15 @@ def _context(
     x_agent_id: str = Header(default="", alias="X-Agent-Id"),
     x_agent_version: str = Header(default="", alias="X-Agent-Version"),
     x_snapshot_id: str = Header(default="", alias="X-Snapshot-Id"),
+    x_release_id: str = Header(default="", alias="X-Release-Id"),
+    x_release_stage: str = Header(default="production", alias="X-Release-Stage"),
+    x_release_projection_revision: int = Header(
+        default=1, ge=1, alias="X-Release-Projection-Revision"
+    ),
+    x_traffic_policy_version: str = Header(default="traffic-policy/v1", alias="X-Traffic-Policy-Version"),
+    x_side_effect_policy_version: str = Header(
+        default="side-effect-policy/v1", alias="X-Side-Effect-Policy-Version"
+    ),
     x_connector_id: str = Header(default="", alias="X-Connector-Id"),
     x_connector_grant: str = Header(default="", alias="X-Connector-Grant"),
     # FastAPI resolves this declarative dependency at request time; it is not
@@ -87,6 +96,11 @@ def _context(
         agent_id=x_agent_id,
         agent_version=x_agent_version,
         snapshot_id=x_snapshot_id,
+        release_id=x_release_id,
+        release_stage=x_release_stage,
+        release_projection_revision=x_release_projection_revision,
+        traffic_policy_version=x_traffic_policy_version,
+        side_effect_policy_version=x_side_effect_policy_version,
         connector_id=x_connector_id,
         connector_grant=x_connector_grant,
         deadline_at=x_deadline_at,

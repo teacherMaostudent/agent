@@ -204,11 +204,21 @@ class EvaluationService:
             # online windows compare canary and baseline without inspecting prompt content.
             "releaseId": request.get("releaseId"),
             "snapshotId": request.get("snapshotId"),
+            "releaseStage": request.get("releaseStage", "production"),
+            "releaseProjectionRevision": request.get("releaseProjectionRevision", 1),
             # These flags are emitted by Runtime/Tool policy events after deterministic
             # enforcement; governance treats any one of them as an immediate hard stop.
             "forbiddenTool": bool(request.get("forbiddenTool")),
             "piiLeak": bool(request.get("piiLeak")),
             "crossTenantAccess": bool(request.get("crossTenantAccess")),
+            # Shadow/Canary metrics are recorded as facts or human-reviewed labels.  Missing
+            # labels are not silently counted as correct by a promotion gate.
+            "decisionCorrect": request.get("decisionCorrect"),
+            "proposedSideEffect": request.get("proposedSideEffect"),
+            "expectedSideEffect": request.get("expectedSideEffect"),
+            "sideEffectArgumentsCorrect": request.get("sideEffectArgumentsCorrect"),
+            "authorizationAgreement": request.get("authorizationAgreement"),
+            "unauthorizedTool": bool(request.get("unauthorizedTool")),
             "request": protected_request,
             "response": protected_response,
             "success": bool(request.get("success")),
@@ -288,38 +298,153 @@ class EvaluationService:
             item for item in await self._repository.list_documents(tenant_id, ONLINE_SAMPLE, 10_000)
             if item.get("releaseId") == release_id and item.get("snapshotId") == snapshot_id
         ]
+        baseline_release_id = str(request.get("baselineReleaseId") or "")
+        baseline_snapshot_id = str(request.get("baselineSnapshotId") or "")
+        baseline_samples = [
+            item
+            for item in await self._repository.list_documents(tenant_id, ONLINE_SAMPLE, 10_000)
+            if baseline_release_id
+            and item.get("releaseId") == baseline_release_id
+            and item.get("snapshotId") == baseline_snapshot_id
+        ]
         policy = request.get("policy") or {}
         min_samples = max(1, int(policy.get("minSamples", 100)))
+        min_duration_seconds = max(0, int(policy.get("minDurationSeconds", 0)))
         max_error_rate = float(policy.get("maxErrorRate", 0.05))
         max_latency_ms = float(policy.get("maxP95LatencyMs", 15_000))
         max_cost = float(policy.get("maxAverageCost", 3.0))
         forbidden = sum(bool(item.get("forbiddenTool")) for item in samples)
         pii = sum(bool(item.get("piiLeak")) for item in samples)
         cross_tenant = sum(bool(item.get("crossTenantAccess")) for item in samples)
+        unauthorized = sum(bool(item.get("unauthorizedTool")) for item in samples)
         failures = sum(not bool(item.get("success")) for item in samples)
         latencies = sorted(float(item.get("latencyMs") or 0) for item in samples)
         p95 = latencies[max(0, math.ceil(len(latencies) * 0.95) - 1)] if latencies else 0.0
         average_cost = _average(float(item.get("cost") or 0) for item in samples)
+        decision_labels = [item["decisionCorrect"] for item in samples if isinstance(item.get("decisionCorrect"), bool)]
+        authorization_labels = [
+            item["authorizationAgreement"]
+            for item in samples
+            if isinstance(item.get("authorizationAgreement"), bool)
+        ]
+        side_effect_proposals = [
+            item
+            for item in samples
+            if isinstance(item.get("proposedSideEffect"), bool)
+            and isinstance(item.get("expectedSideEffect"), bool)
+        ]
+        false_side_effects = sum(
+            bool(item["proposedSideEffect"]) and not bool(item["expectedSideEffect"])
+            for item in side_effect_proposals
+        )
+        argument_labels = [
+            item["sideEffectArgumentsCorrect"]
+            for item in samples
+            if isinstance(item.get("sideEffectArgumentsCorrect"), bool)
+        ]
+        first_seen = min((str(item.get("createdAt") or _now()) for item in samples), default=_now())
+        try:
+            observed_seconds = max(
+                0.0, (datetime.now(UTC) - datetime.fromisoformat(first_seen)).total_seconds()
+            )
+        except ValueError:
+            observed_seconds = 0.0
+        baseline_failures = sum(not bool(item.get("success")) for item in baseline_samples)
+        baseline_error_rate = (
+            baseline_failures / len(baseline_samples) if baseline_samples else None
+        )
+        baseline_latencies = sorted(float(item.get("latencyMs") or 0) for item in baseline_samples)
+        baseline_p95 = (
+            baseline_latencies[max(0, math.ceil(len(baseline_latencies) * 0.95) - 1)]
+            if baseline_latencies
+            else None
+        )
+        baseline_average_cost = (
+            _average(float(item.get("cost") or 0) for item in baseline_samples)
+            if baseline_samples
+            else None
+        )
         reasons: list[str] = []
         action = "HOLD"
-        if forbidden or pii or cross_tenant:
+        if forbidden or pii or cross_tenant or unauthorized:
             action = "ROLLBACK"
             reasons.append("hard safety violation in online window")
         elif len(samples) < min_samples:
             reasons.append("minimum sample size not reached")
+        elif observed_seconds < min_duration_seconds:
+            reasons.append("minimum observation duration not reached")
+        elif decision_labels and (
+            sum(bool(value) for value in decision_labels) / len(decision_labels)
+            < float(policy.get("minDecisionAgreement", 0.0))
+        ):
+            action = "PAUSE"
+            reasons.append("decision agreement is below policy")
+        elif authorization_labels and (
+            sum(bool(value) for value in authorization_labels) / len(authorization_labels)
+            < float(policy.get("minAuthorizationAgreement", 0.0))
+        ):
+            action = "PAUSE"
+            reasons.append("authorization agreement is below policy")
+        elif side_effect_proposals and (
+            false_side_effects / len(side_effect_proposals)
+            > float(policy.get("maxFalseSideEffectRate", 1.0))
+        ):
+            action = "ROLLBACK"
+            reasons.append("false side-effect rate exceeds policy")
+        elif argument_labels and (
+            sum(bool(value) for value in argument_labels) / len(argument_labels)
+            < float(policy.get("minSideEffectArgumentAccuracy", 0.0))
+        ):
+            action = "PAUSE"
+            reasons.append("side-effect argument accuracy is below policy")
         elif failures / len(samples) > max_error_rate:
             action = "PAUSE"
             reasons.append("error rate exceeds policy")
+        elif baseline_error_rate is not None and (
+            failures / len(samples) - baseline_error_rate
+            > float(policy.get("maxErrorRateRegression", 1.0))
+        ):
+            action = "HOLD"
+            reasons.append("error rate regressed versus baseline")
         elif p95 > max_latency_ms or average_cost > max_cost:
             reasons.append("latency or cost exceeds promotion policy")
+        elif baseline_p95 is not None and (
+            p95 - baseline_p95 > float(policy.get("maxP95LatencyRegressionMs", float("inf")))
+        ):
+            reasons.append("latency regressed versus baseline")
+        elif baseline_average_cost is not None and (
+            average_cost - baseline_average_cost
+            > float(policy.get("maxAverageCostRegression", float("inf")))
+        ):
+            reasons.append("cost regressed versus baseline")
         else:
             action = "PROMOTE"
         window = {
             "id": f"window_{uuid4().hex}", "tenantId": tenant_id, "releaseId": release_id,
             "snapshotId": snapshot_id, "sampleCount": len(samples), "failedCount": failures,
             "forbiddenToolCount": forbidden, "piiLeakCount": pii, "crossTenantCount": cross_tenant,
+            "unauthorizedToolCount": unauthorized,
             "errorRate": round(failures / len(samples), 4) if samples else 0.0,
-            "p95LatencyMs": p95, "averageCost": average_cost, "policy": policy, "createdAt": _now(),
+            "p95LatencyMs": p95, "averageCost": average_cost,
+            "observationDurationSeconds": round(observed_seconds, 3),
+            "decisionAgreement": _average(bool(value) for value in decision_labels) if decision_labels else None,
+            "authorizationAgreement": _average(bool(value) for value in authorization_labels) if authorization_labels else None,
+            "falseSideEffectRate": (
+                round(false_side_effects / len(side_effect_proposals), 4)
+                if side_effect_proposals else None
+            ),
+            "sideEffectArgumentAccuracy": (
+                _average(bool(value) for value in argument_labels) if argument_labels else None
+            ),
+            "baseline": {
+                "releaseId": baseline_release_id or None,
+                "snapshotId": baseline_snapshot_id or None,
+                "sampleCount": len(baseline_samples),
+                "errorRate": baseline_error_rate,
+                "p95LatencyMs": baseline_p95,
+                "averageCost": baseline_average_cost,
+            },
+            "policy": policy, "createdAt": _now(),
         }
         await self._repository.upsert_document(tenant_id, ONLINE_WINDOW, window["id"], window)
         decision = {

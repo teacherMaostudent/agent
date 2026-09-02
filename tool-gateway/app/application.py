@@ -29,6 +29,7 @@ from app.domain.models import (
     InvocationRequest,
     InvocationResponse,
     InvocationStatus,
+    SideEffectClass,
     ToolSpec,
 )
 from app.infrastructure.repository import SqliteRepository
@@ -177,6 +178,7 @@ class ToolExecutionService:
             tool_name=spec.name,
             tool_version=spec.version,
             authorization=self._authorization_facts(spec, context, decision="ALLOW"),
+            execution_receipt=self._execution_receipt(spec, context, "PREPARED"),
         )
         attempts = 0
         try:
@@ -186,12 +188,18 @@ class ToolExecutionService:
             self.circuit_breaker.allow(breaker_key, spec.breaker_reset_seconds)
             if self._must_simulate(spec, context):
                 output, attempts = self._simulated_output(spec, payload.arguments, context), 1
+                invocation.execution_receipt = self._execution_receipt(
+                    spec, context, "SIMULATED", commit_performed=False
+                )
             else:
                 output, attempts = await self._execute_with_retry(
                     spec,
                     adapter,
                     payload.arguments,
                     context,
+                )
+                invocation.execution_receipt = self._execution_receipt(
+                    spec, context, "EXECUTED", commit_performed=True
                 )
             self._validate_json(spec.output_schema, output, arguments=False)
             invocation.output = output
@@ -242,10 +250,52 @@ class ToolExecutionService:
 
     @staticmethod
     def _must_simulate(spec: ToolSpec, context: InvocationContext) -> bool:
-        """Shadow 只允许真实只读调用；实验 simulated 模式绝不触达任何外部 Adapter。"""
-        return context.execution_mode == "simulated" or (
-            context.execution_mode == "shadow" and spec.risk.value != "read_only"
-        )
+        """Shadow 只允许无业务副作用的真实执行；实验模拟绝不触达外部 Adapter。
+
+        ``commit_capability`` 是适配器能力声明而不是承诺。当前 Gateway 尚未实现通用
+        Prepare/Commit 或厂商 Dry-Run 调用，因此即使 Catalog 声明这些能力，Shadow 仍
+        保守模拟写操作，避免把配置名称误当成安全事务协议。
+        """
+        if context.execution_mode == "simulated":
+            return True
+        if context.release_stage == "shadow" or context.execution_mode == "shadow":
+            return spec.side_effect_class not in {
+                SideEffectClass.PURE_READ,
+                SideEffectClass.COMPUTE,
+            }
+        if context.release_stage == "canary":
+            # A generic HTTP/MCP adapter has no proof that a request supports transactional
+            # Prepare/Commit. Consequently every write remains simulated in Canary as well;
+            # real canary writes require a separately reviewed adapter implementation that
+            # exposes an explicit protocol, not a catalog string that merely claims one.
+            return spec.side_effect_class not in {
+                SideEffectClass.PURE_READ,
+                SideEffectClass.COMPUTE,
+            }
+        return False
+
+    @staticmethod
+    def _execution_receipt(
+        spec: ToolSpec,
+        context: InvocationContext,
+        outcome: str,
+        *,
+        commit_performed: bool = False,
+    ) -> dict[str, Any]:
+        """生成无参数、可审计的 Tool ExecutionReceipt。
+
+        Receipt 只陈述 Gateway 实际执行到的边界：模拟成功并不意味着生产调用会成功。
+        参数内容继续遵循既有脱敏审计策略，不复制进响应或治理指标。
+        """
+        return {
+            "release_id": context.release_id,
+            "release_stage": context.release_stage,
+            "release_projection_revision": context.release_projection_revision,
+            "side_effect_class": spec.side_effect_class.value,
+            "commit_capability": spec.commit_capability.value,
+            "outcome": outcome,
+            "commit_performed": commit_performed,
+        }
 
     @staticmethod
     def _simulated_output(
@@ -260,6 +310,8 @@ class ToolExecutionService:
             return profile["output"]
         return {
             "simulated": True,
+            "simulation_outcome": "SUCCESS",
+            "simulation_fidelity": "catalog_contract_only",
             "would_execute": spec.name,
             "arguments_sha256": hashlib.sha256(
                 json.dumps(arguments, sort_keys=True, default=str).encode()

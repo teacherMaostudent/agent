@@ -28,6 +28,28 @@ class ToolRisk(StrEnum):
     HUMAN_APPROVAL_REQUIRED = "human_approval_required"
 
 
+class SideEffectClass(StrEnum):
+    """业务副作用语义，来自已发布 Tool Catalog 而非模型或调用方。"""
+
+    PURE_READ = "pure_read"
+    COMPUTE = "compute"
+    REVERSIBLE_WRITE = "reversible_write"
+    EXTERNAL_REVERSIBLE = "external_reversible"
+    IRREVERSIBLE_WRITE = "irreversible_write"
+    CRITICAL_SIDE_EFFECT = "critical_side_effect"
+
+
+class CommitCapability(StrEnum):
+    """工具适配器实际支持的安全执行能力；平台不能替下游凭空提供事务回滚。"""
+
+    NONE = "none"
+    SIMULATOR = "simulator"
+    PROVIDER_DRY_RUN = "provider_dry_run"
+    PREPARE_ONLY = "prepare_only"
+    PREPARE_COMMIT = "prepare_commit"
+    COMPENSATABLE = "compensatable"
+
+
 class InvocationStatus(StrEnum):
     SUCCEEDED = "SUCCEEDED"
     PENDING_APPROVAL = "PENDING_APPROVAL"
@@ -98,6 +120,8 @@ class ToolSpec(StrictModel):
     output_schema: dict[str, Any] | None = None
     required_permissions: list[str] = Field(default_factory=list)
     risk: ToolRisk = ToolRisk.READ_ONLY
+    side_effect_class: SideEffectClass | None = None
+    commit_capability: CommitCapability = CommitCapability.NONE
     approval_required: bool = False
     enabled_tenants: list[str] = Field(default_factory=lambda: ["*"])
     idempotent: bool = True
@@ -136,6 +160,22 @@ class ToolSpec(StrictModel):
             raise ValueError("high-risk tools must set approval_required=true")
         if self.risk != ToolRisk.READ_ONLY and self.retry_attempts > 1 and not self.idempotent:
             raise ValueError("non-idempotent write tools cannot enable automatic retries")
+        # Old Catalog versions did not carry an explicit class.  Preserve compatibility with
+        # a conservative mapping: every write is treated as irreversible until an owner
+        # publishes a narrower, reviewed declaration.
+        if self.side_effect_class is None:
+            self.side_effect_class = (
+                SideEffectClass.PURE_READ
+                if self.risk is ToolRisk.READ_ONLY
+                else SideEffectClass.IRREVERSIBLE_WRITE
+            )
+        if self.side_effect_class in {SideEffectClass.PURE_READ, SideEffectClass.COMPUTE}:
+            if self.risk is not ToolRisk.READ_ONLY:
+                raise ValueError("read/compute side-effect classes require read_only risk")
+        elif self.commit_capability is CommitCapability.NONE:
+            # A write without an explicit execution facility may run in Production, but is
+            # never eligible for a real Shadow write.  Gateway will simulate it fail-closed.
+            pass
         return self
 
     @property
@@ -230,6 +270,9 @@ class InvocationResponse(StrictModel):
     attempt_count: int = 0
     duration_ms: int = 0
     authorization: dict[str, Any] | None = None
+    # A receipt records what Gateway actually did.  It deliberately does not claim that a
+    # simulator outcome predicts future production success.
+    execution_receipt: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolExecutionState(StrictModel):
@@ -260,6 +303,11 @@ class InvocationContext(StrictModel):
     agent_id: str = ""
     agent_version: str = ""
     snapshot_id: str = ""
+    release_id: str = ""
+    release_stage: Literal["shadow", "canary", "production"] = "production"
+    release_projection_revision: int = Field(default=1, ge=1)
+    traffic_policy_version: str = "traffic-policy/v1"
+    side_effect_policy_version: str = "side-effect-policy/v1"
     deadline_at: datetime | None = None
     attempt_budget_remaining: int | None = Field(default=None, ge=0)
     connector_id: str = ""

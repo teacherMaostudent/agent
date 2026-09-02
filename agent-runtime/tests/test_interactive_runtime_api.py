@@ -42,12 +42,15 @@ class _Harness:
 def test_interactive_submit_freezes_release_and_returns_run_id() -> None:
     """交互任务必须先冻结发布，再进入唯一异步执行路径。"""
     queue = _Queue()
+    mirrors: list[dict] = []
     container = SimpleNamespace(
         settings=SimpleNamespace(oidc_enabled=False),
         agent_harness=_Harness(),
         capability=lambda capability: queue
         if capability == RuntimeCapability.WORKFLOW
         else None,
+        submit_shadow_mirror=lambda submission: mirrors.append(submission)
+        or {"run_id": "shadow-run", "status": "QUEUED"},
     )
     request = SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace(container=container)), scope={}
@@ -67,6 +70,9 @@ def test_interactive_submit_freezes_release_and_returns_run_id() -> None:
     assert queue.submission["release_resolution"]["version_id"] == "version-1"
     assert queue.submission["interaction_channel"] == "desktop"
     assert queue.submission["permissions"] == "file:scan,rag:read"
+    assert result["shadow_mirror"] == {"run_id": "shadow-run", "status": "QUEUED"}
+    assert mirrors[0]["source_run_id"] == "run-desktop"
+    assert mirrors[0]["request_id"] == "shadow:request-a"
 
 
 def test_interactive_submit_reports_missing_release_as_404() -> None:

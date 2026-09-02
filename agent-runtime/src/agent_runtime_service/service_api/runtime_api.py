@@ -957,6 +957,20 @@ def _trusted_identity(
     return tenant_id, user_id, permissions
 
 
+def _trusted_subject_roles(request: Request, roles_header: str) -> frozenset[str]:
+    """返回 OIDC 中间件重建的角色，仅作为发布灰度的收窄信号。
+
+    角色不会被用于工具授权，也不会让请求获得新的 Snapshot 能力。生产 OIDC 开启时，
+    中间件已经移除来路 Header 并从已验签 JWT 重建该字段；本地模式仅用于联调。
+    """
+    value = roles_header if isinstance(roles_header, str) else ""
+    if request.app.state.container.settings.oidc_enabled and not isinstance(
+        request.scope.get("auth.claims"), dict
+    ):
+        raise HTTPException(status_code=401, detail="verified OIDC identity is required")
+    return frozenset(item.strip() for item in value.split(",") if item.strip())
+
+
 @router.get("/model-routes")
 def list_published_model_routes(
     request: Request,
@@ -1021,6 +1035,7 @@ def run_agent(
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
     x_permissions: str = Header(default="rag:read", alias="X-Permissions"),
+    x_roles: str = Header(default="", alias="X-Roles"),
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
     x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
     x_run_id: str | None = Header(default=None, alias="X-Run-Id"),
@@ -1043,6 +1058,7 @@ def run_agent(
     x_tenant_id, x_user_id, permissions = _trusted_identity(
         request, x_tenant_id, x_user_id, x_permissions
     )
+    subject_roles = _trusted_subject_roles(request, x_roles)
     if "rag:read" not in permissions:
         raise HTTPException(status_code=403, detail="rag:read permission is required")
     request_id = x_request_id or f"agent-{uuid4().hex}"
@@ -1058,6 +1074,7 @@ def run_agent(
             environment=payload.environment,
             session_id=session_id,
             trace_id=trace_id,
+            subject_roles=subject_roles,
         )
         loaded_snapshot = container.agent_harness.load_snapshot(
             resolution,
@@ -1097,6 +1114,7 @@ def run_agent(
         user_id=x_user_id,
         agent_id=payload.agent_id,
         loaded_snapshot=loaded_snapshot,
+        release_resolution=resolution,
         deadline_seconds=deadline_seconds,
         attempt_budget=_effective_attempt_budget(payload, runtime_limits, container.settings),
         run_id=x_run_id,
@@ -1260,6 +1278,11 @@ def run_agent(
                 "agent_id": execution.agent_id,
                 "agent_version": execution.agent_version,
                 "snapshot_id": execution.snapshot_id,
+                "release_id": execution.release_id,
+                "release_stage": execution.release_stage,
+                "release_projection_revision": execution.release_projection_revision,
+                "traffic_policy_version": execution.traffic_policy_version,
+                "side_effect_policy_version": execution.side_effect_policy_version,
                 "agent_snapshot": snapshot,
                 "compiled_plan": compiled_plan.model_dump(mode="json"),
                 "executor_profile": compiled_plan.executor_profile,
@@ -1393,6 +1416,7 @@ def submit_agent_run(
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
     x_permissions: str = Header(default="rag:read", alias="X-Permissions"),
+    x_roles: str = Header(default="", alias="X-Roles"),
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
     x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
 ) -> dict:
@@ -1400,6 +1424,7 @@ def submit_agent_run(
     x_tenant_id, x_user_id, trusted_permissions = _trusted_identity(
         request, x_tenant_id, x_user_id, x_permissions
     )
+    subject_roles = _trusted_subject_roles(request, x_roles)
     if "rag:read" not in trusted_permissions:
         raise HTTPException(status_code=403, detail="rag:read permission is required")
     request_id = x_request_id or f"agent-{uuid4().hex}"
@@ -1413,6 +1438,7 @@ def submit_agent_run(
         environment=payload.environment,
         session_id=payload.session_id or request_id,
         trace_id=x_trace_id or request_id,
+        subject_roles=subject_roles,
     )
     loaded = container.agent_harness.load_snapshot(
         resolution, tenant_id=x_tenant_id, agent_id=payload.agent_id
@@ -1422,12 +1448,13 @@ def submit_agent_run(
             status_code=409,
             detail="asynchronous /runs is reserved for durable-workflow releases",
         )
-    return _capability(container, RuntimeCapability.WORKFLOW).submit(
+    submitted = _capability(container, RuntimeCapability.WORKFLOW).submit(
         {
             "payload": payload.model_dump(mode="json"),
             "tenant_id": x_tenant_id,
             "user_id": x_user_id,
             "permissions": ",".join(sorted(trusted_permissions)),
+            "subject_roles": sorted(subject_roles),
             "request_id": request_id,
             "trace_id": x_trace_id or request_id,
             "data_region": loaded.plan.data_region,
@@ -1435,6 +1462,7 @@ def submit_agent_run(
             "release_resolution": resolution,
         }
     )
+    return submitted
 
 
 @router.post("/interactive-runs", status_code=status.HTTP_202_ACCEPTED)
@@ -1444,6 +1472,7 @@ def submit_interactive_agent_run(
     x_tenant_id: str = Header(default="default", alias="X-Tenant-Id"),
     x_user_id: str = Header(default="anonymous", alias="X-User-Id"),
     x_permissions: str = Header(default="rag:read", alias="X-Permissions"),
+    x_roles: str = Header(default="", alias="X-Roles"),
     x_request_id: str | None = Header(default=None, alias="X-Request-Id"),
     x_trace_id: str | None = Header(default=None, alias="X-Trace-Id"),
 ) -> dict:
@@ -1456,6 +1485,7 @@ def submit_interactive_agent_run(
     tenant_id, user_id, permissions = _trusted_identity(
         request, x_tenant_id, x_user_id, x_permissions
     )
+    subject_roles = _trusted_subject_roles(request, x_roles)
     if "rag:read" not in permissions:
         raise HTTPException(status_code=403, detail="rag:read permission is required")
     container = request.app.state.container
@@ -1469,6 +1499,7 @@ def submit_interactive_agent_run(
         environment=payload.environment,
         session_id=payload.session_id or request_id,
         trace_id=trace_id,
+        subject_roles=subject_roles,
     )
     try:
         loaded = container.agent_harness.load_snapshot(
@@ -1479,12 +1510,13 @@ def submit_interactive_agent_run(
             status_code=409,
             detail={"code": "snapshot_not_executable", "message": str(exc)},
         ) from exc
-    return _capability(container, RuntimeCapability.WORKFLOW).submit(
+    submitted = _capability(container, RuntimeCapability.WORKFLOW).submit(
         {
             "payload": payload.model_dump(mode="json"),
             "tenant_id": tenant_id,
             "user_id": user_id,
             "permissions": ",".join(sorted(permissions)),
+            "subject_roles": sorted(subject_roles),
             "request_id": request_id,
             "trace_id": trace_id,
             "data_region": loaded.plan.data_region,
@@ -1492,6 +1524,31 @@ def submit_interactive_agent_run(
             "interaction_channel": "desktop",
         }
     )
+    # Shadow is a best-effort, separately persisted replay.  The primary run already has a
+    # stable response here, so a disabled mirror, an absent candidate, or a later mirror failure
+    # cannot delay or change the user's task.  The mirror worker resolves a SHADOW-only Release
+    # itself and never reuses the primary session binding.
+    submit_shadow = getattr(container, "submit_shadow_mirror", None)
+    shadow = submit_shadow(
+        {
+            "run_id": f"shadow_{uuid4().hex}",
+            "source_run_id": submitted.get("run_id", ""),
+            "payload": payload.model_dump(mode="json"),
+            "tenant_id": tenant_id,
+            "user_id": "shadow-worker",
+            "permissions": ",".join(sorted(permissions)),
+            "subject_roles": sorted(subject_roles),
+            "request_id": f"shadow:{request_id}",
+            "trace_id": trace_id,
+            "data_region": loaded.plan.data_region,
+        }
+    ) if callable(submit_shadow) else None
+    if shadow:
+        submitted["shadow_mirror"] = {
+            "run_id": shadow.get("run_id", ""),
+            "status": shadow.get("status", "QUEUED"),
+        }
+    return submitted
 
 
 @router.post("/runs/{run_id}/resume")

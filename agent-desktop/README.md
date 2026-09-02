@@ -4,6 +4,27 @@
 保存连接凭证、转发 Runtime API、消费 SSE 与读取用户显式选择的有界目录清单；计划、
 模型、工具权限、审批、状态和审计仍由平台七个服务负责。
 
+## 为什么仍需要桌面端
+
+绝大多数对话、任务、审查和管理能力应由统一 Web 提供。Desktop 的必要性不来自“权限更高”，而来自浏览器
+无法安全、稳定完成的本地能力：用户显式选择目录、确认一次本机扫描、维持短期 Connector 心跳、展示本机任务
+状态以及导出诊断。没有这些需求时，业务用户直接使用 Web 即可；Desktop 是 Agent Workspace 的可选增强端，
+不是 Platform Console 的替代品。
+
+## 与七个服务的关系
+
+```text
+User → Electron Renderer → 受控 Preload API → Electron Main
+     → Runtime 用户 API → Planner / Harness / Executor
+     → Context / RAG / LLM Gateway / Tool Gateway / Governance
+
+本地目录 → 用户确认 → Connector 受控扫描 → Runtime Artifact Relay
+         → 审批后的 Ingestion → RAG 索引与 Evidence
+```
+
+Desktop 不直接调用模型厂商、数据库或 RAG 内部模块。所有远程操作仍使用发布快照规定的 Agent、工具、预算和
+权限；本地 Connector 只增加一个需要用户在场确认的执行位置，不扩大模型能力。
+
 ## 能力
 
 - 提交交互任务并立即获得稳定 `run_id`；
@@ -79,3 +100,16 @@ scope（例如 `workspace`），具体挂载与 `RAG_SCAN_ROOTS` 必须由部署
 默认 Compose 将仓库中的 `demo-workspace` 只读挂载为该 `workspace` scope，用于验证扫描
 链路；它不是用户所选目录的映射。要扫描真实业务目录，必须由管理员单独配置最小范围的
 只读挂载、`RAG_SCAN_ROOTS`、工具目录版本和对应 Release，再完成一次权限与审计验收。
+
+## Multi-Agent 与权限边界
+
+Desktop 可以展示一个父任务下多个 Agent/Session 的进度，但不会自行选择专家 Agent、修改协作拓扑或替子 Agent
+授权。父子 Run 的关系来自 Runtime，Release/Snapshot 来自 Control Plane，工具许可来自 Tool Gateway。桌面登录
+账号、租户成员关系和业务 `user_id` 仍由平台身份链解析，本地 Connector 配对不能升级为管理员权限。
+
+## 适用与不适用场景
+
+适合：本地源码/日志/文档的用户确认式扫描、桌面通知、离线诊断缓存、需要用户在场的敏感操作。
+
+不适合：Agent 发布、模型路由、租户权限管理、批量后台任务、无需本地文件的纯浏览器业务。后者应使用 Web，
+以减少安装、升级、系统兼容和终端安全成本。

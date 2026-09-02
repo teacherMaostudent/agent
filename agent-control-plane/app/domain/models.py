@@ -59,6 +59,14 @@ class ReleaseStatus(StrEnum):
     ROLLED_BACK = "rolled_back"
 
 
+class ReleaseStage(StrEnum):
+    """发布投影的风险暴露阶段；它不描述 Agent Version 的草稿/编译生命周期。"""
+
+    SHADOW = "shadow"
+    CANARY = "canary"
+    PRODUCTION = "production"
+
+
 class IssueSeverity(StrEnum):
     ERROR = "error"
     WARNING = "warning"
@@ -607,8 +615,52 @@ class ReleaseCreate(StrictModel):
     agent_lab_experiment_id: str | None = Field(default=None, max_length=160)
 
 
+class ReleaseProjection(StrictModel):
+    """Runtime 只能消费的、由 Control Plane 发布的风险执行上下文。
+
+    Snapshot 固定 Agent 定义；Projection 固定本次 Release 如何暴露流量和处理副作用。
+    两者在创建 Run 时一起钉扎，恢复或重试不得重新按当前线上状态推导。
+    """
+
+    release_stage: ReleaseStage = ReleaseStage.PRODUCTION
+    traffic_policy_version: str = Field(default="traffic-policy/v1", min_length=1, max_length=160)
+    side_effect_policy_version: str = Field(
+        default="side-effect-policy/v1", min_length=1, max_length=160
+    )
+    # 只保存策略引用和不可敏感的执行规则。密钥、真实业务正文或模拟脚本不进入 Release。
+    side_effect_policy: dict[str, Any] = Field(default_factory=dict)
+    # 流量规则是发布投影的一部分，而不是由 Runtime 按当前配置临时拼接。当前只有
+    # IdP 角色能够作为可信选择信号；请求类型/业务风险必须先由受信分类服务签名后才可
+    # 扩展进来，避免浏览器用 metadata 把自己“升级”为灰度用户。
+    traffic_policy: dict[str, Any] = Field(default_factory=dict)
+    shadow_sample_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    shadow_resource_budget: dict[str, Any] = Field(default_factory=dict)
+    revision: int = Field(default=1, ge=1)
+
+
 class ReleasePromote(StrictModel):
     rollout_percentage: int = Field(ge=1, le=100)
+
+
+class ReleaseStartShadow(StrictModel):
+    """开启只供内部镜像流量使用的 Shadow 投影，不向真实用户返回候选结果。"""
+
+    shadow_sample_rate: float = Field(gt=0.0, le=1.0)
+    side_effect_policy_version: str = Field(min_length=1, max_length=160)
+    side_effect_policy: dict[str, Any] = Field(default_factory=dict)
+    shadow_resource_budget: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReleaseStartCanary(StrictModel):
+    """通过已持久化 Shadow Gate 后才允许开始真实用户灰度。"""
+
+    rollout_percentage: int = Field(ge=1, le=100)
+    decision_id: str = Field(min_length=1, max_length=160)
+    traffic_policy_version: str = Field(default="traffic-policy/v1", min_length=1, max_length=160)
+    # 只允许用 IdP 已验证角色缩小 Canary 人群。空数组代表不做角色限制；它不会授予
+    # 权限，最终仍由 Runtime/Tool Gateway 的权限与审批链决定可执行能力。
+    eligible_roles: list[str] = Field(default_factory=list, max_length=100)
+    excluded_roles: list[str] = Field(default_factory=list, max_length=100)
 
 
 class GovernanceReleaseAction(StrictModel):
@@ -626,6 +678,7 @@ class ReleaseManifest(StrictModel):
     environment: str
     rollout_percentage: int
     tenant_allowlist: list[str] = Field(default_factory=list)
+    projection: ReleaseProjection = Field(default_factory=ReleaseProjection)
     status: ReleaseStatus
     previous_release_id: str | None = None
     reason: str
@@ -648,9 +701,12 @@ class RuntimeResolution(StrictModel):
     session_id: str
     release_id: str
     version_id: str
-    assignment: Literal["stable", "canary", "allowlist", "pinned", "first_release"]
+    assignment: Literal["stable", "canary", "allowlist", "pinned", "first_release", "shadow"]
     pinned: bool
     snapshot: PublishedSnapshot
+    # The complete projection is returned rather than letting Runtime infer a stage from percent.
+    release_projection: ReleaseProjection = Field(default_factory=ReleaseProjection)
+    shadow_sampled: bool = False
 
 
 class OutboxEvent(StrictModel):

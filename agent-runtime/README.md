@@ -7,6 +7,47 @@
 Agent Lab 可用同一公开 Runtime API 回放已冻结快照；Runtime 仍只执行一次请求，不保存实验计划、
 基线、发布证据或质量门禁。这些离线实验职责属于 `agent-lab`，评测规则属于 Governance。
 
+## 为什么需要独立 Runtime
+
+最初 Runtime 与 RAG 应用代码放在同一个工程，容易把“决定下一步”和“提供知识证据”混成一个责任边界。
+独立后，Runtime 只拥有执行状态、计划、预算、审批、恢复和 Agent 协作；Context、RAG、模型和工具都通过
+`platform-sdk` 的版本化客户端访问。这样每个能力可以独立扩缩容、使用独立工作负载身份，也不会因为
+安装某个 RAG 包而获得其数据库或内部实现权限。
+
+Runtime 的核心定义是：执行一个已经发布、经过校验的 Snapshot，而不是解释用户正在编辑的 Agent 配置。
+它既不是模型代理，也不是业务数据库访问层。
+
+## 一次执行的主链路
+
+```text
+Request + Verified Identity
+  → resolveRelease / loadSnapshot
+  → createExecutionContext
+  → Planner 生成 ProposedExecutionPlan
+  → Runtime Guard 生成 AdmittedExecutionPlan
+  → Capability Resolver 选择已发布 Provider
+  → Harness 选择 Executor
+  → LangGraph / Simple / Temporal 执行
+  → LLM Proposal / Tool Proposal
+  → Reference Monitor / Capability Evaluator
+  → Gateway 最终执行
+  → Observation / Evidence / State / Context Projection
+  → Result + Session Ledger + Outbox
+```
+
+计划获准只代表任务结构可以进入执行，并不代表退款、写库或发消息等具体动作已经获批。每个工具动作仍须
+由 Tool Gateway 根据最新身份、参数、风险、审批和幂等状态做最终授权。
+
+## Multi-Agent 解决方案
+
+`AgentManager` 是唯一委派门面。Planner 只能提出 Capability 或快照允许的子 Agent 目标；Manager 校验
+父子绑定、最大深度、调用次数、并行度、剩余步骤和成本，再创建具有独立 Release、Snapshot、Run 和权限的
+子执行。父运行只能接收脱敏、限长并携带证据与版本的 `AgentResult`。
+
+这支持主管—专家、平级专家和受控动态 Agent 池，但不支持模型任意创建代码或注册 Agent。冲突可以按
+Authority、Quorum、确定性规则、冻结 Judge 或人工审查收敛；需要裁决时会形成可恢复中断，而不是由主管
+模型暗中选择结果。
+
 ## 运行职责
 
 - 将用户请求与发布快照编译为受限的执行计划；
@@ -277,7 +318,7 @@ Reviewer 必须具备 `rag:ingest:approve` 并提交一次性决定；批准后
 Workspace Artifact 下载不返回永久对象地址。Runtime 先验证 Run 所有权或 Review Assignment，再向
 Context 申请短时签名 URL，并记录不含 URL/Object Key 的 `artifact.download.authorized` 审计事实。
 
-# Harness 边界
+## Harness 边界
 
 `AgentHarness` 是 Runtime 的最小执行生命周期门面，只公开七项能力：
 `resolve_release`、`load_snapshot`、`create_execution_context`、`resolve_executor`、
@@ -288,6 +329,26 @@ RAG、Prompt Assembly、LLM Routing、Tool Auth 或领域业务逻辑。
 `ExecutorCatalog`；请求只能使用发布快照指定且本集群已部署的 `executor_profile`，
 未知 Profile 会在进入 LangGraph 前拒绝。审批恢复读取持久化的编译发布计划，绝不从
 Planner 的运行时业务计划猜测执行器。
+
+## Release Projection 绑定
+
+Runtime 不会从 `rollout_percentage` 自行猜测 Shadow 或 Canary。它只消费 Control Plane 已发布的
+`ReleaseProjection`，并把 `release_id`、`release_stage`、策略版本和 Projection Revision 写进
+`ExecutionContext`、Session Ledger、Tool Context 与治理事件。父子 Agent 运行应继承 Root 的发布绑定；
+子 Agent 可以被快照授予更少能力，但不能将 Shadow 自行升级为 Production。
+
+### Shadow 回放与灰度受众
+
+设置 `RUNTIME_SHADOW_MIRRORING_ENABLED=true` 后，交互任务在主任务已持久化入队后，会额外提交一条
+独立 Shadow 任务。Worker 再调用 Control Plane 的 `resolve-shadow`：未命中采样、没有候选 Release 都
+记为 `SKIPPED`，不会拖慢或改变主任务。命中的回放使用 `shadow:{release_id}:{source_run_id}` 会话与
+`shadow-worker` 执行主体，因而不写入用户历史、不向 Workspace 返回候选答案；它通过 Trace 与
+`shadow_mirror_of` 保持可审计关联。
+
+Canary 只接受 Control Plane 投影中 `eligible_roles` / `excluded_roles` 对 **已验签 IdP 角色**的收窄。
+浏览器 metadata、Prompt 或模型推断的“风险等级”不能作为扩大灰度范围的输入。当前通用 Tool Gateway
+在 Shadow 与 Canary 中均只真实执行 `pure_read` / `compute`，所有写操作模拟；要开放真实写操作，必须
+先为具体外部系统实现并审查其 Prepare/Commit 或补偿协议。
 
 ## Runtime Snapshot 与 Executor Profile
 

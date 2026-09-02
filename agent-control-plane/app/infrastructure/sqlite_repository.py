@@ -72,6 +72,11 @@ class ControlPlaneRepositoryOperations:
                     connection.execute(
                         "ALTER TABLE releases ADD COLUMN agent_lab_experiment_id TEXT"
                     )
+                if "release_projection_json" not in columns:
+                    connection.execute(
+                        "ALTER TABLE releases ADD COLUMN release_projection_json "
+                        "TEXT NOT NULL DEFAULT '{}'"
+                    )
                 for column in (
                     "runtime_executor_catalog_version",
                     "runtime_executor_cluster_id",
@@ -975,12 +980,12 @@ class ControlPlaneRepositoryOperations:
                 """
                 INSERT INTO releases (
                     tenant_id, release_id, agent_id, version_id, environment,
-                    rollout_percentage, tenant_allowlist_json, status, previous_release_id,
+                    rollout_percentage, tenant_allowlist_json, release_projection_json, status, previous_release_id,
                     reason, quality_gate_id, quality_gate_metrics_json, agent_lab_experiment_id,
                     runtime_executor_catalog_version, runtime_executor_cluster_id,
                     runtime_executor_catalog_hash, runtime_capability_manifest_digest,
                     created_by, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     release.tenant_id,
@@ -990,6 +995,7 @@ class ControlPlaneRepositoryOperations:
                     release.environment,
                     release.rollout_percentage,
                     _json(release.tenant_allowlist),
+                    _json(release.projection.model_dump(mode="json")),
                     release.status.value,
                     release.previous_release_id,
                     release.reason,
@@ -1041,13 +1047,15 @@ class ControlPlaneRepositoryOperations:
             cursor = connection.execute(
                 """
                 UPDATE releases
-                SET rollout_percentage = ?, tenant_allowlist_json = ?, status = ?, updated_at = ?
+                SET rollout_percentage = ?, tenant_allowlist_json = ?, release_projection_json = ?,
+                    status = ?, updated_at = ?
                 WHERE tenant_id = ? AND release_id = ?
                   AND (? IS NULL OR updated_at = ?)
                 """,
                 (
                     release.rollout_percentage,
                     _json(release.tenant_allowlist),
+                    _json(release.projection.model_dump(mode="json")),
                     release.status.value,
                     release.updated_at.isoformat(),
                     release.tenant_id,
@@ -1736,6 +1744,7 @@ def _release_from_row(row: sqlite3.Row) -> ReleaseManifest:
             "environment": row["environment"],
             "rollout_percentage": row["rollout_percentage"],
             "tenant_allowlist": json.loads(row["tenant_allowlist_json"]),
+            "projection": json.loads(row["release_projection_json"] or "{}"),
             "status": row["status"],
             "previous_release_id": row["previous_release_id"],
             "reason": row["reason"],

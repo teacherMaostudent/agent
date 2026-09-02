@@ -58,6 +58,7 @@ def runtime_identity(
     x_tenant_id: str = Header(min_length=1, alias="X-Tenant-Id"),
     x_user_id: str = Header(default="agent-runtime", alias="X-User-Id"),
     x_runtime_key: str | None = Header(default=None, alias="X-Runtime-Key"),
+    x_subject_roles: str = Header(default="", alias="X-Subject-Roles"),
 ) -> Identity:
     """从已验证的 OIDC 声明构造 Runtime
     工作负载身份，不信任调用方可伪造的身份 Header。
@@ -71,4 +72,12 @@ def runtime_identity(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "invalid_runtime_key", "message": "Runtime API key is invalid."},
         )
-    return Identity(tenant_id=x_tenant_id, user_id=x_user_id, roles={"agent-runtime"})
+    # Only an authenticated Runtime workload can send this header. It carries a *narrowing*
+    # audience signal reconstructed from the end-user's verified IdP claims; it is never used
+    # as a management role or as a substitute for a user permission check.
+    subject_roles = {item.strip() for item in x_subject_roles.split(",") if item.strip()}
+    return Identity(
+        tenant_id=x_tenant_id,
+        user_id=x_user_id,
+        roles={"agent-runtime", *subject_roles},
+    )

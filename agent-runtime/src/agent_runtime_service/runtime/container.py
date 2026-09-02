@@ -601,6 +601,11 @@ class AgentRuntimeContainer:
             agent_id=str(state["agent_id"]),
             agent_version=str(state["agent_version"]),
             snapshot_id=str(state["snapshot_id"]),
+            release_id=str(state.get("release_id", "")),
+            release_stage=str(state.get("release_stage", "production")),
+            release_projection_revision=int(state.get("release_projection_revision", 1)),
+            traffic_policy_version=str(state.get("traffic_policy_version", "traffic-policy/v1")),
+            side_effect_policy_version=str(state.get("side_effect_policy_version", "side-effect-policy/v1")),
             graph_version=str(state["graph_version"]),
             model_policy_version=str(
                 state.get("agent_snapshot", {}).get("model_policy_version", "unknown")
@@ -683,6 +688,8 @@ class AgentRuntimeContainer:
             app=SimpleNamespace(state=SimpleNamespace(container=self)),
             scope={"auth.claims": {"worker": "agent-runtime"}},
         )
+        if submission.get("shadow_mirror"):
+            return self._execute_shadow_submission(submission)
         if submission.get("operation") == "resume":
             control_input = submission.get("control_input") or {}
             user_input = control_input.get("_user_input")
@@ -716,12 +723,95 @@ class AgentRuntimeContainer:
             x_tenant_id=submission["tenant_id"],
             x_user_id=submission["user_id"],
             x_permissions=submission["permissions"],
+            x_roles=",".join(str(item) for item in submission.get("subject_roles", [])),
             x_request_id=submission["request_id"],
             x_trace_id=submission["trace_id"],
             x_run_id=submission["run_id"],
             _temporal_worker_execution=True,
             _release_resolution=submission.get("release_resolution"),
         )
+
+    def submit_shadow_mirror(self, submission: dict[str, Any]) -> dict[str, Any] | None:
+        """持久化一条独立 Shadow 回放，不影响主任务成功、延迟或用户结果。
+
+        入口只接受 Runtime 已冻结的提交信息，并使用同一队列获得重试/幂等行为。没有
+        启用开关、没有队列或没有 Control Plane 时显式返回 ``None``，绝不悄悄同步执行。
+        """
+        if (
+            not self.settings.shadow_mirroring_enabled
+            or self.async_runs is None
+            or self.control_plane is None
+        ):
+            return None
+        return self.async_runs.submit({**submission, "shadow_mirror": True})
+
+    def _execute_shadow_submission(self, submission: dict[str, Any]) -> dict:
+        """执行候选 Snapshot 的隔离镜像；未采样或未配置候选均是正常跳过。
+
+        Shadow 不读取/写入用户原 Session，而是为 ``source_run_id`` 建独立会话；工具网关
+        根据 Release Stage 强制模拟写操作。其答案不回传 Workspace，只有治理 Trace 用于
+        GateDecision。这里不把模拟结果解释为真实业务成功。
+        """
+        from types import SimpleNamespace
+
+        from platform_sdk.contracts.runtime_api import AgentRunRequest
+
+        from agent_runtime_service.runtime.integration import ReleaseNotFoundError
+        from agent_runtime_service.service_api.runtime_api import run_agent
+
+        if self.control_plane is None:
+            return {"status": "SKIPPED", "shadow_status": "control_plane_unavailable"}
+        payload = AgentRunRequest.model_validate(submission["payload"])
+        source_session_id = str(payload.session_id or submission["request_id"])
+        try:
+            resolution = self.control_plane.resolve_shadow(
+                tenant_id=str(submission["tenant_id"]),
+                user_id="shadow-worker",
+                agent_id=payload.agent_id,
+                environment=payload.environment,
+                session_id=source_session_id,
+                trace_id=f"shadow:{submission['trace_id']}",
+                subject_roles=frozenset(str(item) for item in submission.get("subject_roles", [])),
+            )
+        except ReleaseNotFoundError:
+            return {"status": "SKIPPED", "shadow_status": "no_active_shadow_release"}
+        if not bool(resolution.get("shadow_sampled")):
+            return {"status": "SKIPPED", "shadow_status": "not_sampled"}
+        release_id = str(resolution.get("release_id") or "unknown")
+        shadow_run_id = str(submission["run_id"])
+        isolated_payload = payload.model_copy(
+            update={
+                "session_id": f"shadow:{release_id}:{submission['source_run_id']}",
+                "metadata": {
+                    **payload.metadata,
+                    "_shadow_internal": True,
+                    "_shadow_source_run_id": submission["source_run_id"],
+                    "_shadow_source_session_id": source_session_id,
+                },
+            }
+        )
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(container=self)),
+            scope={"auth.claims": {"worker": "agent-runtime", "shadow": True}},
+        )
+        result = run_agent(
+            isolated_payload,
+            request,
+            x_tenant_id=str(submission["tenant_id"]),
+            x_user_id="shadow-worker",
+            x_permissions=str(submission["permissions"]),
+            x_roles=",".join(str(item) for item in submission.get("subject_roles", [])),
+            x_request_id=str(submission["request_id"]),
+            x_trace_id=f"shadow:{submission['trace_id']}",
+            x_run_id=shadow_run_id,
+            _temporal_worker_execution=True,
+            _release_resolution=resolution,
+        )
+        return {
+            **result,
+            "shadow_mirror_of": submission["source_run_id"],
+            "shadow_status": "completed",
+        }
 
     def _execute_workflow_submission(self, submission: dict) -> dict:
         """让 Temporal Activity 复用唯一 Workflow API 执行逻辑和契约验证。"""

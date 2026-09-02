@@ -66,6 +66,29 @@ def _governance_event_for_state_change(
     成为跨数据域的敏感内容副本。
     """
     metadata = lifecycle_event.metadata
+    payload = {
+        "run_id": context.run_id,
+        "session_id": context.session_id,
+        "agent_id": context.agent_id,
+        "snapshot_id": context.snapshot_id,
+        "agent_version": context.agent_version,
+        "status": lifecycle_event.status,
+        "runtime_state": metadata.get("current_state"),
+        "previous_runtime_state": metadata.get("previous_state"),
+        "transition_event": metadata.get("trigger"),
+        "session_event_id": lifecycle_event.event_id,
+        "sequence": lifecycle_event.sequence,
+    }
+    # Local compatibility contexts predate Release Projection.  Keep their legacy event
+    # shape stable while production runs always carry the three release binding facts.
+    if context.release_id:
+        payload.update(
+            {
+                "release_id": context.release_id,
+                "release_stage": context.release_stage,
+                "release_projection_revision": context.release_projection_revision,
+            }
+        )
     return {
         "event_id": f"gov_{lifecycle_event.event_id}",
         "source_service": "agent-runtime",
@@ -73,19 +96,7 @@ def _governance_event_for_state_change(
         "trace_id": context.trace_id,
         "tenant_id": context.tenant_id,
         "occurred_at": lifecycle_event.occurred_at.isoformat(),
-        "payload": {
-            "run_id": context.run_id,
-            "session_id": context.session_id,
-            "agent_id": context.agent_id,
-            "snapshot_id": context.snapshot_id,
-            "agent_version": context.agent_version,
-            "status": lifecycle_event.status,
-            "runtime_state": metadata.get("current_state"),
-            "previous_runtime_state": metadata.get("previous_state"),
-            "transition_event": metadata.get("trigger"),
-            "session_event_id": lifecycle_event.event_id,
-            "sequence": lifecycle_event.sequence,
-        },
+        "payload": payload,
     }
 
 
@@ -114,6 +125,7 @@ class ControlPlaneClient:
         environment: str,
         session_id: str,
         trace_id: str,
+        subject_roles: set[str] | frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """解析租户运行的不可变快照；HTTP 失败必须阻止运行而非回退草稿。"""
         headers = {
@@ -123,6 +135,8 @@ class ControlPlaneClient:
         }
         if self.runtime_key:
             headers["X-Runtime-Key"] = self.runtime_key
+        if subject_roles:
+            headers["X-Subject-Roles"] = ",".join(sorted(subject_roles))
         if self.workload_identity is not None:
             headers.update(self.workload_identity.authorization_header())
         try:
@@ -152,6 +166,47 @@ class ControlPlaneClient:
             # 不把 Control Plane 的响应正文透传到桌面端；其中可能包含内部策略细节。
             raise ReleaseResolutionError(
                 f"Control Plane rejected release resolution with status {response.status_code}."
+            ) from exc
+        return response.json()
+
+    def resolve_shadow(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        agent_id: str,
+        environment: str,
+        session_id: str,
+        trace_id: str,
+        subject_roles: set[str] | frozenset[str] = frozenset(),
+    ) -> dict[str, Any]:
+        """读取内部 Shadow 候选；调用方必须在 ``shadow_sampled`` 为假时丢弃任务。
+
+        该方法不复用正常 resolve 路径，防止镜像流量意外创建或覆盖用户 Session Binding。
+        """
+        headers = {"X-Tenant-Id": tenant_id, "X-User-Id": user_id, "X-Trace-Id": trace_id}
+        if self.runtime_key:
+            headers["X-Runtime-Key"] = self.runtime_key
+        if subject_roles:
+            headers["X-Subject-Roles"] = ",".join(sorted(subject_roles))
+        if self.workload_identity is not None:
+            headers.update(self.workload_identity.authorization_header())
+        try:
+            response = httpx.get(
+                f"{self.base_url}/v1/runtime/agents/{agent_id}/resolve-shadow",
+                params={"environment": environment, "session_id": session_id},
+                headers=headers,
+                timeout=self.timeout,
+                **self.mtls,
+            )
+            response.raise_for_status()
+        except httpx.RequestError as exc:
+            raise ReleaseResolutionUnavailable("Control Plane Shadow resolution is unavailable.") from exc
+        except httpx.HTTPStatusError as exc:
+            if response.status_code == 404:
+                raise ReleaseNotFoundError(f"No Shadow release exists for Agent '{agent_id}'.") from exc
+            raise ReleaseResolutionError(
+                f"Control Plane rejected Shadow resolution with status {response.status_code}."
             ) from exc
         return response.json()
 
@@ -2660,6 +2715,9 @@ class GovernanceOutboxPublisher:
                 "run_id": context.run_id,
                 "agent_id": context.agent_id,
                 "snapshot_id": context.snapshot_id,
+                "release_id": context.release_id,
+                "release_stage": context.release_stage,
+                "release_projection_revision": context.release_projection_revision,
                 "agent_version": context.agent_version,
                 "status": status,
                 "error_code": error_code,

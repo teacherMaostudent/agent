@@ -27,6 +27,46 @@ flowchart LR
     GOV --> FINDINGS["Findings and compliance reports"]
 ```
 
+## 为什么需要独立治理服务
+
+把评测、审计和合规直接塞进 Gateway 或 Runtime，会让线上主链路同时承担执行与裁决，并形成“负责运行的代码
+给自己打分”的冲突。Governance 只消费已经提交的事实，管理评测资产、规则、人工复核和质量决策；Control
+Plane 再决定是否执行发布动作。
+
+治理本身也必须可治理。每次 Judge/Regression 运行都会冻结模型 revision、路由版本、Prompt、Rubric、Golden
+Case、温度、输出 Schema 和检索策略。上述任一项变化都产生新的 EvaluationSnapshot，并要求重新校准，不能
+沿用旧准入结论。
+
+## 治理闭环
+
+```text
+Expert-labelled Golden / Red Team / Production Bad Case
+  → Frozen EvaluationSnapshot
+  → Regression / Judge Run
+  → Calibration (Accuracy / MAE / Confusion Matrix / Kappa)
+  → Grouped Hard Gate
+  → PASS / FAIL GateDecision
+  → Control Plane Release
+  → Shadow / Canary Production Trace
+  → Drift / SLO / Safety Gate
+  → HOLD / PROMOTE / PAUSE / ROLLBACK
+  → Human Review
+  → Golden Candidate
+```
+
+真正的 RAG 指标基于固定 Document/Chunk ID 计算 Recall@K、Precision@K、MRR 和 nDCG；回答阶段再计算证据
+覆盖、引用正确性和 Faithfulness。高风险用例可以要求零失败和关键证据 100% 召回，不能被总体平均分掩盖。
+
+## Multi-Agent 中的作用
+
+Governance 不调度专家，但能把每个父子 Run、Snapshot、模型、工具、Evidence 和裁决结果关联到同一 Root Task。
+它可分别评估主管的任务拆解、专家选择、工具权限、证据质量、冲突收敛和最终答案。不同专家意见不一致时，
+Runtime 可以形成 Judge/Human 中断；Governance 提供冻结 Judge、Rubric、校准证明和人工标注回流，而不是让
+主管模型无证据地决定谁正确。
+
+线上样本按高风险、低分、模型分歧、新模型和新知识域分层抽样。人工复核先形成带 `labelerId`、审核状态和
+关键性的 Bad Case/Golden Candidate，只有审核通过后才进入 Golden Dataset。
+
 ## 当前能力
 
 ### 评测自身的可复现性
@@ -99,6 +139,13 @@ uvicorn app.main:app --reload --port 8081
 | `POST/GET` | `/v1/governance/audit-exports` | 创建或列出租户 WORM 导出作业 |
 | `GET` | `/v1/governance/audit-exports/{job_id}` | 查询对象键、摘要、Merkle Root 和签名身份 |
 | `POST` | `/v1/governance/audit-exports/{job_id}/requeue` | 对 DLQ 作业执行显式审计重排 |
+| `PUT` | `/v1/governance/evaluations/golden-dataset` | 维护版本化 Golden Case 与专家标签 |
+| `POST` | `/v1/governance/evaluations/regression-runs` | 运行冻结回归评测 |
+| `POST` | `/v1/governance/evaluations/judge-runs` | 创建固定版本 Judge Run |
+| `POST` | `/v1/governance/evaluations/judge-runs/{run_id}/calibration` | 用专家集校准 Judge |
+| `POST` | `/v1/governance/evaluations/judge-runs/{run_id}/quality-gate` | 计算发布前分组 Hard Gate |
+| `POST` | `/v1/governance/evaluations/online/gate` | 计算线上连续治理决策 |
+| `GET` | `/internal/v1/governance/gate-decisions/{decision_id}` | 供 Control Plane 读取不可变决策 |
 
 生产必须使用 `GOVERNANCE_WORM_SIGNING_MODE=kms`、独立 KMS 签名密钥和开启 Compliance Object
 Lock 的专用桶。本地 Compose 的 MinIO + HMAC 只用于验证协议，不能作为监管级不可抵赖证明。
@@ -110,7 +157,7 @@ python -m ruff check .
 python -m ruff format --check .
 python -m pytest
 ```
-# 双阶段连续治理
+## 双阶段连续治理
 
 Governance 将发布质量拆成两个不可互相替代的阶段：
 
@@ -126,3 +173,7 @@ Governance 只保存证据、计算指标和做决策；它不直接改变流量
 `forbiddenTool`、`piiLeak` 与 `crossTenantAccess` 是线上 Hard Gate：任一非零即 `ROLLBACK`；
 样本不足只会 `HOLD`，不会因偶然的 100% 成功率提升流量。人工确认的线上失败保存为 `BadCase`，
 随后可作为 Golden Candidate 审核并进入下一轮回归集。
+
+Online Gate 还可按策略检查最小观察时长、Decision Agreement、Authorization Agreement、False Side
+Effect Rate、工具参数正确率，以及候选 Snapshot 相对 Baseline 的错误率、延迟和成本回归。未标注的
+Shadow 判断不会被当作“正确”，必须等待人工/规则/Judge 形成可用标签后才可作为提升证据。

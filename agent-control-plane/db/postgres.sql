@@ -158,6 +158,7 @@ CREATE TABLE IF NOT EXISTS releases (
     environment TEXT NOT NULL,
     rollout_percentage INTEGER NOT NULL,
     tenant_allowlist_json TEXT NOT NULL,
+    release_projection_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL,
     previous_release_id TEXT REFERENCES releases(release_id),
     reason TEXT NOT NULL,
@@ -174,6 +175,10 @@ CREATE TABLE IF NOT EXISTS releases (
 );
 CREATE INDEX IF NOT EXISTS idx_releases_resolve
     ON releases (tenant_id, agent_id, environment, created_at DESC);
+
+-- Existing installations predate the Release Projection.  Keep migration idempotent so
+-- Runtime never has to infer stage from a mutable rollout percentage during rollout.
+ALTER TABLE releases ADD COLUMN IF NOT EXISTS release_projection_json TEXT NOT NULL DEFAULT '{}';
 
 CREATE TABLE IF NOT EXISTS session_bindings (
     tenant_id TEXT NOT NULL,

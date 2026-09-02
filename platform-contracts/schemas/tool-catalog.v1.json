@@ -20,6 +20,8 @@
         "input_schema": {"type": "object"},
         "required_permissions": {"type": "array", "items": {"type": "string"}},
         "risk": {"enum": ["read_only", "write_low_risk", "write_high_risk", "human_approval_required"]},
+        "side_effect_class": {"enum": ["pure_read", "compute", "reversible_write", "external_reversible", "irreversible_write", "critical_side_effect"]},
+        "commit_capability": {"enum": ["none", "simulator", "provider_dry_run", "prepare_only", "prepare_commit", "compensatable"]},
         "approval_required": {"type": "boolean"},
         "transport": {"type": "object", "required": ["kind"], "properties": {"kind": {"enum": ["http", "mcp_streamable_http"]}}}
       },

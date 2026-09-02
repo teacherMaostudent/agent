@@ -49,7 +49,11 @@ from app.domain.models import (
     PublishedSnapshot,
     ReleaseCreate,
     ReleaseManifest,
+    ReleaseProjection,
     ReleasePromote,
+    ReleaseStage,
+    ReleaseStartCanary,
+    ReleaseStartShadow,
     ReleaseStatus,
     RuntimeResolution,
     SkillCreate,
@@ -1069,6 +1073,15 @@ class ControlPlaneService:
             )
 
         rollout_percentage = request.rollout_percentage if baseline else 100
+        # A release's stage is published data, not inferred by Runtime from a percentage.
+        # Existing 100% releases remain PRODUCTION; a bounded candidate starts as CANARY.
+        release_stage = (
+            ReleaseStage.SHADOW
+            if baseline and rollout_percentage == 0
+            else ReleaseStage.CANARY
+            if baseline and rollout_percentage < 100
+            else ReleaseStage.PRODUCTION
+        )
         now = utc_now()
         release = ReleaseManifest(
             tenant_id=identity.tenant_id,
@@ -1078,6 +1091,7 @@ class ControlPlaneService:
             environment=request.environment,
             rollout_percentage=rollout_percentage,
             tenant_allowlist=request.tenant_allowlist,
+            projection=ReleaseProjection(release_stage=release_stage),
             status=ReleaseStatus.ACTIVE,
             previous_release_id=baseline.release_id if baseline else None,
             reason=request.reason,
@@ -1109,6 +1123,10 @@ class ControlPlaneService:
                 "version_id": version.version_id,
                 "environment": release.environment,
                 "rollout_percentage": release.rollout_percentage,
+                "release_stage": release.projection.release_stage.value,
+                "projection_revision": release.projection.revision,
+                "traffic_policy_version": release.projection.traffic_policy_version,
+                "side_effect_policy_version": release.projection.side_effect_policy_version,
                 "previous_release_id": release.previous_release_id,
                 "quality_gate_id": release.quality_gate_id,
                 "agent_lab_experiment_id": release.agent_lab_experiment_id,
@@ -1180,6 +1198,8 @@ class ControlPlaneService:
     ) -> ReleaseManifest:
         """以乐观并发控制提升灰度比例，禁止将提升接口用于降级流量。"""
         release = await self.get_release(identity, release_id)
+        if release.projection.release_stage is ReleaseStage.SHADOW:
+            raise InvalidStateError("Shadow releases must pass Shadow Gate and start Canary first.")
         if release.status != ReleaseStatus.ACTIVE:
             raise InvalidStateError(
                 "Only an active release can be promoted.", status=release.status.value
@@ -1202,9 +1222,20 @@ class ControlPlaneService:
                 allowed=policy.max_canary_percentage,
             )
 
+        next_stage = (
+            ReleaseStage.PRODUCTION
+            if request.rollout_percentage == 100
+            else ReleaseStage.CANARY
+        )
         updated = release.model_copy(
             update={
                 "rollout_percentage": request.rollout_percentage,
+                "projection": release.projection.model_copy(
+                    update={
+                        "release_stage": next_stage,
+                        "revision": release.projection.revision + 1,
+                    }
+                ),
                 "updated_at": utc_now(),
             }
         )
@@ -1234,6 +1265,124 @@ class ControlPlaneService:
             expected_updated_at=release.updated_at.isoformat(),
         )
         if not updated_ok:
+            raise ConflictError("Release changed concurrently; reload and retry.")
+        return updated
+
+    async def start_shadow_release(
+        self,
+        identity: Identity,
+        release_id: str,
+        request: ReleaseStartShadow,
+        trace_id: str,
+    ) -> ReleaseManifest:
+        """冻结 Shadow 策略并启用内部镜像资格；正常 Runtime 解析永不选择该 Release。"""
+        release = await self.get_release(identity, release_id)
+        if release.status is not ReleaseStatus.ACTIVE or not release.previous_release_id:
+            raise InvalidStateError(
+                "Shadow requires an active candidate release with a stable baseline."
+            )
+        if release.rollout_percentage != 0:
+            raise InvalidStateError("Shadow release must have zero user rollout percentage.")
+        projection = release.projection.model_copy(
+            update={
+                "release_stage": ReleaseStage.SHADOW,
+                "shadow_sample_rate": request.shadow_sample_rate,
+                "side_effect_policy_version": request.side_effect_policy_version,
+                "side_effect_policy": request.side_effect_policy,
+                "shadow_resource_budget": request.shadow_resource_budget,
+                "revision": release.projection.revision + 1,
+            }
+        )
+        updated = release.model_copy(update={"projection": projection, "updated_at": utc_now()})
+        event = self._event(
+            "ReleaseShadowStarted",
+            trace_id,
+            identity.tenant_id,
+            "release",
+            release_id,
+            {
+                "agent_id": release.agent_id,
+                "release_id": release_id,
+                "snapshot_id": release.version_id,
+                "baseline_release_id": release.previous_release_id,
+                "shadow_sample_rate": projection.shadow_sample_rate,
+                "side_effect_policy_version": projection.side_effect_policy_version,
+                "projection_revision": projection.revision,
+            },
+        )
+        if not await self._repository.update_release(
+            updated, event, expected_updated_at=release.updated_at.isoformat()
+        ):
+            raise ConflictError("Release changed concurrently; reload and retry.")
+        return updated
+
+    async def start_canary_release(
+        self,
+        identity: Identity,
+        release_id: str,
+        request: ReleaseStartCanary,
+        trace_id: str,
+    ) -> ReleaseManifest:
+        """消费 Governance 的 Shadow GateDecision 后打开受控真实流量。"""
+        if self._governance is None:
+            raise PolicyViolationError("Governance decision client is unavailable.")
+        release = await self.get_release(identity, release_id)
+        if (
+            release.status is not ReleaseStatus.ACTIVE
+            or release.projection.release_stage is not ReleaseStage.SHADOW
+        ):
+            raise InvalidStateError("Only an active Shadow release can start Canary.")
+        decision = await self._governance.gate_decision(identity.tenant_id, request.decision_id)
+        if (
+            str(decision.get("releaseId") or "") != release_id
+            or str(decision.get("snapshotId") or "") != release.version_id
+            or str(decision.get("decision") or "").upper() != "PROMOTE"
+        ):
+            raise PolicyViolationError("Shadow GateDecision does not allow this Canary transition.")
+        policy = await self.get_tenant_policy(identity)
+        if request.rollout_percentage > policy.max_canary_percentage:
+            raise PolicyViolationError("Canary percentage exceeds the tenant policy.")
+        projection = release.projection.model_copy(
+            update={
+                "release_stage": ReleaseStage.CANARY,
+                "traffic_policy_version": request.traffic_policy_version,
+                # 角色规则只能将候选流量收窄。Control Plane 不接受浏览器提交的
+                # “风险等级”等自声明，因为该值不能作为生产路由的信任根。
+                "traffic_policy": {
+                    "eligible_roles": sorted(set(request.eligible_roles)),
+                    "excluded_roles": sorted(set(request.excluded_roles)),
+                },
+                "revision": release.projection.revision + 1,
+            }
+        )
+        updated = release.model_copy(
+            update={
+                "rollout_percentage": request.rollout_percentage,
+                "projection": projection,
+                "updated_at": utc_now(),
+            }
+        )
+        event = self._event(
+            "ReleaseCanaryStarted",
+            trace_id,
+            identity.tenant_id,
+            "release",
+            release_id,
+            {
+                "agent_id": release.agent_id,
+                "release_id": release_id,
+                "snapshot_id": release.version_id,
+                "baseline_release_id": release.previous_release_id,
+                "rollout_percentage": updated.rollout_percentage,
+                "traffic_policy_version": projection.traffic_policy_version,
+                "eligible_roles": projection.traffic_policy.get("eligible_roles", []),
+                "excluded_roles": projection.traffic_policy.get("excluded_roles", []),
+                "decision_id": request.decision_id, "projection_revision": projection.revision,
+            },
+        )
+        if not await self._repository.update_release(
+            updated, event, expected_updated_at=release.updated_at.isoformat()
+        ):
             raise ConflictError("Release changed concurrently; reload and retry.")
         return updated
 
@@ -1393,7 +1542,13 @@ class ControlPlaneService:
             agent_id,
             environment,
         )
-        active = [item for item in releases if item.status == ReleaseStatus.ACTIVE]
+        # Shadow candidates are deliberately active release assets but never become a normal
+        # user-facing Runtime resolution.  A dedicated mirror controller consumes them.
+        active = [
+            item for item in releases
+            if item.status == ReleaseStatus.ACTIVE
+            and item.projection.release_stage is not ReleaseStage.SHADOW
+        ]
         if not active:
             raise NotFoundError(
                 f"No active release exists for agent '{agent_id}' in '{environment}'."
@@ -1409,9 +1564,13 @@ class ControlPlaneService:
             )
             if not previous:
                 raise InvalidStateError("Canary release has no resolvable baseline.")
-            if identity.tenant_id in candidate.tenant_allowlist:
+            if identity.tenant_id in candidate.tenant_allowlist and _matches_traffic_policy(
+                identity, candidate.projection
+            ):
                 assignment = "allowlist"
             elif (
+                _matches_traffic_policy(identity, candidate.projection)
+                and
                 _bucket(identity.tenant_id, agent_id, environment, session_id)
                 < candidate.rollout_percentage
             ):
@@ -1450,6 +1609,39 @@ class ControlPlaneService:
         release = await self.get_release(identity, release_id)
         version = await self.get_version(identity, release.agent_id, release.version_id)
         return version.snapshot
+
+    async def resolve_shadow_runtime(
+        self,
+        identity: Identity,
+        agent_id: str,
+        environment: str,
+        session_id: str,
+    ) -> RuntimeResolution:
+        """解析内部 Shadow 镜像候选，不写入用户 Session Binding。
+
+        正常用户路径永远不会调用此方法。采样使用与 Canary 相同的确定性桶，但没有
+        资格的请求只返回 ``shadow_sampled=false``，调用方必须直接丢弃而非回退执行。
+        """
+        await self.get_agent(identity, agent_id)
+        releases = await self._repository.list_releases(
+            identity.tenant_id, agent_id, environment
+        )
+        candidates = [
+            item for item in releases
+            if item.status is ReleaseStatus.ACTIVE
+            and item.projection.release_stage is ReleaseStage.SHADOW
+            and item.projection.shadow_sample_rate > 0
+        ]
+        if not candidates:
+            raise NotFoundError(f"No active Shadow release exists for '{agent_id}:{environment}'.")
+        candidate = candidates[0]
+        sampled = _bucket(identity.tenant_id, agent_id, environment, f"shadow:{session_id}") < (
+            candidate.projection.shadow_sample_rate * 100
+        )
+        resolution = await self._resolution(
+            identity, candidate, environment, session_id, "shadow", False
+        )
+        return resolution.model_copy(update={"shadow_sampled": sampled})
 
     async def get_tenant_policy(self, identity: Identity) -> TenantPolicy:
         """读取租户策略；尚未配置时返回显式默认值而非共享全局策略。"""
@@ -1634,6 +1826,8 @@ class ControlPlaneService:
                     "required_permissions": list(definition.get("required_permissions", [])),
                     "output_schema": definition.get("output_schema"),
                     "side_effect": definition.get("risk", "read_only") != "read_only",
+                    "side_effect_class": definition.get("side_effect_class"),
+                    "commit_capability": definition.get("commit_capability", "none"),
                 }
             )
             resolved.append(value)
@@ -1931,6 +2125,7 @@ class ControlPlaneService:
             assignment=assignment,
             pinned=pinned,
             snapshot=version.snapshot,
+            release_projection=release.projection,
         )
 
     @staticmethod
@@ -1985,3 +2180,18 @@ def _bucket(tenant_id: str, agent_id: str, environment: str, session_id: str) ->
     """用稳定哈希将同一会话固定分桶，确保灰度期间请求不会随机跳版本。"""
     key = f"{tenant_id}:{agent_id}:{environment}:{session_id}".encode()
     return int.from_bytes(hashlib.sha256(key).digest()[:8], "big") % 100
+
+
+def _matches_traffic_policy(identity: Identity, projection: ReleaseProjection) -> bool:
+    """仅用 Runtime 透传的已验证 IdP 角色收窄灰度候选人群。
+
+    未配置规则时保持原有百分比分流语义。角色不匹配只会回退到稳定 Release，绝不会
+    改变用户权限、绕过审批，或让请求获得候选 Snapshot 中原本没有的能力。
+    """
+    policy = projection.traffic_policy
+    eligible = {str(item) for item in policy.get("eligible_roles", []) if str(item)}
+    excluded = {str(item) for item in policy.get("excluded_roles", []) if str(item)}
+    subject_roles = set(identity.roles) - {"agent-runtime"}
+    if excluded & subject_roles:
+        return False
+    return not eligible or bool(eligible & subject_roles)

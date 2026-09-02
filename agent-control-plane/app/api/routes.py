@@ -21,14 +21,16 @@ from app.domain.models import (
     AgentDraftUpdate,
     AgentVersion,
     AgentVersionPublish,
-    HealthStatus,
     GovernanceReleaseAction,
+    HealthStatus,
     Identity,
     OutboxList,
     PublishedSnapshot,
     ReleaseCreate,
     ReleaseManifest,
     ReleasePromote,
+    ReleaseStartCanary,
+    ReleaseStartShadow,
     RuntimeResolution,
     SkillCreate,
     SkillDefinition,
@@ -586,6 +588,38 @@ async def promote_release(
 
 
 @router.post(
+    "/v1/releases/{release_id}/start-shadow",
+    response_model=ReleaseManifest,
+    tags=["releases"],
+)
+async def start_shadow_release(
+    release_id: str,
+    request: ReleaseStartShadow,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> ReleaseManifest:
+    """发布内部 Shadow Projection；该操作不向真实用户分配候选 Release。"""
+    return await service(container).start_shadow_release(identity, release_id, request, trace_id)
+
+
+@router.post(
+    "/v1/releases/{release_id}/start-canary",
+    response_model=ReleaseManifest,
+    tags=["releases"],
+)
+async def start_canary_release(
+    release_id: str,
+    request: ReleaseStartCanary,
+    identity: ManagementIdentity,
+    container: Container,
+    trace_id: TraceId,
+) -> ReleaseManifest:
+    """仅消费 Governance 已存储的 Shadow GateDecision 后开启真实灰度流量。"""
+    return await service(container).start_canary_release(identity, release_id, request, trace_id)
+
+
+@router.post(
     "/v1/releases/{release_id}/governance-action",
     response_model=ReleaseManifest,
     tags=["releases"],
@@ -651,6 +685,24 @@ async def resolve_runtime(
     Return the published snapshot selected for one authenticated Runtime run.
     """
     return await service(container).resolve_runtime(identity, agent_id, environment, session_id)
+
+
+@router.get(
+    "/v1/runtime/agents/{agent_id}/resolve-shadow",
+    response_model=RuntimeResolution,
+    tags=["runtime"],
+)
+async def resolve_shadow_runtime(
+    agent_id: str,
+    identity: RuntimeIdentity,
+    container: Container,
+    environment: str = Query(default="production"),
+    session_id: str = Query(min_length=1, max_length=200),
+) -> RuntimeResolution:
+    """仅供镜像 Worker 拉取 Shadow 候选；它不会影响用户 Session 的稳定 Release 绑定。"""
+    return await service(container).resolve_shadow_runtime(
+        identity, agent_id, environment, session_id
+    )
 
 
 @router.get(

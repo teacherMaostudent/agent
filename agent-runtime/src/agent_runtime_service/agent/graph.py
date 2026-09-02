@@ -932,6 +932,11 @@ class AgentGraph:
             agent_id=str(state["agent_id"]),
             agent_version=str(state["agent_version"]),
             snapshot_id=str(state["snapshot_id"]),
+            release_id=str(state.get("release_id", "")),
+            release_stage=str(state.get("release_stage", "production")),
+            release_projection_revision=int(state.get("release_projection_revision", 1)),
+            traffic_policy_version=str(state.get("traffic_policy_version", "traffic-policy/v1")),
+            side_effect_policy_version=str(state.get("side_effect_policy_version", "side-effect-policy/v1")),
             graph_version=str(state.get("graph_version", "")),
             model_policy_version=str(
                 state.get("agent_snapshot", {}).get("model_policy_version", "")
@@ -1696,6 +1701,11 @@ class AgentGraph:
             agent_id=state.get("agent_id", ""),
             agent_version=state.get("agent_version", ""),
             snapshot_id=state.get("snapshot_id", ""),
+            release_id=state.get("release_id", ""),
+            release_stage=state.get("release_stage", "production"),
+            release_projection_revision=int(state.get("release_projection_revision", 1)),
+            traffic_policy_version=state.get("traffic_policy_version", "traffic-policy/v1"),
+            side_effect_policy_version=state.get("side_effect_policy_version", "side-effect-policy/v1"),
             deadline_at=state.get("deadline_at", ""),
             attempt_budget_remaining=AgentGraph._budget(state).remaining_attempts,
             tool_version=tool_version,

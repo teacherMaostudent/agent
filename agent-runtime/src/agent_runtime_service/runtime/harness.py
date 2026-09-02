@@ -61,6 +61,7 @@ class ReleaseResolver(Protocol):
         environment: str,
         session_id: str,
         trace_id: str,
+        subject_roles: set[str] | frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """解析允许本次运行使用的不可变发布快照。"""
         ...
@@ -205,6 +206,7 @@ class AgentHarness:
         environment: str,
         session_id: str,
         trace_id: str,
+        subject_roles: set[str] | frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """从 Control Plane 解析发布版本；生产环境不允许无快照回退。"""
         if self._release_resolver is None:
@@ -218,6 +220,7 @@ class AgentHarness:
             environment=environment,
             session_id=session_id,
             trace_id=trace_id,
+            subject_roles=subject_roles,
         )
 
     def load_snapshot(
@@ -270,6 +273,7 @@ class AgentHarness:
         user_id: str,
         agent_id: str,
         loaded_snapshot: LoadedSnapshot,
+        release_resolution: dict[str, Any],
         deadline_seconds: int,
         attempt_budget: int,
         run_id: str | None,
@@ -282,6 +286,7 @@ class AgentHarness:
         workflow_id: str = "",
     ) -> ExecutionContext:
         """创建不可变执行关联标识；额度策略由调用方计算，Harness 只封装上下文。"""
+        projection = dict(release_resolution.get("release_projection") or {})
         return ExecutionContext.create(
             request_id=request_id,
             trace_id=trace_id,
@@ -291,6 +296,15 @@ class AgentHarness:
             agent_id=agent_id,
             agent_version=loaded_snapshot.agent_version,
             snapshot_id=loaded_snapshot.snapshot_id,
+            release_id=str(release_resolution.get("release_id") or ""),
+            release_stage=str(projection.get("release_stage") or "production"),
+            release_projection_revision=int(projection.get("revision") or 1),
+            traffic_policy_version=str(
+                projection.get("traffic_policy_version") or "traffic-policy/v1"
+            ),
+            side_effect_policy_version=str(
+                projection.get("side_effect_policy_version") or "side-effect-policy/v1"
+            ),
             graph_version=loaded_snapshot.graph_version,
             model_policy_version=loaded_snapshot.model_policy_version,
             deadline_seconds=deadline_seconds,

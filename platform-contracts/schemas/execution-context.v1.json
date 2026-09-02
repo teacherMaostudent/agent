@@ -28,6 +28,11 @@
     "agentId": {"type": "string", "minLength": 1, "maxLength": 160},
     "agentVersion": {"type": "string", "minLength": 1, "maxLength": 160},
     "snapshotId": {"type": "string", "minLength": 1, "maxLength": 160},
+    "releaseId": {"type": "string", "maxLength": 160},
+    "releaseStage": {"enum": ["shadow", "canary", "production"]},
+    "releaseProjectionRevision": {"type": "integer", "minimum": 1},
+    "trafficPolicyVersion": {"type": "string", "maxLength": 160},
+    "sideEffectPolicyVersion": {"type": "string", "maxLength": 160},
     "deadlineAt": {"type": "string", "format": "date-time"},
     "attemptBudgetRemaining": {"type": "integer", "minimum": 0, "maximum": 1000},
     "purpose": {"type": "string", "maxLength": 160}

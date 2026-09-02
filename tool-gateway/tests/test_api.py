@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.domain.models import ToolRisk
+from app.domain.models import SideEffectClass, ToolRisk
 
 from .conftest import tool_spec
 
@@ -157,6 +157,45 @@ def test_idempotency_replay_conflict_and_audit_redaction(
     assert "sensitive-value" not in serialized_audit
     assert "stable-key-0001" not in serialized_audit
     assert audit.json()["count"] == 3
+
+
+def test_shadow_write_returns_receipt_without_calling_external_adapter(
+    gateway_factory, trusted_headers
+) -> None:
+    """Shadow 写操作必须保留授权事实，但不能因为模拟通过就触达外部 Adapter。"""
+    calls = {"count": 0}
+
+    def handler(args, context):
+        calls["count"] += 1
+        return {"committed": True}
+
+    spec = tool_spec("shadow-write", permission="tool:write", risk=ToolRisk.WRITE_LOW_RISK)
+    assert spec.side_effect_class is SideEffectClass.IRREVERSIBLE_WRITE
+    client = gateway_factory([(spec, handler)])
+    response = client.post(
+        "/api/v1/tools/shadow-write/invoke",
+        headers={
+            **trusted_headers,
+            "X-Permissions": "tool:write",
+            "X-Idempotency-Key": "shadow-write-1",
+            "X-Release-Id": "rel-shadow",
+            "X-Release-Stage": "shadow",
+        },
+        json={"arguments": {"value": "ok"}},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert calls["count"] == 0
+    assert payload["execution_receipt"] == {
+        "release_id": "rel-shadow",
+        "release_stage": "shadow",
+        "release_projection_revision": 1,
+        "side_effect_class": "irreversible_write",
+        "commit_capability": "none",
+        "outcome": "SIMULATED",
+        "commit_performed": False,
+    }
+    assert payload["output"]["simulation_outcome"] == "SUCCESS"
 
 
 def test_execution_status_reads_idempotency_ledger_without_reinvoking_tool(
@@ -344,6 +383,37 @@ def test_high_risk_approval_is_bound_and_consumed(
     assert replay.json()["idempotent_replay"] is True
     assert calls["count"] == 1
     assert approval.json()["status"] == "CONSUMED"
+
+
+def test_canary_never_commits_a_write_without_a_concrete_prepare_commit_adapter(
+    gateway_factory,
+    trusted_headers,
+) -> None:
+    """灰度百分比不是把普通 HTTP Adapter 变成可事务回滚 Adapter 的理由。"""
+    calls = {"count": 0}
+    spec = tool_spec(
+        "reversible-write",
+        permission="tool:write",
+        risk=ToolRisk.WRITE_LOW_RISK,
+        idempotent=True,
+    )
+    spec.side_effect_class = SideEffectClass.REVERSIBLE_WRITE
+    client = gateway_factory([(spec, lambda args, context: calls.update(count=calls["count"] + 1))])
+
+    response = client.post(
+        "/api/v1/tools/reversible-write/invoke",
+        headers={
+            **trusted_headers,
+            "X-Idempotency-Key": "canary-write-1",
+            "X-Release-Stage": "canary",
+        },
+        json={"arguments": {"value": "ok"}},
+    )
+
+    assert response.status_code == 200
+    assert calls["count"] == 0
+    assert response.json()["execution_receipt"]["outcome"] == "SIMULATED"
+    assert response.json()["execution_receipt"]["commit_performed"] is False
 
 
 def test_approval_cannot_be_reused_with_changed_arguments(

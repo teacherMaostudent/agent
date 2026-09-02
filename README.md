@@ -53,9 +53,8 @@ ReasoningPolicy，Skill/Tool/RAG/Memory 是 Capability，Temporal 是 Durability
 复杂任务采用 `Plan-Execute-Replan` 宏观控制，ReAct 只用于局部自适应步骤；执行内核与
 持久化策略正交组合。Planner 先产生 `ProposedExecutionPlan`，Runtime Guard 生成
 `AdmittedExecutionPlan`，Tool Gateway 再对每个具体 operation 做最终授权和提交。详见
-[Plan-Execute 与分层授权执行架构](docs/plan-execute-authorization-architecture.md)。
-原设计 40 个章节的逐项落地证据见
-[设计落地验收清单](docs/skill-design-implementation-checklist.md)。
+[Plan-Execute 与分层授权执行架构](docs/plan-execute-authorization-architecture.md)。具体类、方法、状态与失败
+路径见[代码阅读与方法职责指南](docs/code-reading-guide.md)。
 
 ```mermaid
 flowchart TD
@@ -168,8 +167,8 @@ flowchart LR
 | --- | --- | --- | --- |
 | Control Plane | 定义 Agent、版本、发布、发布快照、质量门禁与发布编排 | 在线执行 Agent Loop | `agent-control-plane/` |
 | Agent Runtime | 状态机、LangGraph、Harness、规划、预算、审批恢复与运行编排 | 直接管理业务数据或模型厂商协议 | `agent-runtime/` |
-| Context Service | 会话记忆、证据组织、角色/时间/相关性/可信度排序、Token 预算 | 直接执行业务副作用 | `rag-agent-service/apps/agent_context_service/` |
-| RAG Service | 文档摄取、索引、ACL 检索、混合召回、重排和证据返回 | 决定 Agent 的下一步动作 | `rag-agent-service/apps/rag_query_api/`、`apps/ingestion_*` |
+| Context Service | 会话记忆、证据组织、角色/时间/相关性/可信度排序、Token 预算 | 直接执行业务副作用 | [Context README](rag-agent-service/apps/agent_context_service/README.md) |
+| RAG Service | 文档摄取、索引、ACL 检索、混合召回、重排和证据返回 | 决定 Agent 的下一步动作 | [RAG README](rag-agent-service/README.md) |
 | LLM Gateway | 多供应商调用、模型路由、限流、熔断、成本与模型策略 | 管理业务流程和工具权限 | `llm-gateway/` |
 | Tool Gateway | 工具目录、参数校验、权限、审批、幂等与安全执行 | 让模型绕过治理直接访问业务系统 | `tool-gateway/` |
 | Governance | 审计、评测、合规工作流、问题发现与不可变证据 | 同步阻塞主业务流程 | `agent-governance/` |

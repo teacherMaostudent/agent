@@ -10,6 +10,56 @@ Step Authorization，并分别发布授权决定与执行完成事件。
 模型只负责选择已发现的工具并生成参数；模型输出不是可信执行指令，不能绕过本服务
 直接访问业务系统。
 
+## 为什么需要独立工具执行面
+
+工具调用是 Agent 系统中最接近真实副作用的位置。模型生成了合法 JSON，并不代表它有权退款、写库、发信、
+扫描文件或调用内部 MCP。Tool Gateway 把“模型提出动作”与“企业系统提交动作”分开，为所有 Agent 提供
+统一的最终 Reference Monitor 和执行出口。
+
+Control Plane 拥有 Tool Draft、Version、Review 和 Runtime Release；本服务只消费已发布 Runtime Projection。
+因此目录管理面与执行面物理分离，草稿、拒绝版本和审核意见不会被模型发现，也不会因为 Gateway 重启重新
+读取静态文件成为事实源。
+
+## Tool Call 到可信 Evidence
+
+```text
+LLM Proposal
+  → Runtime Reference Monitor / Capability Evaluator
+  → Tool Gateway Policy Evaluator
+  → Approval + Idempotency Claim
+  → HTTP / MCP / Enterprise Service
+  → Tool Observation
+  → Parser
+  → Output Schema Validator
+  → Security / ACL / Freshness Validator
+  → Evidence Extractor / Verifier / Store
+  → Runtime ExecutionState / Context Projection
+```
+
+Gateway 负责执行前的身份、策略和参数事实，以及执行后的输出 Schema 和安全边界；Runtime 负责把已验证结果
+投影为计划状态和模型可见上下文。业务系统仍保留对象级授权和事务约束，三者不能相互替代。
+
+## Multi-Agent 中的作用
+
+每个子 Agent 都以自己的 Snapshot 和权限发现工具，不能继承父 Agent 的工具集合。工具调用携带 Root Task、
+父子 Run、Plan、Admission、Step、Operation 和 Tool Execution 标识，因此多个专家并发执行时仍能区分谁提出、
+谁授权、谁审批、谁真正提交了副作用。高风险审批绑定精确参数摘要并一次性消费，不能被另一个 Agent 或重试
+请求复用。
+
+## Shadow 与 Commit 边界
+
+Tool Catalog 的冻结版本现在声明两件不同的事实：`side_effect_class` 表示业务副作用类别，
+`commit_capability` 表示该具体 Adapter 实际支持的安全能力（如 simulator、provider dry-run 或
+prepare-only）。二者不能互相推断：平台不会因为工具被标为“可逆写”就假设外部系统能事务回滚。
+
+Gateway 返回 `execution_receipt`，说明本次调用真实执行、仅模拟还是尚未提交，并记录是否真的跨越
+Commit Boundary。模拟回执只代表 Catalog 合约或模拟器的结果，绝不声明真实生产调用一定会成功。
+当前通用实现中，Shadow 真实执行 `pure_read/compute`；任何写操作默认模拟并保持 `commit_performed=false`。
+Canary 采用同一保守边界：没有经过工具适配器级 Prepare/Commit 或补偿协议审查前，`reversible_write`、
+`external_reversible`、`irreversible_write` 和 `critical_side_effect` 都不会真实提交。`commit_capability`
+只是目录能力声明，不能自动变成事务保证。
+后续只有在特定企业 Adapter 实现并验收官方 Dry-Run、Prepare/Commit 或可靠补偿协议后，才可提升其能力。
+
 ## 已实现能力
 
 - 按 `tenant + permission` 过滤工具清单，不向模型暴露无权调用的工具

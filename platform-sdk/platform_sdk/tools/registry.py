@@ -48,6 +48,11 @@ class ToolContext:
     agent_id: str = ""
     agent_version: str = ""
     snapshot_id: str = ""
+    release_id: str = ""
+    release_stage: str = "production"
+    release_projection_revision: int = 1
+    traffic_policy_version: str = "traffic-policy/v1"
+    side_effect_policy_version: str = "side-effect-policy/v1"
     deadline_at: str = ""
     attempt_budget_remaining: int = 0
     tool_version: str = ""

@@ -31,6 +31,14 @@ class ExecutionContext(BaseModel):
     agent_id: str
     agent_version: str
     snapshot_id: str
+    # Release Projection is selected by Control Plane and pinned with the Run.  It is
+    # intentionally separate from ``snapshot_id``: the same immutable Agent can be
+    # evaluated in Shadow and then promoted without compiling a second Agent.
+    release_id: str = ""
+    release_stage: str = "production"
+    release_projection_revision: int = Field(default=1, ge=1)
+    traffic_policy_version: str = "traffic-policy/v1"
+    side_effect_policy_version: str = "side-effect-policy/v1"
     graph_version: str = "runtime-planner-v1"
     model_policy_version: str = "local-unversioned"
     deadline_at: datetime
@@ -48,6 +56,11 @@ class ExecutionContext(BaseModel):
         agent_id: str,
         agent_version: str,
         snapshot_id: str,
+        release_id: str = "",
+        release_stage: str = "production",
+        release_projection_revision: int = 1,
+        traffic_policy_version: str = "traffic-policy/v1",
+        side_effect_policy_version: str = "side-effect-policy/v1",
         deadline_seconds: int,
         attempt_budget: int,
         graph_version: str = "runtime-planner-v1",
@@ -88,6 +101,11 @@ class ExecutionContext(BaseModel):
             agent_id=agent_id,
             agent_version=agent_version,
             snapshot_id=snapshot_id,
+            release_id=release_id,
+            release_stage=release_stage,
+            release_projection_revision=release_projection_revision,
+            traffic_policy_version=traffic_policy_version,
+            side_effect_policy_version=side_effect_policy_version,
             graph_version=graph_version,
             model_policy_version=model_policy_version,
             deadline_at=datetime.now(UTC) + timedelta(seconds=deadline_seconds),
@@ -112,6 +130,11 @@ class ExecutionContext(BaseModel):
             "X-Agent-Id": self.agent_id,
             "X-Agent-Version": self.agent_version,
             "X-Snapshot-Id": self.snapshot_id,
+            "X-Release-Id": self.release_id,
+            "X-Release-Stage": self.release_stage,
+            "X-Release-Projection-Revision": str(self.release_projection_revision),
+            "X-Traffic-Policy-Version": self.traffic_policy_version,
+            "X-Side-Effect-Policy-Version": self.side_effect_policy_version,
             "X-Graph-Version": self.graph_version,
             "X-Deadline-At": self.deadline_at.isoformat(),
             "X-Attempt-Budget-Remaining": str(self.attempt_budget_remaining),

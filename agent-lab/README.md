@@ -15,6 +15,42 @@ Agent Lab
   └─ Agent Lab：回放编排、结果保存、基线比较
 ```
 
+## 为什么需要独立 Agent Lab
+
+线上 Runtime 的目标是稳定执行，不能同时承担任意实验、批量回放和候选策略比较；Governance 拥有评测规则，
+也不应该自己决定要测试哪个 Agent 组合。Agent Lab 负责把一个候选 Agent 的 Prompt、Graph、RAG、Tool、
+Planner、预算和权限组合变成可重复实验，并保留精确 Snapshot、输入、轨迹和结果。
+
+它解决的是“这套 Agent 配置是否比基线更好、是否满足发布证据要求”，不是“某个基础模型是否训练成功”。
+
+## 实验生命周期与状态
+
+```text
+DRAFT
+  → prepare：解析并冻结全部用例的同一 Snapshot/Skill Digest
+PREPARED
+  → submit：创建唯一持久化 Job
+QUEUED
+  → Worker Lease
+RUNNING
+  → Runtime Replay + Session Ledger + Governance Judge/Gate
+COMPLETED / FAILED
+  → Comparison / Release Evidence / Retry / DLQ
+```
+
+API 进程只登记和提交实验，独立 Worker 才执行长时间回放。PostgreSQL 保存实验聚合、租约、尝试次数和最终
+结论；Temporal 负责耐久调度。Worker 崩溃后由租约超时恢复，瞬态下游故障指数重试，超过上限进入持久化
+DLQ。一个实验中的用例若解析到不同 Release/Snapshot，会在执行前拒绝，避免灰度期间产生混杂样本。
+
+## Multi-Agent 评测
+
+Multi-Agent 不能只比较最终答案。Agent Lab 从 Session Ledger 派生委派次数、专家选择、父子调用深度、工具
+调用、模型调用、审批、恢复、权限违规、Evidence Recall、工具选择 Precision、成本和延迟。测试集可以分别
+覆盖主管拆解、专家能力、冲突收敛、预算切分和故障恢复。
+
+推荐将简单单 Agent 或直接 ReAct 设为 baseline，再比较主管—专家、平级 Quorum 或动态 Capability Routing。
+Judge 衡量答案质量，确定性轨迹指标衡量 Harness 和组织行为，两者不能相互替代。
+
 ## 与 Model Lab 的边界
 
 | 服务 | 研究对象 | 可作为发布依据的产物 |
@@ -30,6 +66,7 @@ Agent Lab
 - `GET /v1/jobs/{job_id}`：读取任务的租约、重试次数和 DLQ 状态；
 - `GET /v1/experiments/{id}`：读取实验及用例结果；
 - `GET /v1/experiments/{id}/comparison`：与基线实验比较。
+- `GET /internal/v1/experiments/{id}/release-evidence`：只向 Control Plane 返回通过门禁的不可变证据。
 
 ## Harness Benchmark
 

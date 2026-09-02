@@ -26,6 +26,9 @@ class RuntimeSettings(BaseSettings):
     temporal_worker_region: str = ""
     temporal_worker_target_override: str = ""
     temporal_global_namespace_enabled: bool = False
+    # Shadow 镜像默认关闭。开启后 Runtime 才会为已发布 Shadow Projection 异步创建独立
+    # 回放 Run；生产必须在数据保留/脱敏评审完成后显式打开，不能因存在候选版本而默认复制。
+    shadow_mirroring_enabled: bool = False
     context_service_base_url: str = "http://localhost:8002"
     rag_query_base_url: str = "http://localhost:8003"
     ingestion_base_url: str = "http://localhost:8004"

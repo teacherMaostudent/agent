@@ -343,6 +343,95 @@ def test_canary_session_is_pinned_then_reassigned_after_rollback(
     }.issubset(event_types)
 
 
+def test_shadow_projection_is_persisted_and_never_selected_by_normal_runtime(
+    client: TestClient,
+    headers: dict[str, str],
+    valid_spec: dict[str, object],
+) -> None:
+    """Shadow 是内部镜像资格，不得因候选 Release 为 active 而泄漏给业务用户。"""
+    _create_agent(client, headers, valid_spec)
+    stable = _release(client, headers, _publish(client, headers, "1.0.0")["version_id"], 100)
+    changed = deepcopy(valid_spec)
+    changed["description"] = "candidate for shadow"
+    assert client.put(
+        "/v1/agents/customer-service/draft", headers=headers,
+        json={"expected_revision": 1, "spec": changed},
+    ).status_code == 200
+    candidate = _release(
+        client,
+        headers,
+        _publish(client, headers, "1.1.0")["version_id"],
+        0,
+        tenant_allowlist=["tenant-a"],
+    )
+
+    shadow = client.post(
+        f"/v1/releases/{candidate['release_id']}/start-shadow", headers=headers,
+        json={
+            "shadow_sample_rate": 1.0,
+            "side_effect_policy_version": "shadow-policy/test-v1",
+            "side_effect_policy": {"irreversible_write": "simulate"},
+            "shadow_resource_budget": {"max_qps": 5},
+        },
+    )
+    assert shadow.status_code == 200, shadow.text
+    assert shadow.json()["projection"]["release_stage"] == "shadow"
+    assert shadow.json()["projection"]["revision"] == 2
+
+    normal = client.get(
+        "/v1/runtime/agents/customer-service/resolve", headers=headers,
+        params={"environment": "production", "session_id": "ordinary-user-session"},
+    )
+    assert normal.status_code == 200, normal.text
+    assert normal.json()["release_id"] == stable["release_id"]
+    assert normal.json()["release_projection"]["release_stage"] == "production"
+
+    mirrored = client.get(
+        "/v1/runtime/agents/customer-service/resolve-shadow", headers=headers,
+        params={"environment": "production", "session_id": "mirror-session"},
+    )
+    assert mirrored.status_code == 200, mirrored.text
+    assert mirrored.json()["release_id"] == candidate["release_id"]
+    assert mirrored.json()["assignment"] == "shadow"
+    assert mirrored.json()["shadow_sampled"] is True
+
+    class PassedShadowGate:
+        async def gate_decision(self, tenant_id: str, decision_id: str) -> dict[str, object]:
+            assert tenant_id == "tenant-a"
+            assert decision_id == "gate-shadow"
+            return {
+                "releaseId": candidate["release_id"],
+                "snapshotId": candidate["version_id"],
+                "decision": "PROMOTE",
+            }
+
+    client.app.state.container.service._governance = PassedShadowGate()
+    canary = client.post(
+        f"/v1/releases/{candidate['release_id']}/start-canary", headers=headers,
+        json={
+            "rollout_percentage": 5,
+            "decision_id": "gate-shadow",
+            "eligible_roles": ["trusted-pilot"],
+        },
+    )
+    assert canary.status_code == 200, canary.text
+    assert canary.json()["projection"]["release_stage"] == "canary"
+    assert canary.json()["projection"]["revision"] == 3
+    # Tenant allow-list alone no longer bypasses the published IdP-role narrowing rule.
+    excluded = client.get(
+        "/v1/runtime/agents/customer-service/resolve",
+        headers=headers,
+        params={"environment": "production", "session_id": "role-excluded"},
+    )
+    assert excluded.json()["release_id"] == stable["release_id"]
+    included = client.get(
+        "/v1/runtime/agents/customer-service/resolve",
+        headers={**headers, "X-Subject-Roles": "trusted-pilot"},
+        params={"environment": "production", "session_id": "role-included"},
+    )
+    assert included.json()["release_id"] == candidate["release_id"]
+
+
 def test_tenant_policy_blocks_unapproved_model(
     client: TestClient,
     headers: dict[str, str],

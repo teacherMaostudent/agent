@@ -105,5 +105,4 @@ Provider；Signal、检查点、取消和跨区队列同样由 Temporal 持久�
 | Task Artifact Store | `rag-agent-service/app/context/artifact_store.py` |
 | Skill 离线回放 | `agent-lab/app/{models,clients,service}.py` |
 
-原设计 40 个章节的逐项代码证据和不变式见
-[设计落地验收清单](skill-design-implementation-checklist.md)。
+对应类、方法、状态与失败路径见[代码阅读与方法职责指南](code-reading-guide.md)。

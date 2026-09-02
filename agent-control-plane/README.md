@@ -1,8 +1,7 @@
 # agent-control-plane
 
-> Governance quality gates used for release decisions must reference an
-> immutable `EvaluationSnapshot`. Its frozen route version and model revision
-> are enforced by LLM Gateway before any evaluator model call is made.
+> 用于发布决策的 Governance Gate 必须引用不可变 `EvaluationSnapshot`。其中冻结的模型路由版本和
+> model revision 会在 Judge 调用前由 LLM Gateway 校验，避免评测模型发生无记录漂移。
 
 Agent 管理面与配置面。它负责定义、校验、版本化和发布 Agent，但**不执行 Agent
 推理**。线上 Runtime 只读取已经发布的不可变快照，不直接读取会持续变化的草稿表。
@@ -10,6 +9,71 @@ Agent 管理面与配置面。它负责定义、校验、版本化和发布 Agen
 模型路由发布编排也由 Control Plane 持有：读取 Governance 质量门禁，通过
 Gateway 执行灰度策略，监控 Gateway 性能后提升或回滚。Gateway 原有
 `/admin/releases` 仅作为兼容代理。
+
+## 为什么需要这个服务
+
+如果 Runtime 直接读取可编辑配置，同一个 Agent ID 在两次请求之间可能对应不同 Prompt、模型、
+工具或知识索引，评测、审批和审计也就无法证明生产实际运行了什么。Control Plane 把“人可以编辑的
+声明”转换为“机器只能按版本执行的工件”，并成为 Agent、Workflow、Skill、Tool、模型路由和租户策略
+的管理面事实源。
+
+它解决的是定义与发布一致性，而不是在线推理性能。一次正式运行必须能够从 `release_id`、
+`version_id`、`snapshot_id` 和内容哈希反向还原当时允许的 Graph、Prompt、能力、模型、知识、预算和
+审批规则。
+
+## 在单 Agent 与 Multi-Agent 中的作用
+
+单 Agent 场景中，本服务固定一个 Agent 的完整执行边界。Multi-Agent 场景中，它进一步固定主管可委派的
+子 Agent、能力绑定、最大拓扑约束和各责任主体的独立发布版本。父 Agent 只能请求快照已声明的能力或专家，
+不能临时创造未审核 Agent，也不能把自己的权限隐式授予子 Agent。
+
+```text
+Agent/Workflow/Skill/Tool Draft
+  → Schema 与策略校验
+  → 不可变 Version
+  → Agent Lab / Governance 质量证据
+  → Release CAS/Saga
+  → Snapshot Compiler
+  → Runtime Artifact + Runtime Projection
+```
+
+其中 Snapshot 面向 Runtime；Tool Runtime Projection 面向 Tool Gateway；模型路由和配额投影面向 LLM
+Gateway。三类投影均只包含执行所需的最小契约，不泄漏草稿、审核意见或管理凭据。
+
+## 核心数据与一致性
+
+| 对象 | 含义 | 关键不变量 |
+| --- | --- | --- |
+| Draft/Spec | 可编辑声明 | 用 revision CAS 防止覆盖并发修改 |
+| Version | 已冻结语义版本 | 内容和 SHA-256 不可变 |
+| Release | 某环境当前部署选择 | 灰度、暂停、提升、回滚均受状态机约束 |
+| Runtime Snapshot | Runtime 可执行工件 | 与 Version、能力目录、工具和模型修订一致 |
+| Runtime Projection | Gateway 最小执行目录 | 只投影已审核、已发布资产 |
+| Outbox Event | 已提交管理事实 | 与业务状态同事务写入，异步交给 CDC/Kafka |
+
+生产发布不是单次数据库更新：质量门禁、目标 Runtime 集群能力证明、版本 CAS、发布 Saga、流量提升与回滚
+共同构成生命周期。任何证据缺失、版本漂移或目标集群能力不匹配都会失败关闭。
+
+## Progressive Release Projection
+
+同一个不可变 Snapshot 可以经历 Shadow、Canary 与 Production；阶段变化不会重新编译 Agent。
+Control Plane 为每个 Release 持久化 `ReleaseProjection`，其中固定 `release_stage`、候选/基线
+关系、流量与副作用策略版本、Shadow 采样率/资源预算及递增 Revision。Runtime 创建 Run 时将其
+一起钉扎，恢复和重试不重新按当前流量推导。
+
+```text
+Snapshot = Agent 定义、Graph、Skill、Model、Tool、知识版本
+Projection = Shadow / Canary / Production 的流量与副作用执行策略
+
+`start-canary` 还可冻结 `eligible_roles` 和 `excluded_roles`。这些值只匹配 Runtime 从用户已验证
+OIDC 身份中重建后、经服务身份传来的 `X-Subject-Roles`，只会让候选范围变小；不匹配时稳定 Release
+继续服务。Control Plane 不接受调用方自报的业务风险、Prompt 标签或任意 metadata 作为路由授权。
+```
+
+`POST /v1/releases/{id}/start-shadow` 只发布内部镜像资格，正常 Runtime Resolve 永远不会将
+该 Release 返回给业务用户；`resolve-shadow` 仅供受信任镜像 Worker 使用，并返回确定性采样结论。
+`start-canary` 必须消费 Governance 已保存的 `PROMOTE` GateDecision。Control Plane 不接受浏览器
+传入任意 stage 来改变执行模式。
 
 ## 已实现能力
 

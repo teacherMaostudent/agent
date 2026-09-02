@@ -4,6 +4,43 @@
 
 > **职责边界**：Gateway 不负责编排 Agent Graph、保存会话记忆、执行 RAG 检索、编排业务 Tool 或判断 Agent 下一步动作。这些能力分别属于独立的 `agent-runtime`、Context/RAG 服务与 Tool Gateway。完整边界、身份 Header 和成本预算协议见 [网关职责边界与调用协议](docs/网关职责边界与调用协议.md)。
 
+## 为什么需要统一模型执行面
+
+如果每个 Agent 直接接入 GPT、Claude、DeepSeek、Kimi 或通义千问，供应商密钥、重试、限流、成本口径、
+安全策略和故障降级会散落在各业务代码中；Multi-Agent 还会把这种重复放大。LLM Gateway 将模型调用收敛为
+一条受版本、配额和审计约束的执行路径，让 Runtime 只表达逻辑模型路由和剩余预算，不持有厂商凭据。
+
+本服务的事实对象是一次模型调用，不是一次 Agent 任务。它可以拒绝路由漂移、供应商过载、租户超额或
+不满足数据区域策略的请求，但不会替 Planner 决定下一步。
+
+## 在 Multi-Agent 中的作用
+
+主管、专家、Judge 和离线评测可能使用不同模型与成本等级，但全部经过同一 Gateway：
+
+```text
+Runtime / Governance / Agent Lab
+  → logical route + routeVersion + modelRevision + budget
+  → Identity / Quota / Admission
+  → Route candidates / Canary / Fallback
+  → Provider protocol adapter
+  → Usage settlement / Metrics / Governance event
+```
+
+父子 Agent 的额度按租户、用户、Route 和 Provider 分层控制；某个专家的重试或 fallback 不得突破根任务的
+剩余预算。Gateway 校验 `routeVersion + modelRevision`，使 Agent Lab、Governance Judge 与生产调用不会在
+同一路由名下悄悄换模型。
+
+## 关键状态与失败语义
+
+| 环节 | 负责内容 | 失败处理 |
+| --- | --- | --- |
+| Admission | RPM、TPM、并发、请求与 Token 上限 | 429 + 受限维度 + Retry-After |
+| Quota | 租户/用户 Token 和 USD 预算预占、结算 | 超额拒绝，不伪造零成本 |
+| Routing | 固定路由版本、模型修订、灰度和 fallback | 未知版本或漂移 fail-closed |
+| Resilience | 上游超时、熔断和有限候选切换 | 区分 429、503 与供应商失败 |
+| Settlement | Token、成本、时延、TTFT/TPOT | 以统一币种和已知用量记账 |
+| Event | 脱敏调用事实与审计关联 | 异步投递，不把 Governance 变成同步主链路 |
+
 ## 核心能力
 
 - 统一聊天接口：`POST /v1/chat/completions`，兼容 OpenAI Chat Completions 风格。
@@ -718,8 +755,8 @@ http://localhost:5173
 
 ## 面试题库
 
-仓库级的 Python 设计、异步编程、类型契约、依赖注入与服务边界学习材料见
-[Python 工程实践教程](../docs/python-engineering-tutorial.md)。Gateway 的面试与技术讨论应以
-本 README、`docs/` 下的路由、评测、成本和边界设计文档为准，避免引用不存在的题库路径。
+跨服务类型契约、依赖注入和服务边界的代码定位见
+[代码阅读与方法职责指南](../docs/code-reading-guide.md)。Gateway 的面试与技术讨论应以
+本 README、`docs/` 下的路由、评测、成本和边界设计文档为准。
 
 成本治理采用“条件分位数预测预留 -> 厂商 usage 实际结算 -> 账单对账”的分层设计，详细实现、官方价格来源和仍需补齐的财务级能力见 [成本预测与结算](docs/成本预测与结算.md)。
