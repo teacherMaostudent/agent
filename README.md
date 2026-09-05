@@ -85,7 +85,7 @@ Workflow 不加载 Planner 或 Agent Session，支持重试、补偿、Human Sig
 1. 第一次了解平台：阅读本文的“架构总览”“生命周期”和“服务目录”。
 2. 理解线上执行：阅读 [Agent Runtime](agent-runtime/README.md) 与 [架构总览](docs/architecture-overview.md)。
 3. 理解发布与质量：阅读 `agent-control-plane/README.md`、`agent-governance/README.md` 与 `agent-lab/README.md`。
-4. 准备部署：阅读 [部署指南](docs/deployment-guide.md)，再检查 `compose.production.yaml`、证书、OIDC 与 Kafka Connect 配置。
+4. 准备部署：先阅读 [生产环境配置说明书](docs/production-configuration-manual.md)，再结合[部署指南](docs/deployment-guide.md)检查 `compose.production.yaml`、证书、OIDC 与 Kafka Connect 配置。
 5. 开发跨服务功能：先修改 `platform-contracts/` 或 `platform-sdk/` 中的版本化契约，再改各服务实现。
 6. 按调用链理解方法：阅读 [代码阅读与方法职责指南](docs/code-reading-guide.md)，它把入口、计划准入、
    Graph、Context/RAG、模型、工具、发布、治理和故障恢复映射到具体文件与方法。
