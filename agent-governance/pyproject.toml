@@ -44,8 +44,9 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
-# 服务源码采用中文职责说明；RUF002 将中文标点误判为易混淆 ASCII 字符。
-ignore = ["RUF002"]
+# 审计/评测规则保留中文领域说明；RUF 的 Unicode 标点误报和为长策略
+# 字段强行折行都不应掩盖真正的正确性、导入和安全质量检查。
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.format]
 quote-style = "double"

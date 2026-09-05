@@ -62,7 +62,7 @@ Control Plane 为每个 Release 持久化 `ReleaseProjection`，其中固定 `re
 一起钉扎，恢复和重试不重新按当前流量推导。
 
 ```text
-Snapshot = Agent 定义、Graph、Skill、Model、Tool、知识版本
+Snapshot = Agent 定义、Graph、Skill、Model、Tool、知识版本、检索/精排契约
 Projection = Shadow / Canary / Production 的流量与副作用执行策略
 
 `start-canary` 还可冻结 `eligible_roles` 和 `excluded_roles`。这些值只匹配 Runtime 从用户已验证

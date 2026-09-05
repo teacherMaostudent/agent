@@ -55,7 +55,12 @@ Expert-labelled Golden / Red Team / Production Bad Case
 ```
 
 真正的 RAG 指标基于固定 Document/Chunk ID 计算 Recall@K、Precision@K、MRR 和 nDCG；回答阶段再计算证据
-覆盖、引用正确性和 Faithfulness。高风险用例可以要求零失败和关键证据 100% 召回，不能被总体平均分掩盖。
+覆盖、引用正确性和 Faithfulness。检索评测同时记录 ACL Leakage、过期证据和冲突证据比例；ACL Leakage
+只要非零即触发 Hard Gate，不能被总体平均分掩盖。高风险用例可以要求零失败和关键证据 100% 召回。
+
+候选检索版本的线上比较使用 `POST /v1/governance/evaluations/retrieval-shadow` 记录：请求正文只保留查询摘要，
+而不是原始用户问题；结果记录基线/候选 Release、Evidence 集合重叠、ACL 泄漏率、延迟、成本和是否具备 Canary
+资格。它不能自行切流，Control Plane 仍需消费通过的 GateDecision 才能执行 Shadow → Canary 或回滚。
 
 ## Multi-Agent 中的作用
 

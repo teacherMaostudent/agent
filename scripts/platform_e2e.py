@@ -154,7 +154,9 @@ def desktop_spec() -> dict[str, Any]:
                 "max_execution_seconds": 180,
                 "max_cost_usd": 1.0,
             },
-            "labels": {"desktop_baseline": "v8", "fixture": "desktop-local"},
+            # Bump the baseline whenever snapshot-compiler contracts change. Published
+            # snapshots are immutable; a new Release is safer than mutating an old hash.
+            "labels": {"desktop_baseline": "v9", "fixture": "desktop-local"},
         }
     )
     return value
@@ -203,7 +205,7 @@ def ensure_desktop_release(client: httpx.Client) -> None:
     else:
         agent_response.raise_for_status()
         agent = agent_response.json()
-        if agent.get("draft", {}).get("labels", {}).get("desktop_baseline") != "v8":
+        if agent.get("draft", {}).get("labels", {}).get("desktop_baseline") != "v9":
             request(
                 client,
                 "PUT",
@@ -222,7 +224,7 @@ def ensure_desktop_release(client: httpx.Client) -> None:
         headers=manage,
     )
     version = next(
-        (item for item in versions if item["semantic_version"] == "1.7.0"),
+        (item for item in versions if item["semantic_version"] == "1.8.0"),
         None,
     )
     if version is None:
@@ -232,9 +234,9 @@ def ensure_desktop_release(client: httpx.Client) -> None:
             f"{BASE['control']}/v1/agents/{DESKTOP_AGENT}/versions",
             headers=manage,
             json={
-                "semantic_version": "1.7.0",
+                "semantic_version": "1.8.0",
                 "change_summary": (
-                    "Publish selectable OpenAI, DeepSeek, Qwen, Kimi and Claude logical routes"
+                    "Recompile local desktop baseline against the current runtime snapshot contract"
                 ),
             },
         )
@@ -314,9 +316,13 @@ def main(*, bootstrap_desktop: bool = False) -> int:
         )
         assert persisted["context"]["snapshot_id"] == version["version_id"], "snapshot identity mismatch"
 
-        tool_result = request(client, "POST", f"{BASE['tool']}/api/v1/tools/create_ingestion_job/invoke", headers={
+        # A synthetic E2E run must not enqueue a document job with a fabricated
+        # document_id: the Worker would later fail it. Use the released read-only
+        # scan tool so this leg validates the real Gateway/authorization/audit path
+        # without creating asynchronous junk work.
+        tool_result = request(client, "POST", f"{BASE['tool']}/api/v1/tools/controlled_scan/invoke", headers={
             "X-Tool-Gateway-Key": "local-tool-gateway-key", "X-Tenant-Id": TENANT,
-            "X-User-Id": "e2e-user", "X-Permissions": "ingestion:write", "X-Request-Id": "e2e-tool-request",
+            "X-User-Id": "e2e-user", "X-Permissions": "file:scan", "X-Request-Id": "e2e-tool-request",
             "X-Idempotency-Key": f"e2e-tool-{run['run_id']}", "X-Trace-Id": trace_id,
             "X-Run-Id": run["run_id"], "X-Agent-Id": agent, "X-Agent-Version": "1.0.0",
             "X-Snapshot-Id": version["version_id"],
@@ -328,7 +334,7 @@ def main(*, bootstrap_desktop: bool = False) -> int:
             "X-Plan-Id": f"plan-{run['run_id']}",
             "X-Plan-Admission-Id": f"admission-{run['run_id']}",
             "X-Step-Id": "step-create-ingestion-job",
-        }, json={"arguments": {"job_type": "REINDEX"}})
+        }, json={"arguments": {"scope": "workspace", "pattern": "TODO"}})
         assert tool_result.get("status") == "SUCCEEDED", "tool invocation did not succeed"
 
         # Outbox 投递异步完成；只在本轮 Trace 内有界等待，历史同名事件不得令门禁假通过。

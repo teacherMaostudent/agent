@@ -50,6 +50,7 @@
         <section id="review-view" class="view" hidden>
           <div class="hero-card compact"><div><p class="eyebrow">EXPLICIT REVIEW QUEUE</p><h2>被明确指派给你的任务</h2><p>审查权限不会自动扩大为全租户可见；每一项都必须存在单独的 Review Assignment。</p></div><button id="refresh-review" class="ghost">刷新队列</button></div>
           <div id="review-list" class="task-list" aria-live="polite"><div class="empty-state">正在加载审查队列…</div></div>
+          <section id="wiki-review-section" data-requires="knowledge:review" hidden><div class="section-heading"><div><h2>组织知识候选</h2><p>这里只显示当前租户等待专家决定的 Wiki 候选；模型结论不会自动成为组织知识。</p></div><button id="refresh-wiki-candidates" class="ghost">刷新候选</button></div><div id="wiki-candidate-list" class="task-list"><div class="empty-state">正在读取知识候选…</div></div></section>
         </section>
 
         <section id="console-view" class="view" hidden>
@@ -142,6 +143,29 @@
         <label>协作理由<textarea id="collaborator-reason-input" required minlength="2" maxlength="2000" placeholder="说明对方需要复核的数据域、风险或证据。"></textarea></label>
         <p class="form-note">该操作保留你自己的 Assignment；对方只获得这一 Run 的显式审查关系。</p>
         <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button class="primary">添加协作者</button></div>
+      </form>
+    </dialog>
+    <dialog id="wiki-compile-dialog">
+      <form id="wiki-compile-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">GOVERNED KNOWLEDGE</p><h2>编译为 Wiki 候选</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+        <label>使用的原始证据<select id="wiki-evidence-select" multiple required size="5"></select></label>
+        <label>页面类型<select id="wiki-page-type"><option value="concept">概念</option><option value="entity">实体</option><option value="rule">规则</option><option value="procedure">流程</option><option value="decision">决策</option></select></label>
+        <label>标题<input id="wiki-title-input" required minlength="2" maxlength="200" /></label>
+        <label>摘要<textarea id="wiki-summary-input" required maxlength="4000"></textarea></label>
+        <label>正文<textarea id="wiki-body-input" required maxlength="100000"></textarea></label>
+        <label>标签<input id="wiki-tags-input" placeholder="用逗号分隔，例如：客服,退款规则" /></label>
+        <p class="form-note">提交只创建待审候选。BFF 会从 Runtime 读取结论与证据哈希，浏览器不能伪造来源。</p>
+        <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button class="primary" value="default">提交候选</button></div>
+      </form>
+    </dialog>
+    <dialog id="wiki-review-dialog">
+      <form id="wiki-review-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">HUMAN KNOWLEDGE GATE</p><h2 id="wiki-review-title">审核 Wiki 候选</h2></div><button value="cancel" class="icon-button" aria-label="关闭">×</button></div>
+        <div id="wiki-review-summary" class="answer"></div>
+        <label>决定<select id="wiki-review-decision"><option value="approve">批准为组织知识</option><option value="reject">拒绝候选</option></select></label>
+        <label>审查意见<textarea id="wiki-review-comment" required minlength="2" maxlength="4000"></textarea></label>
+        <p class="form-note">批准会生成不可变 human_confirmed 版本，并异步触发 RAG 摄取与质量门禁。</p>
+        <div class="dialog-actions"><button value="cancel" class="ghost">取消</button><button class="primary" value="default">提交决定</button></div>
       </form>
     </dialog>
     <dialog id="golden-review-dialog">

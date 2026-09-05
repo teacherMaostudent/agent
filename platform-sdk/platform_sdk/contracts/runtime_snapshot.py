@@ -18,6 +18,7 @@ from platform_sdk.contracts.execution_profile import (
     resolve_execution_profile,
 )
 from platform_sdk.contracts.orchestration import ReasoningPolicy
+from platform_sdk.contracts.rag import RetrievalProfilePolicy
 from platform_sdk.contracts.skills import (
     CapabilityProviderDescriptor,
     CapabilityRoutingPolicy,
@@ -184,6 +185,12 @@ def compile_runtime_snapshot(
             raise RuntimeSnapshotCompileError(
                 "code-runner/v1 requires one version-pinned controlled_code_runner tool binding"
             )
+    retrieval_policy = dict(spec.get("retrieval_policy") or {})
+    if retrieval_policy:
+        try:
+            RetrievalProfilePolicy.model_validate(retrieval_policy).normalized_profiles()
+        except Exception as exc:
+            raise RuntimeSnapshotCompileError("published retrieval policy is invalid") from exc
     snapshot_hash = canonical_snapshot_hash(snapshot)
     return RuntimeSnapshotArtifact(
         snapshot_hash=snapshot_hash,
@@ -212,7 +219,7 @@ def compile_runtime_snapshot(
             logical_model=models[0],
             fallback_models=list(dict.fromkeys(fallback_models)),
             data_region=default_route.get("data_region"),
-            retrieval_policy=dict(spec.get("retrieval_policy") or {}),
+            retrieval_policy=retrieval_policy,
             subagents=[dict(item) for item in spec.get("subagents") or []],
             skills=skills,
             capability_providers=capability_providers,

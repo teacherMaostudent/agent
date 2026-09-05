@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 from datetime import UTC, datetime
 from pathlib import Path
@@ -345,6 +346,29 @@ async def _governance(request: Request, method: str, path: str, **kwargs: Any) -
     return {} if response.status_code == 204 else response.json()
 
 
+async def _knowledge_wiki(request: Request, method: str, path: str, **kwargs: Any) -> Any:
+    """Call the optional Wiki service without exposing its workload credential to the browser."""
+    if not settings.knowledge_wiki_base_url or not settings.knowledge_wiki_service_key:
+        raise HTTPException(status_code=503, detail="knowledge Wiki is not configured")
+    headers = _identity_headers(request)
+    headers["X-Knowledge-Wiki-Key"] = settings.knowledge_wiki_service_key
+    try:
+        async with httpx.AsyncClient(
+            timeout=settings.request_timeout_seconds, **_mtls_options()
+        ) as client:
+            response = await client.request(
+                method,
+                f"{settings.knowledge_wiki_base_url.rstrip('/')}{path}",
+                headers=headers,
+                **kwargs,
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail="knowledge Wiki is unavailable") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=response.text[:2_000])
+    return {} if response.status_code == 204 else response.json()
+
+
 def _event_metadata_projection(metadata: Any) -> dict[str, Any]:
     """Project auditable event facts without returning prompts, responses, or tool payloads."""
     if not isinstance(metadata, dict):
@@ -660,7 +684,13 @@ async def session(request: Request) -> dict[str, Any]:
 
 
 _MANAGEABLE_HUMAN_ROLES = frozenset(
-    {"agent-user", "agent-reviewer", "platform-operator", "governance-auditor"}
+    {
+        "agent-user",
+        "agent-reviewer",
+        "knowledge-reviewer",
+        "platform-operator",
+        "governance-auditor",
+    }
 )
 _PROTECTED_HUMAN_ROLE = "platform-super-admin"
 _MANAGEABLE_PERMISSIONS = frozenset({
@@ -672,7 +702,8 @@ _MANAGEABLE_PERMISSIONS = frozenset({
     "agent:review", "run:review:approve", "run:review:assign", "run:review:transfer",
     "run:review:comment", "run:review:label", "evidence:content:read", "run:share",
     "run:tenant:read", "identity:users:read", "identity:users:write",
-    "tenant:read", "tenant:write",
+    "tenant:read", "tenant:write", "knowledge:read", "knowledge:compile",
+    "knowledge:review",
 })
 
 
@@ -1008,6 +1039,123 @@ async def review_feedback(request: Request, run_id: str) -> dict[str, Any]:
     if response.status_code >= 400:
         raise HTTPException(status_code=response.status_code, detail=response.text[:2_000])
     return response.json()
+
+
+@app.post("/api/review/runs/{run_id}/wiki-candidates", status_code=201)
+async def compile_reviewed_run_to_wiki(
+    request: Request, run_id: str
+) -> dict[str, Any]:
+    """Compile an assigned Run into a Wiki candidate using Runtime-authoritative Evidence.
+
+    The browser supplies only page drafts and selected Evidence IDs. Conclusion text, evidence
+    hashes and source identity are read from Runtime after Assignment/data-domain checks, so a
+    caller cannot manufacture a raw-evidence provenance record at this boundary.
+    """
+    _require_permission(request, "knowledge:compile")
+    _require_permission(request, "evidence:content:read")
+    payload = await _request_object(request)
+    evidence_ids = _form_strings(payload, "evidence_ids", 100)
+    if not evidence_ids:
+        raise HTTPException(status_code=422, detail="at least one evidence_id is required")
+    drafts = payload.get("drafts")
+    if not isinstance(drafts, list) or not drafts or len(drafts) > 50:
+        raise HTTPException(status_code=422, detail="drafts must contain 1 to 50 Wiki pages")
+    projection = await _runtime(request, "GET", f"/agent/review/runs/{run_id}")
+    allowed_ids = {
+        str(item.get("evidence_id", ""))
+        for item in projection.get("evidence", [])
+        if isinstance(item, dict)
+    }
+    if any(item not in allowed_ids for item in evidence_ids):
+        raise HTTPException(status_code=422, detail="selected Evidence is not part of this Run")
+    evidence = await asyncio.gather(
+        *(
+            _runtime(request, "GET", f"/agent/review/runs/{run_id}/evidence/{item}")
+            for item in evidence_ids
+        )
+    )
+    conclusion = str(projection.get("conclusion", {}).get("answer", "")).strip()
+    if not conclusion:
+        raise HTTPException(status_code=409, detail="Run has no reviewable conclusion")
+    sources = [
+        {
+            "source_id": item["evidence_id"],
+            "source_type": "evidence",
+            "knowledge_level": "raw_evidence",
+            "content_sha256": item["content_sha256"],
+            "uri": f"runtime://runs/{run_id}/evidence/{item['evidence_id']}",
+        }
+        for item in evidence
+    ]
+    sources.append(
+        {
+            "source_id": f"run:{run_id}:conclusion",
+            "source_type": "run",
+            "knowledge_level": "model_inference",
+            "content_sha256": hashlib.sha256(conclusion.encode()).hexdigest(),
+            "uri": f"runtime://runs/{run_id}",
+        }
+    )
+    return await _knowledge_wiki(
+        request,
+        "POST",
+        "/v1/wiki/candidates",
+        json={
+            "root_task_id": run_id,
+            "conclusion": conclusion,
+            "sources": sources,
+            "drafts": drafts,
+            "compiler_model": str(
+                payload.get("compiler_model", "deterministic/review-template-v1")
+            ),
+            "compiler_prompt_version": str(
+                payload.get("compiler_prompt_version", "wiki-compiler/v1")
+            ),
+        },
+    )
+
+
+@app.get("/api/review/wiki/candidates/{candidate_id}")
+async def review_wiki_candidate(request: Request, candidate_id: str) -> dict[str, Any]:
+    """Read a tenant-scoped candidate for the Review detail panel."""
+    _require_permission(request, "knowledge:review")
+    return await _knowledge_wiki(request, "GET", f"/v1/wiki/candidates/{candidate_id}")
+
+
+@app.get("/api/review/wiki/candidates")
+async def list_wiki_candidates(
+    request: Request, status: str = "pending_review", limit: int = 50
+) -> list[dict[str, Any]]:
+    """Expose the bounded tenant review queue only to authorized knowledge reviewers."""
+    _require_permission(request, "knowledge:review")
+    result = await _knowledge_wiki(
+        request,
+        "GET",
+        "/v1/wiki/candidates",
+        params={"status": status, "limit": min(max(limit, 1), 100)},
+    )
+    return result if isinstance(result, list) else []
+
+
+@app.post("/api/review/wiki/candidates/{candidate_id}/decision")
+async def decide_wiki_candidate(request: Request, candidate_id: str) -> dict[str, Any]:
+    """Approve/reject a candidate; Wiki still enforces the signed reviewer role."""
+    _require_permission(request, "knowledge:review")
+    _require_high_risk_authentication(request)
+    return await _knowledge_wiki(
+        request,
+        "POST",
+        f"/v1/wiki/candidates/{candidate_id}/review",
+        json=await _request_object(request),
+    )
+
+
+@app.get("/api/workspace/wiki/pages")
+async def list_reusable_wiki_pages(request: Request) -> list[dict[str, Any]]:
+    """Expose only approved tenant Wiki pages to authorized Workspace users."""
+    _require_permission(request, "knowledge:read")
+    result = await _knowledge_wiki(request, "GET", "/v1/wiki/pages")
+    return result if isinstance(result, list) else []
 
 
 @app.get("/api/console/golden-candidates")

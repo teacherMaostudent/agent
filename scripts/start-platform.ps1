@@ -5,6 +5,8 @@ param(
     [switch]$NoBuild,
     [switch]$SkipE2E,
     [switch]$WithLabs,
+    # 启动本机 OpenSearch 投影与 Redis 语义缓存；默认七服务基线不消耗 JVM 内存。
+    [switch]$WithEnterpriseRetrieval,
     # Web 默认启用真实 OIDC/PKCE。仅服务开发或故障隔离时才显式使用 -WithoutIdentity。
     [switch]$WithIdentity,
     [switch]$WithoutIdentity,
@@ -18,6 +20,7 @@ $ProgressPreference = "SilentlyContinue"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $composeFile = Join-Path $repositoryRoot "compose.platform.yaml"
 $identityComposeFile = Join-Path $repositoryRoot "compose.identity.yaml"
+$retrievalComposeFile = Join-Path $repositoryRoot "compose.retrieval.local.yaml"
 $projectName = "agent-platform"
 $identityEnabled = -not $WithoutIdentity
 if ($WithIdentity -and $WithoutIdentity) {
@@ -30,6 +33,14 @@ if ($identityEnabled) {
         throw "未找到本地身份覆盖文件：$identityComposeFile"
     }
     $composeFileArguments += @("-f", $identityComposeFile)
+}
+if ($WithEnterpriseRetrieval) {
+    if (-not (Test-Path -LiteralPath $retrievalComposeFile)) {
+        throw "未找到本机 Enterprise RAG 覆盖文件：$retrievalComposeFile"
+    }
+    # Profile keeps the JVM-based index out of the default developer path while
+    # ensuring Start/Stop/Status always address the same Compose topology.
+    $composeFileArguments += @("-f", $retrievalComposeFile, "--profile", "retrieval")
 }
 
 # 七个逻辑服务之外，PostgreSQL、Redis 和摄取工作负载属于其运行依赖，必须一起启动，
@@ -56,7 +67,12 @@ $coreServices = @(
 # 两种入口不会因同名镜像而在缺少 Temporal 时反复重启。
 $labServices = @("model-lab", "agent-lab")
 $identityServices = if ($identityEnabled) { @("keycloak", "keycloak-platform-init") } else { @() }
-$managedServices = if ($WithLabs) { $coreServices + $labServices + $identityServices } else { $coreServices + $identityServices }
+$retrievalServices = if ($WithEnterpriseRetrieval) { @("opensearch") } else { @() }
+$managedServices = if ($WithLabs) {
+    $coreServices + $labServices + $identityServices + $retrievalServices
+} else {
+    $coreServices + $identityServices + $retrievalServices
+}
 
 $healthChecks = [ordered]@{
     "Control Plane"   = "http://127.0.0.1:9002/health/ready"
@@ -70,6 +86,9 @@ $healthChecks = [ordered]@{
 }
 if ($identityEnabled) {
     $healthChecks["Keycloak"] = "http://127.0.0.1:9110/realms/agent-platform"
+}
+if ($WithEnterpriseRetrieval) {
+    $healthChecks["OpenSearch"] = "http://127.0.0.1:9200/_cluster/health"
 }
 
 # 宿主端口只服务于浏览器、桌面端和本地验收；容器间始终使用 Compose 服务名及原始端口。
@@ -86,6 +105,7 @@ $hostPorts = [ordered]@{
     "Ingestion"     = 8004
     "Model Lab"     = 9091
     "Agent Lab"     = 9092
+    "OpenSearch"    = 9200
     "Agent Web BFF" = 9010
     "Keycloak"      = 9110
 }
@@ -199,6 +219,7 @@ function Assert-HostPortsAvailable {
         "Agent Runtime" = "agent-runtime"; "Context" = "agent-context-service"
         "RAG Query" = "rag-query-api"; "Ingestion" = "ingestion-api"
         "Model Lab" = "model-lab"; "Agent Lab" = "agent-lab"; "Keycloak" = "keycloak"
+        "OpenSearch" = "opensearch"
     }
     foreach ($entry in $hostPorts.GetEnumerator()) {
         $composeService = $serviceByName[$entry.Key]

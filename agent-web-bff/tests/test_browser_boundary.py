@@ -17,7 +17,8 @@ from agent_web_bff.browser_oidc import (
     build_auth_router,
 )
 from agent_web_bff.config import WebBffSettings
-from agent_web_bff.main import BrowserBoundaryMiddleware, app as web_bff_app
+from agent_web_bff.main import BrowserBoundaryMiddleware
+from agent_web_bff.main import app as web_bff_app
 
 
 def test_oidc_return_path_rejects_external_redirects() -> None:

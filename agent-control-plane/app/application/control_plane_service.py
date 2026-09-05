@@ -1157,13 +1157,15 @@ class ControlPlaneService:
             binding.knowledge_base
             for binding in knowledge
             if not binding.index_version
+            or not binding.index_manifest_id
             or not binding.embedding_contract_id
+            or not binding.reranker_contract_id
             or not binding.retrieval_evaluation_id
         ]
         if missing:
             raise PolicyViolationError(
-                "Knowledge bindings require index_version, embedding_contract_id and "
-                "retrieval_evaluation_id.",
+                "Knowledge bindings require index_version, index_manifest_id, "
+                "embedding_contract_id, reranker_contract_id and retrieval_evaluation_id.",
                 knowledge_bases=missing,
             )
         retrieval = gate.get("metrics", {}).get("retrieval", {}) if gate else {}

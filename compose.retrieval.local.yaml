@@ -1,0 +1,59 @@
+# Optional local Enterprise RAG overlay. It keeps the seven-service baseline
+# lightweight, while exercising the same versioned OpenSearch projection used
+# by the production topology. Start it only together with the `retrieval`
+# profile; this is deliberately a single-node, security-disabled development
+# service and must never be copied to production.
+services:
+  opensearch:
+    image: opensearchproject/opensearch:3.8.0
+    profiles: ["retrieval"]
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+    ports: ["9200:9200"]
+    volumes: [opensearch-local-data:/usr/share/opensearch/data]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200/_cluster/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+  # The three RAG workloads stay separate processes. All use the same alias
+  # and immutable index version, so ingestion writes and query reads share the
+  # projection without either process owning the authoritative document store.
+  rag-query-api:
+    environment: &opensearch-rag-env
+      RAG_SEARCH_BACKEND: opensearch
+      RAG_OPENSEARCH_URL: http://opensearch:9200
+      RAG_OPENSEARCH_INDEX_ALIAS: agent-knowledge-current
+      RAG_OPENSEARCH_INDEX_VERSION: local-v1
+      RAG_SEMANTIC_CACHE_BACKEND: redis
+      RAG_REDIS_URL: redis://redis:6379/3
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+  ingestion-api:
+    environment: *opensearch-rag-env
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+  ingestion-worker:
+    environment: *opensearch-rag-env
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+  agent-context-service:
+    environment: *opensearch-rag-env
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+volumes:
+  # Separate from production and baseline volumes: deleting/rebuilding an
+  # index never deletes the authoritative SQLite/S3 document records.
+  opensearch-local-data:

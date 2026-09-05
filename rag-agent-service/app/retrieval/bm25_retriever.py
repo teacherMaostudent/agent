@@ -1,12 +1,12 @@
 import math
 from collections import Counter
 
-from app.domain.models import Chunk, Evidence
+from app.domain.models import Chunk, RetrievalCandidate, RetrievalChannel
 from app.retrieval.tokenizer import tokenize
 
 
 class BM25Retriever:
-    def search(self, query: str, chunks: list[Chunk], top_k: int) -> list[Evidence]:
+    def search(self, query: str, chunks: list[Chunk], top_k: int) -> list[RetrievalCandidate]:
         """以词项统计召回候选片段；该层只计算相关性，不负责 ACL 或最终决策。"""
         query_terms = tokenize(query)
         if not query_terms or not chunks:
@@ -29,17 +29,24 @@ class BM25Retriever:
             if score > 0:
                 scores.append((score, chunk))
         return [
-            _to_evidence(chunk, score)
-            for score, chunk in sorted(scores, reverse=True, key=lambda item: item[0])[:top_k]
+            _to_candidate(chunk, score, rank)
+            for rank, (score, chunk) in enumerate(
+                sorted(scores, reverse=True, key=lambda item: item[0])[:top_k], start=1
+            )
         ]
 
 
-def _to_evidence(chunk: Chunk, score: float) -> Evidence:
-    """将内部片段转换为统一证据契约，保留原始元数据以支持后续引用和审计。"""
-    return Evidence(
+def _to_candidate(chunk: Chunk, score: float, rank: int) -> RetrievalCandidate:
+    """表达词法相关候选；最终 Evidence 只能由验证器创建。"""
+    return RetrievalCandidate(
+        chunk_id=chunk.chunk_id,
+        document_id=str(chunk.metadata.get("document_id", "")),
+        document_version=str(chunk.metadata.get("document_version", "")),
         source_id=chunk.source_id,
         source_type=chunk.source_type,
         text=chunk.text,
         score=score,
+        channel=RetrievalChannel.LEXICAL,
+        rank=rank,
         metadata=chunk.metadata,
     )

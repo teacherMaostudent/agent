@@ -6,6 +6,7 @@ from app.retrieval.controlled_scan import ControlledFileScanner
 from app.retrieval.embedder import build_embedder
 from app.retrieval.hybrid_retriever import HybridRetriever
 from app.retrieval.search_projection import build_search_projection
+from app.retrieval.semantic_cache import SemanticResponseCache
 
 
 class RagQueryContainer:
@@ -25,6 +26,13 @@ class RagQueryContainer:
             candidate_k=self.settings.retrieval_candidate_k,
         )
         self.search_projection = build_search_projection(self.settings, embedder=self.embedder)
+        self.semantic_cache = SemanticResponseCache(
+            backend=self.settings.semantic_cache_backend,
+            redis_url=self.settings.redis_url,
+            ttl_seconds=self.settings.semantic_cache_ttl_seconds,
+            similarity_threshold=self.settings.semantic_cache_similarity_threshold,
+            max_entries_per_partition=self.settings.semantic_cache_max_entries_per_partition,
+        )
         self.scanner = ControlledFileScanner(
             self.settings.scan_roots,
             max_file_bytes=self.settings.scan_max_file_bytes,
@@ -40,6 +48,13 @@ class RagQueryContainer:
             index_version=self.settings.opensearch_index_version,
             backend=self.settings.search_backend,
             embedding_contract=self.embedder.contract,
+            reranker_revision=(
+                f"{self.settings.rerank_provider}:{self.settings.rerank_model}:v1"
+                if self.reranker is not None
+                else "none/v1"
+            ),
+            semantic_cache=self.semantic_cache,
+            query_embedder=self.embedder,
         )
 
     def close(self) -> None:

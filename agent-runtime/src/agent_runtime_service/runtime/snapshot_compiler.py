@@ -20,6 +20,7 @@ from platform_sdk.contracts.execution_profile import (
     resolve_execution_profile,
 )
 from platform_sdk.contracts.orchestration import ReasoningPolicy
+from platform_sdk.contracts.rag import RetrievalProfilePolicy
 from platform_sdk.contracts.runtime_snapshot import compile_intent_catalog
 from platform_sdk.contracts.skills import (
     CapabilityProviderDescriptor,
@@ -86,7 +87,9 @@ class CompiledAgentPlan(BaseModel):
         return {
             str(item["knowledge_base"]): {
                 "index_version": str(item.get("index_version", "")),
+                "index_manifest_id": str(item.get("index_manifest_id", "")),
                 "embedding_contract_id": str(item.get("embedding_contract_id", "")),
+                "reranker_contract_id": str(item.get("reranker_contract_id", "")),
                 "retrieval_evaluation_id": str(item.get("retrieval_evaluation_id", "")),
             }
             for item in self.knowledge
@@ -171,6 +174,12 @@ def compile_snapshot(
         raise SnapshotCompileError(str(exc)) from exc
     canonical = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     capability_providers, capability_routing = _compile_capability_catalog(spec)
+    retrieval_policy = dict(spec.get("retrieval_policy") or {})
+    if retrieval_policy:
+        try:
+            RetrievalProfilePolicy.model_validate(retrieval_policy).normalized_profiles()
+        except Exception as exc:
+            raise SnapshotCompileError("published retrieval policy is invalid") from exc
     return CompiledAgentPlan(
         contract_hash=hashlib.sha256(canonical.encode()).hexdigest(),
         graph_id=str(_required(graph, "graph_id")),
@@ -192,7 +201,7 @@ def compile_snapshot(
         logical_model=models[0],
         fallback_models=list(dict.fromkeys(fallback_models)),
         data_region=default_route.get("data_region"),
-        retrieval_policy=dict(spec.get("retrieval_policy") or {}),
+        retrieval_policy=retrieval_policy,
         subagents=[dict(item) for item in spec.get("subagents") or []],
         skills=_compile_skill_bindings(spec),
         capability_providers=capability_providers,

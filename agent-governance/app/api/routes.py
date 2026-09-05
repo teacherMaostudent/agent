@@ -264,6 +264,25 @@ async def run_judge(
     return await container.evaluation.judge(identity.tenant_id, identity.user_id, request)
 
 
+@router.post("/v1/governance/evaluations/knowledge-change-gates", tags=["evaluation"])
+async def request_knowledge_change_gate(
+    request: dict[str, Any], identity: Auditor, container: Container
+) -> dict[str, Any]:
+    """Create a pending regression gate after an approved Wiki page is reindexed."""
+    return await container.evaluation.request_knowledge_change_gate(
+        identity.tenant_id, identity.user_id, request
+    )
+
+
+@router.post("/v1/governance/evaluations/retrieval-shadow", tags=["evaluation"])
+async def record_retrieval_shadow(
+    request: dict[str, Any], identity: Auditor, container: Container
+) -> dict[str, Any]:
+    """Record an internal Retrieval Release comparison before any user Canary routing."""
+
+    return await container.evaluation.record_retrieval_shadow(identity.tenant_id, request)
+
+
 @router.post("/v1/governance/evaluations/judge-runs/{run_id}/calibration", tags=["evaluation"])
 async def calibrate_judge(run_id: str, identity: Auditor, container: Container) -> dict[str, Any]:
     """以专家标注集校准 Judge，未通过校准的版本不得用于质量门禁。"""

@@ -7,7 +7,9 @@ from platform_infra.identity import WorkloadTokenProvider
 
 from platform_sdk.contracts.ingestion import (
     ApprovedArtifactIngestion,
+    ApprovedWikiPageIngestion,
     ArtifactIngestionReceipt,
+    WikiPageIngestionReceipt,
 )
 
 
@@ -77,6 +79,33 @@ class IngestionClient:
         response.raise_for_status()
         payload = response.json()
         return payload if isinstance(payload, dict) else {}
+
+    def submit_wiki_page(
+        self,
+        payload: ApprovedWikiPageIngestion,
+        *,
+        tenant_id: str,
+        user_id: str,
+    ) -> WikiPageIngestionReceipt:
+        """Submit an immutable, human-approved Wiki version to the RAG authority."""
+        headers = {
+            "X-Tenant-Id": tenant_id,
+            "X-User-Id": user_id,
+            **({"X-Rag-Agent-Key": self.service_api_key} if self.service_api_key else {}),
+            **(
+                self.workload_identity.authorization_header()
+                if self.workload_identity is not None
+                else {}
+            ),
+        }
+        response = self.client.post(
+            f"{self.base_url}/api/v1/ingestion/wiki-pages",
+            json=payload.model_dump(mode="json"),
+            headers=headers,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return WikiPageIngestionReceipt.model_validate(response.json())
 
     def close(self) -> None:
         """释放该工作负载拥有的 HTTP 连接池，容器退出时必须调用。"""

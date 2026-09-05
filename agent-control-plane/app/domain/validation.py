@@ -188,6 +188,17 @@ def validate_agent_spec(spec: AgentDraftSpec, policy: TenantPolicy) -> Validatio
                     )
                 )
 
+    try:
+        spec.retrieval_policy.normalized_profiles()
+    except ValueError as exc:
+        issues.append(
+            _error(
+                "retrieval_policy.invalid",
+                "retrieval_policy",
+                str(exc),
+            )
+        )
+
     knowledge_keys = [(item.knowledge_base, item.version) for item in spec.knowledge]
     if len(knowledge_keys) != len(set(knowledge_keys)):
         issues.append(

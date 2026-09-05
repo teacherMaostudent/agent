@@ -103,6 +103,47 @@ def test_workspace_model_catalog_is_runtime_resolved_and_session_pinned(monkeypa
     ]
 
 
+def test_review_wiki_candidate_uses_runtime_authoritative_evidence(monkeypatch) -> None:
+    """Browser drafts cannot replace the conclusion or manufacture raw evidence hashes."""
+    wiki_calls = []
+
+    async def runtime(_request, _method, path, **_kwargs):
+        if path == "/agent/review/runs/run-1":
+            return {
+                "conclusion": {"answer": "approved task conclusion"},
+                "evidence": [{"evidence_id": "ev-1", "source": "policy"}],
+            }
+        assert path == "/agent/review/runs/run-1/evidence/ev-1"
+        return {
+            "evidence_id": "ev-1",
+            "content_sha256": "a" * 64,
+            "content": "authorized evidence",
+        }
+
+    async def wiki(_request, method, path, **kwargs):
+        wiki_calls.append((method, path, kwargs["json"]))
+        return {"candidate_id": "wkc-1", "status": "pending_review"}
+
+    monkeypatch.setattr(main, "_runtime", runtime)
+    monkeypatch.setattr(main, "_knowledge_wiki", wiki)
+    response = TestClient(main.app).post(
+        "/api/review/runs/run-1/wiki-candidates",
+        headers=_headers("knowledge:compile,evidence:content:read"),
+        json={
+            "evidence_ids": ["ev-1"],
+            "conclusion": "browser-forged conclusion",
+            "drafts": [{"title": "Rule", "page_type": "rule", "summary": "s", "body": "b"}],
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = wiki_calls[0][2]
+    assert body["conclusion"] == "approved task conclusion"
+    assert body["sources"][0]["content_sha256"] == "a" * 64
+    assert {item["knowledge_level"] for item in body["sources"]} == {
+        "raw_evidence", "model_inference"
+    }
+
+
 def test_version_catalog_projects_metadata_without_snapshot_body(monkeypatch) -> None:
     """Release pickers need a semantic version and opaque Version ID, never the executable snapshot."""
     async def control_plane(_request, method, path, **_kwargs):

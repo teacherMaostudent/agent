@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     opa_base_url: str = "http://localhost:8181"
     opa_decision_path: str = "agent_platform/allow"
     redis_url: str = Field(default="", repr=False)
+    # A response cache is optional. It is partitioned by authorization and
+    # immutable retrieval identities, so it can only accelerate eligible reads.
+    semantic_cache_backend: str = "disabled"  # disabled | memory | redis
+    semantic_cache_ttl_seconds: int = Field(default=60, ge=1, le=3600)
+    semantic_cache_similarity_threshold: float = Field(default=0.985, ge=0.90, le=1.0)
+    semantic_cache_max_entries_per_partition: int = Field(default=24, ge=1, le=200)
     require_service_auth: bool = False
     service_api_key: str = ""
     allow_legacy_public_documents: bool = False
@@ -181,6 +187,10 @@ class Settings(BaseSettings):
             ("http://", "https://")
         ):
             raise ValueError("RAG_RERANK_BASE_URL must be an http(s) URL for vendor rerank")
+        if self.semantic_cache_backend not in {"disabled", "memory", "redis"}:
+            raise ValueError("RAG_SEMANTIC_CACHE_BACKEND must be disabled, memory, or redis")
+        if self.semantic_cache_backend == "redis" and not self.redis_url:
+            raise ValueError("RAG_REDIS_URL is required for Redis semantic cache")
         if self.require_service_auth and not self.service_api_key:
             raise ValueError("RAG_SERVICE_API_KEY is required when service auth is enabled")
         if self.deployment_environment.lower() in {"production", "prod"}:
@@ -219,6 +229,8 @@ class Settings(BaseSettings):
                 unsafe.append("RAG_OPA_ENABLED must be true")
             if not self.redis_url:
                 unsafe.append("RAG_REDIS_URL is required")
+            if self.semantic_cache_backend == "memory":
+                unsafe.append("RAG_SEMANTIC_CACHE_BACKEND must be redis or disabled")
             if self.governance_delivery_mode != "cdc":
                 unsafe.append("RAG_GOVERNANCE_DELIVERY_MODE must be cdc")
             if self.mtls_enabled and not all(

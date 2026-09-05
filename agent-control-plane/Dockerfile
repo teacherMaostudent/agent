@@ -15,6 +15,10 @@ COPY platform-contracts /platform-contracts
 COPY agent-control-plane/pyproject.toml agent-control-plane/README.md ./
 COPY agent-control-plane/app ./app
 COPY agent-control-plane/db ./db
+# The local bootstrap imports this catalog into the Control Plane as released
+# assets. Without it, Tool Gateway receives an empty runtime projection and
+# correctly rejects every invocation rather than falling back to a mutable file.
+COPY agent-control-plane/config ./config
 
 # Control Plane 使用 SDK 中的发布快照、执行器目录等跨服务契约。镜像必须安装
 # 工作区内的固定源码，而不能在构建时从公共 PyPI 猜测或下载同名包。

@@ -982,18 +982,35 @@ class AgentGraph:
             for item in knowledge
             if str(item.get("index_version", ""))
         }
+        pinned_manifests = {
+            str(item.get("index_manifest_id", ""))
+            for item in knowledge
+            if str(item.get("index_manifest_id", ""))
+        }
         pinned_embeddings = {
             str(item.get("embedding_contract_id", ""))
             for item in knowledge
             if str(item.get("embedding_contract_id", ""))
         }
-        if len(pinned_indexes) > 1 or len(pinned_embeddings) > 1:
+        pinned_rerankers = {
+            str(item.get("reranker_contract_id", ""))
+            for item in knowledge
+            if str(item.get("reranker_contract_id", ""))
+        }
+        if (
+            len(pinned_indexes) > 1
+            or len(pinned_manifests) > 1
+            or len(pinned_embeddings) > 1
+            or len(pinned_rerankers) > 1
+        ):
             raise RuntimeLimitExceeded(
                 "RAG_BINDING_AMBIGUOUS",
                 "A single retrieval step cannot mix incompatible published index contracts.",
             )
         expected_index = next(iter(pinned_indexes), "")
+        expected_manifest = next(iter(pinned_manifests), "")
         expected_embedding = next(iter(pinned_embeddings), "")
+        expected_reranker = next(iter(pinned_rerankers), "")
         retrieval_top_k = int(
             policy.get("evidence_top_k")
             or max((int(item.get("top_k", 8)) for item in knowledge), default=8)
@@ -1013,6 +1030,12 @@ class AgentGraph:
                     "runtime_source_plan": state.get("source_plan", {}),
                     "published_knowledge": knowledge,
                     "effective_retrieval_policy": policy,
+                    "allowed_retrieval_profiles": (
+                        state.get("agent_snapshot", {})
+                        .get("spec", {})
+                        .get("retrieval_policy", {})
+                        .get("allowed_profiles", [])
+                    ),
                 },
                 top_k=retrieval_top_k,
                 # Context owns memory ranking.  When a remote RAG client is
@@ -1038,9 +1061,33 @@ class AgentGraph:
                             document_id=state.get("document_id"),
                             content=state.get("content"),
                             metadata=context_request.metadata,
+                            # Runtime chooses only a Snapshot-authorized
+                            # profile; RAG resolves its concrete limits again
+                            # and ignores the legacy arbitrary top_k intent.
+                            retrieval_profile=str(policy.get("profile", "STANDARD")),
+                            retrieval_profile_revision=str(
+                                policy.get("profile_revision", "retrieval-profile/v1")
+                            ),
                             top_k=retrieval_top_k,
                             index_version=expected_index,
+                            index_manifest_id=expected_manifest,
                             embedding_contract_id=expected_embedding,
+                            reranker_contract_id=expected_reranker,
+                            # Cache reuse is scoped to the exact authenticated
+                            # subject, granted permissions and frozen Snapshot.
+                            # A permission or release change changes this digest.
+                            authorization_scope_digest=hashlib.sha256(
+                                json.dumps(
+                                    {
+                                        "tenant": state["tenant_id"],
+                                        "user": state["user_id"],
+                                        "permissions": sorted(state.get("permissions", [])),
+                                        "snapshot": state.get("version_id", ""),
+                                    },
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                ).encode("utf-8")
+                            ).hexdigest(),
                         )
                     )
                     if expected_index and rag_response.index_version != expected_index:
@@ -1056,10 +1103,47 @@ class AgentGraph:
                             "RAG_EMBEDDING_CONTRACT_DRIFT",
                             "RAG returned evidence from a different embedding contract.",
                         )
+                    if expected_reranker and rag_response.reranker_revision != expected_reranker:
+                        raise RuntimeLimitExceeded(
+                            "RAG_RERANKER_CONTRACT_DRIFT",
+                            "RAG returned evidence from a different reranker contract.",
+                        )
                     evidence_items = rag_response.evidence
+                    # Persist candidate lineage without duplicating untrusted
+                    # document text into Runtime state. The complete Candidate
+                    # body remains in RAG response/trace boundaries; Run audit
+                    # needs stable IDs, ranks, channels and verification links.
+                    candidate_lineage = [
+                        {
+                            "candidate_id": item.candidate_id,
+                            "chunk_id": item.chunk_id,
+                            "document_id": item.document_id,
+                            "document_version": item.document_version,
+                            "source_id": item.source_id,
+                            "channel": item.channel.value,
+                            "rank": item.rank,
+                            "score": item.score,
+                            "metadata": {
+                                key: value
+                                for key, value in item.metadata.items()
+                                if key
+                                in {
+                                    "fusion",
+                                    "fusion_revision",
+                                    "query_fusion",
+                                    "query_fusion_revision",
+                                    "retrieval_channels",
+                                    "query_variant_indexes",
+                                    "content_sha256",
+                                }
+                            },
+                        }
+                        for item in rag_response.candidates
+                    ]
                     rag_status = "available"
                     rag_degraded = False
                     rag_degrade_reason = None
+                    retrieval_cache_status = rag_response.cache_status
                 except httpx.HTTPError:
                     # A release may explicitly allow memory-only operation.
                     # Required-evidence tasks fail closed instead of allowing a
@@ -1067,14 +1151,18 @@ class AgentGraph:
                     if self._rag_required(state):
                         raise
                     evidence_items = []
+                    candidate_lineage = []
                     rag_status = "memory_only"
                     rag_degraded = True
                     rag_degrade_reason = "rag_unavailable_memory_only"
+                    retrieval_cache_status = "BYPASS"
             else:
                 evidence_items = package.knowledge_evidence
+                candidate_lineage = []
                 rag_status = package.rag_status
                 rag_degraded = False
                 rag_degrade_reason = None
+                retrieval_cache_status = "BYPASS"
             span.set_attribute("rag.retrieved_documents", len(evidence_items))
             span.set_attribute("context.estimated_tokens", package.estimated_tokens)
         evidence = [item.model_dump(mode="json") for item in evidence_items]
@@ -1091,6 +1179,10 @@ class AgentGraph:
             "context_degraded": package.degraded or rag_degraded,
             "rag_status": rag_status,
             "retrieval_profile": policy.get("profile", "STANDARD"),
+            # Operational only: a cache hit never changes the Evidence IDs or
+            # verifier outcome projected to Context and the model prompt.
+            "cache_status": retrieval_cache_status,
+            "candidate_lineage": candidate_lineage,
         }
         return {
             "evidence": [*state.get("evidence", []), *evidence],

@@ -1,0 +1,31 @@
+[project]
+name = "agent-knowledge-wiki-service"
+version = "0.1.0"
+description = "Governed knowledge compilation and living Wiki for the Agent Platform"
+requires-python = ">=3.11"
+dependencies = [
+  "agent-platform-infra>=0.1.0",
+  "fastapi>=0.111.0",
+  "httpx>=0.27.0",
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.3.0",
+  "sqlalchemy>=2.0.30",
+  "psycopg[binary]>=3.2.0",
+  "uvicorn[standard]>=0.30.0",
+]
+
+[project.scripts]
+knowledge-wiki-relay = "app.relay:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "ruff>=0.6.0"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "../platform-infra"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "RUF"]
+ignore = ["RUF002"]

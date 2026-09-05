@@ -55,19 +55,19 @@ fi
 
 # Realm imports are not re-applied to an existing Keycloak database. Reconcile every human role
 # before mapping the administrator so upgrades behave the same as a fresh installation.
-for role in agent-user agent-reviewer platform-operator governance-auditor platform-super-admin; do
+for role in agent-user agent-reviewer knowledge-reviewer platform-operator governance-auditor platform-super-admin; do
   if ! "$KCADM" get "roles/$role" -r "$REALM" >/dev/null 2>&1; then
     "$KCADM" create roles -r "$REALM" -s name="$role" >/dev/null
   fi
 done
 
-permissions='["rag:read","rag:ingest:approve","file:scan","tool:invoke","ops:read","release:read","release:validate","release:version:publish","release:create","release:promote","release:pause","release:rollback","model:route:read","model:route:release","model:route:monitor","model:route:rollback","quota:read","quota:write","audit:export","audit:export:requeue","eval:golden:review","agent:review","run:review:approve","run:review:assign","run:review:transfer","run:review:comment","run:review:label","evidence:content:read","run:share","run:tenant:read","tenant:read","tenant:write","identity:users:read","identity:users:write"]'
+permissions='["rag:read","rag:ingest:approve","file:scan","tool:invoke","ops:read","release:read","release:validate","release:version:publish","release:create","release:promote","release:pause","release:rollback","model:route:read","model:route:release","model:route:monitor","model:route:rollback","quota:read","quota:write","audit:export","audit:export:requeue","eval:golden:review","agent:review","run:review:approve","run:review:assign","run:review:transfer","run:review:comment","run:review:label","evidence:content:read","run:share","run:tenant:read","tenant:read","tenant:write","identity:users:read","identity:users:write","knowledge:read","knowledge:compile","knowledge:review"]'
 "$KCADM" update "users/$user_id" -r "$REALM" -s enabled=true -s emailVerified=true \
   -s 'attributes.tenant_id=["demo"]' -s "attributes.permissions=$permissions" >/dev/null
 "$KCADM" set-password -r "$REALM" --username "$PLATFORM_ADMIN_USERNAME" \
   --new-password "$PLATFORM_ADMIN_PASSWORD" --temporary=false >/dev/null
 
-for role in agent-user agent-reviewer platform-operator governance-auditor platform-super-admin; do
+for role in agent-user agent-reviewer knowledge-reviewer platform-operator governance-auditor platform-super-admin; do
   "$KCADM" add-roles -r "$REALM" --uusername "$PLATFORM_ADMIN_USERNAME" \
     --rolename "$role" >/dev/null 2>&1 || true
 done

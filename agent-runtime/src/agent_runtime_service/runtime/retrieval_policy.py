@@ -28,6 +28,9 @@ class ProfileDecision(BaseModel):
 
 class EffectiveRetrievalPolicy(BaseModel):
     profile: RetrievalProfile
+    # Profile revision is part of retrieval lineage. Runtime selects a named
+    # profile while RAG executes this immutable revision and rejects drift.
+    profile_revision: str = "retrieval-profile/v1"
     retrieval_required: bool
     max_rounds: int = Field(ge=0)
     candidate_top_k: int = Field(ge=0)
@@ -211,4 +214,10 @@ def resolve_profile(
     ):
         if key in overrides:
             template[key] = overrides[key]
-    return EffectiveRetrievalPolicy(profile=selected, decision=outcome, reason=reason, **template)
+    return EffectiveRetrievalPolicy(
+        profile=selected,
+        profile_revision=str(configured.get("profile_revision", "retrieval-profile/v1")),
+        decision=outcome,
+        reason=reason,
+        **template,
+    )

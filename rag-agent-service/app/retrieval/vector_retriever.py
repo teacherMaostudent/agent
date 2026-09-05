@@ -2,7 +2,7 @@ import hashlib
 import math
 from typing import Protocol
 
-from app.domain.models import Chunk, Evidence
+from app.domain.models import Chunk, RetrievalCandidate, RetrievalChannel
 from app.retrieval.tokenizer import tokenize
 
 
@@ -13,7 +13,7 @@ class HashEmbeddingRetriever:
         """固定可复现向量维度；仅用于离线/测试回退，不代表生产语义模型。"""
         self.dim = dim
 
-    def search(self, query: str, chunks: list[Chunk], top_k: int) -> list[Evidence]:
+    def search(self, query: str, chunks: list[Chunk], top_k: int) -> list[RetrievalCandidate]:
         """按确定性哈希向量计算余弦相似度，返回正分候选而不改变输入片段。"""
         query_vec = self._embed(query)
         scored = []
@@ -22,14 +22,21 @@ class HashEmbeddingRetriever:
             if score > 0:
                 scored.append((score, chunk))
         return [
-            Evidence(
+            RetrievalCandidate(
+                chunk_id=chunk.chunk_id,
+                document_id=str(chunk.metadata.get("document_id", "")),
+                document_version=str(chunk.metadata.get("document_version", "")),
                 source_id=chunk.source_id,
                 source_type=chunk.source_type,
                 text=chunk.text,
                 score=score,
+                channel=RetrievalChannel.DENSE,
+                rank=rank,
                 metadata=chunk.metadata,
             )
-            for score, chunk in sorted(scored, reverse=True, key=lambda item: item[0])[:top_k]
+            for rank, (score, chunk) in enumerate(
+                sorted(scored, reverse=True, key=lambda item: item[0])[:top_k], start=1
+            )
         ]
 
     def _embed(self, text: str) -> list[float]:
@@ -68,7 +75,7 @@ class EmbeddingVectorRetriever:
         """保存启动期创建的 Provider；摄取与查询容器必须由相同配置构造它。"""
         self._embedder = embedder
 
-    def search(self, query: str, chunks: list[Chunk], top_k: int) -> list[Evidence]:
+    def search(self, query: str, chunks: list[Chunk], top_k: int) -> list[RetrievalCandidate]:
         """用同一嵌入契约计算余弦候选，维度不匹配时直接失败而不返回伪相关结果。"""
         query_vec = self._embedder.embed(query)
         scored: list[tuple[float, Chunk]] = []
@@ -80,12 +87,19 @@ class EmbeddingVectorRetriever:
             if score > 0:
                 scored.append((score, chunk))
         return [
-            Evidence(
+            RetrievalCandidate(
+                chunk_id=chunk.chunk_id,
+                document_id=str(chunk.metadata.get("document_id", "")),
+                document_version=str(chunk.metadata.get("document_version", "")),
                 source_id=chunk.source_id,
                 source_type=chunk.source_type,
                 text=chunk.text,
                 score=score,
+                channel=RetrievalChannel.DENSE,
+                rank=rank,
                 metadata=chunk.metadata,
             )
-            for score, chunk in sorted(scored, reverse=True, key=lambda item: item[0])[:top_k]
+            for rank, (score, chunk) in enumerate(
+                sorted(scored, reverse=True, key=lambda item: item[0])[:top_k], start=1
+            )
         ]

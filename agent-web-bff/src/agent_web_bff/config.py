@@ -16,6 +16,8 @@ class WebBffSettings(BaseSettings):
     governance_auditor_key: str = Field(default="", repr=False)
     control_plane_base_url: str = "http://localhost:8080"
     control_plane_admin_key: str = Field(default="", repr=False)
+    knowledge_wiki_base_url: str = ""
+    knowledge_wiki_service_key: str = Field(default="", repr=False)
     oidc_enabled: bool = False
     oidc_issuer: str = ""
     oidc_audience: str = "agent-platform"

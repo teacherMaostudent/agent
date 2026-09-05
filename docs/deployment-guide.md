@@ -2,16 +2,21 @@
 
 ## 本地联调
 
-在仓库根目录复制各服务的 `.env.example` 后启动本地拓扑：
+在仓库根目录配置所需环境变量后启动本地拓扑：
 
 ```powershell
-docker compose -f compose.platform.yaml up --build -d
+docker compose --project-name agent-platform -f compose.platform.yaml -f compose.identity.yaml up --build -d
 python scripts/platform_e2e.py --bootstrap-desktop
 ```
 
-该配置用于开发和契约联调。它启动线上服务所需的进程、Model Lab、Agent Lab 和共享依赖。Context、
+该配置用于开发和契约联调。默认启动线上服务所需的进程和共享依赖；Model Lab、Agent Lab 属于可选
+`labs` profile。Context、
 RAG Query、摄取 API 与摄取 Worker 虽共用 RAG 源码包，但在 Compose 中是独立工作负载；Runtime 使用
 独立镜像，不安装 `rag-agent-service`。
+
+需要验证 OpenSearch 的版本化混合检索时，使用 `compose.retrieval.local.yaml` 和 `retrieval` profile。
+该覆盖层只用于本机：它使用单节点且关闭安全插件，生产环境必须启用 TLS、身份认证、快照、分片/副本和
+独立的 NetworkPolicy。
 
 需要验证真实 OIDC Authorization Code + PKCE、JWT Claim 与服务端 Session 时，叠加本地 Keycloak：
 
@@ -93,6 +98,13 @@ Relay 支持多副本租约、指数退避、DLQ、人工重放和失联设备�
 `runtime-artifact-ingestion-relay` 通过租约和稳定 ID 提交 `POST /ingestion/artifacts`。Runtime 中的
 `SUBMITTED` 表示摄取服务已经耐久接收，并不等同于完成索引；最终 `COMPLETED/FAILED` 由摄取 Job/Worker
 事实源判定。Relay、摄取 API 和摄取 Worker 必须使用三个不同工作负载身份和证书。
+
+可选 `knowledge-wiki-service` 使用独立 PostgreSQL 表保存候选、不可变页面版本和 Outbox。Wiki API 与
+`knowledge-wiki-relay` 必须使用不同 mTLS 叶证书；Relay 还需要独立的 OIDC client-credentials 客户端，
+通过 `KNOWLEDGE_WIKI_RELAY_WORKLOAD_CLIENT_SECRET` 注入，不得复用 BFF 或 RAG Worker 身份。部署前需
+签发 `knowledge-wiki-service.crt/key` 与 `knowledge-wiki-relay.crt/key`，并配置
+`KNOWLEDGE_WIKI_SERVICE_API_KEY`。OpenSearch 上线时必须发布包含 `knowledge_status`、`valid_until` 和
+`wiki_page_id` 映射的新索引版本；旧索引缺少这些字段时 RAG 会失败关闭，避免过期 Wiki 继续被召回。
 
 Artifact 下载由 Runtime 先校验用户/审查 Assignment 关系，再向 Context 申请五分钟签名 URL；URL 不写入
 日志、审计或浏览器持久化，授权动作只记录 Artifact ID。对象存储应支持 Range、短时签名、KMS、版本化和

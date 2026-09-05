@@ -26,24 +26,42 @@ Context Service 的详细说明见 [Context Service README](apps/agent_context_s
 
 ```text
 Runtime / Context
-  → Verified Identity + Knowledge Binding + Retrieval Policy
+  → Query understanding / deterministic rewrite (profile-bounded)
+  → Query Embedding
   → RAG Query API
-  → Tenant / User / Document ACL
-  → Immutable Index Version
-  → BM25 / Vector / Hybrid Retrieval
-  → Optional Reranker
+  → Dense provider path (OpenSearch default; optional Milvus *or* pgvector provider)
+  → BM25 lexical path (OpenSearch)
+  → Independent Candidate recall
+  → RRF Fusion + deterministic deduplication
+  → Optional versioned Reranker
+  → Evidence Verifier (ACL / index version / source / freshness / integrity / injection)
   → Evidence Schema + Provenance + Scores
   → Context Projection
 ```
 
-查询结果是带文档、Chunk、来源、版本、分数和权限语义的 Evidence，不是可直接信任的 Prompt 文本。Runtime
-与 Context 在进入模型前还会执行分段、脱敏、注入检测、长度限制和证据验证。
+检索命中首先是 `RetrievalCandidate`，不是 Evidence。候选必须在 Query Plane 经二次 ACL、知识状态、
+有效期、可选内容摘要和提示注入复核后才会变成 `Evidence`，并被允许投影给 Context/LLM。每条 Evidence
+携带 Index、Embedding Contract、Retrieval Profile、Reranker Revision 与来源血缘；Runtime 与 Context
+仍会执行分段、脱敏、Token 限制和 Prompt 组装。
 
 ### 受控检索策略
 
-发布快照可以选择预定义检索档位，而不是让模型自由拼装任意后端查询。策略可约束查询扩写、关键词/向量权重、
-候选数量、重排、最大证据数、最低得分和成本上限。Runtime 决定何时请求检索，RAG 只执行被允许的策略并返回
-可解释事实。
+发布快照冻结 `RetrievalProfilePolicy` 的默认档位、允许档位和 revision。Runtime 只能在允许集合中选择
+`FAST`、`STANDARD`、`STRICT_EVIDENCE`、`DEEP_RESEARCH` 或 `NO_RAG`；RAG 在服务端再次解析并硬执行
+候选数、Evidence 数与重排开关，旧客户端传入的 `top_k` 不得扩大档位边界。这样可避免 Runtime 或调用方
+绕过发布策略，同时保留每次选择的 Trace 血缘。
+
+高风险、需审计的发布可选择 `ENTERPRISE_EVIDENCE`：最多召回 100 个 Candidate，经固定 Revision 的
+Cross-Encoder/Reranker 后，最多投影 10 条已验证 Evidence。`STANDARD` 则保留较小候选池，避免普通知识问答
+无条件增加向量、精排、成本与延迟。Provider 的选择和 Reranker Contract 都由 Knowledge Binding/Snapshot 冻结，
+不是由 Runtime 请求参数决定。
+
+## 检索 Provider 与部署选型
+
+`RetrievalProvider` 使用能力声明而非绑定某个数据库 SDK。当前默认生产实现为 OpenSearch：它同时承担
+词法、Dense、租户/ACL、状态与版本过滤，并以 HNSW 建立版本化向量索引。Milvus、pgvector 与 Graph
+不是默认 Compose 依赖：只有容量、QPS 或图关系推理的压测/业务证据证明 OpenSearch 不足时，才新增对应
+Provider、Index Build Manifest、对账和 Retrieval Release；不能把多个数据库的双写复杂度伪装成“可插拔”。
 
 ### Controlled Scan
 
@@ -61,6 +79,7 @@ Document / Approved Task Artifact
   → Chunk + Metadata + ACL
   → Embedding Provider
   → Immutable Index Version
+  → Index Build Manifest (chunk/document set digest + reconciliation)
   → Retrieval Evaluation
   → Control Plane Knowledge Binding
 ```
@@ -71,6 +90,29 @@ Artifact 才能提交，并保存审批人、审批 ID、Root Task 和 Artifact 
 
 生产索引使用不可变 `index_version`。重建新索引不会原地覆盖旧索引；Control Plane 只有在检索评测通过后才把
 新版本绑定到 Release，因此 Runtime 可以用 Snapshot 还原一次回答实际使用的索引空间。
+
+每次摄取或显式重建都会生成 `IndexBuildManifest`：其中固定 Tenant、索引版本、Embedding Contract、切块修订、
+文档/Chunk 集合摘要、计数和对账结果。Runtime 请求携带的 Manifest 必须处于 `READY`、属于同一 Tenant 且与当前
+索引版本一致；否则 RAG 在检索前拒绝，而不是从可能半完成的别名继续返回证据。检索方案不维护第二套独立的
+“Retrieval Release”状态机：Manifest、Reranker 和 Retrieval Policy 已随 Agent Snapshot 冻结，直接复用
+Control Plane 的 Shadow → Canary → Promote/Rollback 生命周期，避免两套发布真相漂移。
+
+`REINDEX_KNOWLEDGE_BASE` 是全库重建任务：它只从 PostgreSQL/对象存储所代表的权威文档集合重放，排除
+`revoked`、`quarantined` 和 `untrusted` 来源，随后生成全库 Document/Chunk 摘要与对账 Manifest。Worker 无权
+自行切换 OpenSearch Alias；评测、Snapshot 绑定和部署激活仍必须由 Control Plane 的发布流程完成。
+
+上游源系统可使用 `POST /ingestion/sources/{source_id}/status` 投递撤销、隔离或恢复事件，且必须持有
+`rag:source:revoke`。服务先更新权威 Document 元数据，再以 Tenant + source_id 更新索引投影；原件不删除，
+Evidence Verifier 因 `source_status` 停止投影，保留审计、复核与重摄取依据。
+
+### 权限分区的语义缓存
+
+`RAG_SEMANTIC_CACHE_BACKEND=redis` 可启用短 TTL 的语义响应缓存。它位于 Evidence Verifier 之后，只保存已经
+验证的响应；缓存桶同时绑定 Tenant、User、授权范围摘要、Document、Index Manifest、Embedding Contract、
+Retrieval Profile 和 Reranker Contract。缺失授权摘要或 Manifest、包含临时正文的请求一律 `BYPASS`，因此缓存
+不能跨用户、权限变更或索引工件复用。Runtime 会把 `BYPASS` / `MISS` / `HIT_SEMANTIC` 写入 retrieval observation。
+生产只允许 `redis` 或 `disabled`，本地 `memory` 后端只用于开发验证；Redis 故障自动退化为 cache miss，不影响
+权威检索与 ACL 校验。
 
 ## Embedding Provider 与向量空间一致性
 
@@ -116,6 +158,7 @@ RAG 可独立扩展查询副本和索引分片；大量 Agent 共享基础检索
 | `POST` | `/ingestion/artifacts` | 提交已审批 Artifact |
 | `POST/GET` | `/ingestion/jobs` | 创建或查询摄取任务 |
 | `GET` | `/ingestion/documents/{document_id}` | 查询文档元数据 |
+| `GET` | `/ingestion/index-manifests/{manifest_id}` | 查询冻结的索引构建清单 |
 
 实际前缀以各工作负载的 `RAG_API_PREFIX` 为准，OpenAPI 是接口字段的权威来源。
 
@@ -124,9 +167,20 @@ RAG 可独立扩展查询副本和索引分片；大量 Agent 共享基础检索
 七服务联调使用仓库根目录：
 
 ```powershell
-docker compose -f compose.platform.yaml up --build -d
-python scripts/platform_e2e.py
+.\scripts\start-platform.ps1 -Action Start
+py -3.12 scripts\platform_e2e.py
 ```
+
+要验证真实的 OpenSearch 版本化投影，而非默认本地检索实现，显式启用检索 profile：
+
+```powershell
+.\scripts\start-platform.ps1 -Action Start -WithEnterpriseRetrieval
+py -3.12 scripts\local_scenarios.py
+```
+
+这会启动本机单节点 OpenSearch（宿主端口 `9200`），并验证“上传 → 摄取 Worker → 向量/BM25
+召回 → ACL/Evidence”路径。该 profile 为开发联调而关闭 OpenSearch 安全插件；生产只能使用
+`compose.production.yaml` 的受管集群、独立凭据和网络边界。
 
 服务级测试：
 

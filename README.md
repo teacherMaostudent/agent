@@ -27,6 +27,9 @@
   已支持模型路由 Release 操作、租户/用户模型配额编辑，以及异步 WORM 审计导出作业和 DLQ 重排。
 - `controlled_scan` 的不可变结果只有经有权限的人工审批后，才由独立 Relay 幂等提交给摄取 API；
   摄取任务进入耐久队列后由 RAG Worker 建立索引，Desktop 本身不能直接污染知识库。
+- 可选 `knowledge-wiki-service` 将 Evidence、任务结论和人工审查编译为带来源、冲突、过期和
+  supersede 关系的 Living Wiki；只有知识审查人批准后才发布，并通过事务 Outbox 重新触发 RAG
+  幂等摄取、索引生命周期更新与 Governance Knowledge Change Gate。
 
 ## 核心设计原则
 
@@ -90,6 +93,7 @@ Workflow 不加载 Planner 或 Agent Session，支持重试、补偿、Human Sig
 8. 从 Web、Desktop 到七服务做本机演示：阅读 [Web、Desktop 与七服务本地联调指南](docs/local-web-desktop-testing-guide.md)。
 9. 排查网页端与 Desktop 的认证、任务、日志和端到端问题：阅读 [Web 与 Desktop 联调调试手册](docs/web-desktop-debugging-guide.md)。
 10. 理解租户目录、IdP 身份、平台 user_id 与人员授权边界：阅读 [租户与用户管理说明](docs/tenant-and-user-management.md)。
+11. 理解任务结论如何晋升为组织知识：阅读 [Living Wiki 生命周期](docs/knowledge-wiki-lifecycle.md)。
 
 ## 注释与说明文件标准
 
@@ -390,11 +394,38 @@ Windows、Hyper-V 或 WSL 动态保留的常见 `8xxx` 端口段。Runtime 桌�
 需要同时启动两个离线实验服务时增加 `-WithLabs`；已有镜像可使用 `-NoBuild`，只做
 服务启动；缺少本地 Python/httpx 时脚本会保留已启动服务并明确提示跳过黑盒 E2E。
 
+需要在本机验证企业检索投影时，再显式增加 `-WithEnterpriseRetrieval`。该开关会启动一个
+单节点 OpenSearch，并把 RAG Query、摄取 API/Worker 和 Context 切换到同一个版本化索引；
+`scripts/local_scenarios.py` 随后会验证“上传 → 摄取 Worker → ACL 过滤的混合检索”。它是
+开发联调 profile：为便于本机访问，安全插件关闭，**不能作为生产集群配置**。
+
+```powershell
+.\scripts\start-platform.ps1 -Action Start -WithEnterpriseRetrieval
+py -3.12 scripts\local_scenarios.py
+```
+
+本次启动会占用 `9200`（OpenSearch）；停止平台不会删除 `opensearch-local-data` 数据卷。若只想
+回到默认的本地检索实现，执行普通 `-Action Restart` 即可，数据卷会保留但服务不再被启动。
+
 ```powershell
 git clone https://github.com/teacherMaostudent/agent.git
 cd agent
 docker compose -f compose.platform.yaml up --build -d
 python scripts/platform_e2e.py
+```
+
+手动使用 Compose 时也必须固定项目名并合并身份覆盖层；否则 Docker 会按当前目录创建另一套
+容器，可能与已有 `agent-platform` 实例争用 MinIO、Web 和 Runtime 端口。日常启动优先使用
+`scripts/start-platform.ps1`：
+
+```powershell
+docker compose --project-name agent-platform -f compose.platform.yaml -f compose.identity.yaml up --build -d
+```
+
+手动启用本地 OpenSearch 时，必须同时合并检索覆盖层并启用 profile：
+
+```powershell
+docker compose --project-name agent-platform -f compose.platform.yaml -f compose.identity.yaml -f compose.retrieval.local.yaml --profile retrieval up --build -d
 ```
 
 ### Python 服务测试

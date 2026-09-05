@@ -1,7 +1,7 @@
 # 企业级 Agent Platform 整改路线图
 
-> 状态：进行中。本文把架构整改项映射到实际代码，而不是把讨论中的每一项都当作缺失功能。
-> 最后更新：2026-08-18。
+> 状态：本轮代码整改已收口；仍需由每个生产环境完成容量、身份、密钥和灾备验收。本文把架构整改项映射到实际代码，而不是把讨论中的每一项都当作缺失功能。
+> 最后更新：2026-09-05。
 
 ## 判定口径
 
@@ -33,6 +33,7 @@
 | RAG-001 | 嵌入模型/维度/索引契约 | 已覆盖 | `EmbeddingProvider`/`EmbeddingContract` 固定 Provider、模型修订、维度、归一化与输入上限；DashScope 为 Cloud Baseline，BGE-M3/Qwen3 可经本地兼容 Provider 对比后 Promote。 |
 | RAG-002 | 索引版本与查询兼容性 | 已覆盖 | 摄取、Hybrid、OpenSearch 与 Runtime 请求使用同一契约；RAG 拒绝索引或向量空间漂移。 |
 | RAG-003 | Hybrid Retrieval | 已覆盖 | BM25、同契约向量、重排和 ACL 均在同一已发布检索边界内执行。 |
+| RAG-005 | OpenSearch 本机可运行验证 | 已覆盖 | `retrieval` Compose profile 部署单节点 OpenSearch；摄取 Worker 写版本化索引，查询以原生 k-NN 内联 ACL 过滤并经 `local_scenarios.py` 验证上传、索引与跨租户拒绝。 |
 | RAG-004 | 检索发布门禁 | 已覆盖 | Governance 的 Recall@K 硬门槛之外，生产 Release 强制知识绑定的索引、嵌入和检索评测证据。 |
 | GOV-001 | 评测、审计、合规分离 | 已覆盖 | Governance 内已有独立评测/合规/审计应用边界。 |
 | GOV-002 | 治理子平面部署边界 | 已覆盖 | Governance 通过 CDC/Kafka 消费事务 Outbox，独立于 Runtime 同步路径；容器使用 OIDC/mTLS，并以幂等消费者、DLQ 和受控重放维持投影边界。 |
@@ -73,3 +74,10 @@ flowchart TB
 ```
 
 Harness 保持窄边界；状态机、Inbox、Planner、Graph 和副作用屏障属于 Execution Runtime。这样既不把 Harness 膨胀成万能服务，也能保证每个执行器共享同一发布、恢复和取消入口。
+
+## 2026-09-05 本机验收基线
+
+本轮以可运行事实而不是配置文件存在作为判定：`platform_e2e.py` 已验证 Release 解析、持久化 Run、
+Tool 传播与 Governance 事件；`local_scenarios.py` 已验证受控扫描、摄取、索引检索、Artifact、审查和
+WORM 路径。启用 `-WithEnterpriseRetrieval` 时，OpenSearch 以版本化索引和 Alias 提供 dense/lexical
+候选；生产环境不得复用此本机 profile 的关闭安全插件配置。

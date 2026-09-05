@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
-
 from tests.conftest import event
 
 
@@ -153,3 +152,40 @@ def test_findings_can_be_resolved_and_tenants_cannot_read_each_other(
     isolated = client.get("/v1/governance/findings", headers=other_tenant)
     assert isolated.status_code == 200
     assert isolated.json()["items"] == []
+
+def test_knowledge_change_creates_pending_gate(client, auditor_headers) -> None:
+    """Wiki publication triggers evaluation work but can never manufacture a passing gate."""
+    response = client.post(
+        "/v1/governance/evaluations/knowledge-change-gates",
+        headers=auditor_headers,
+        json={
+            "pageId": "wiki-1",
+            "contentSha256": "a" * 64,
+            "version": 2,
+            "reindexJobId": "reindex:wiki-1:2",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "PENDING_EVALUATION"
+    assert "Recall@K" in response.json()["requiredMetrics"]
+
+
+def test_retrieval_shadow_acl_leakage_blocks_canary_eligibility(client, auditor_headers) -> None:
+    response = client.post(
+        "/v1/governance/evaluations/retrieval-shadow",
+        headers=auditor_headers,
+        json={
+            "baselineReleaseId": "retrieval-v1",
+            "candidateReleaseId": "retrieval-v2",
+            "query": "retention policy",
+            "baseline": {"candidateIds": ["chunk-a"], "latencyMs": 20, "cost": 0.01},
+            "candidate": {
+                "candidateIds": ["chunk-a", "chunk-b"],
+                "latencyMs": 30,
+                "cost": 0.02,
+                "aclLeakageRate": 0.1,
+            },
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["eligibleForCanary"] is False

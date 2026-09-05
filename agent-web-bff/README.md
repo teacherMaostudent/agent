@@ -33,6 +33,11 @@ BFF → 身份/租户/对象关系校验 → mTLS 调用目标服务
 它只返回当前专家被分配且有权审查的对象；对于 Console，它聚合发布目录、质量门禁、路由、配额、租户、
 成员和审计导出状态。不同页面共用会话，但不共用权限。
 
+Review 还提供受治理的 Wiki 晋升入口。浏览器只能提交草稿与 Evidence ID；BFF 先向 Runtime 验证当前
+专家的 Assignment，再逐条读取通过数据域授权的 Evidence 摘要/哈希，并使用 Runtime 结论创建 Wiki
+Candidate。`knowledge:compile`、`knowledge:review`、`knowledge:read` 分别控制编译、审批与读取，最终
+批准还要求签名令牌中的 `knowledge-reviewer` 角色。Wiki 服务凭证始终留在 BFF。
+
 ## Multi-Agent 中的作用
 
 BFF 不调度 Agent。父 Run、子 Run、Session、协作关系和责任 Agent 均由 Runtime/Control Plane 返回，
@@ -75,6 +80,8 @@ python -m uvicorn agent_web_bff.main:app --host 127.0.0.1 --port 8010
 本地模式允许关闭 OIDC，仅用于联调。生产必须设置 `WEB_BFF_ENVIRONMENT=production`，并配置 OIDC
 Issuer/JWKS/Authorization/Token URL、Client、Redirect URI、Redis、Public Origin 与独立 mTLS 证书。
 `GET /health/ready` 仅证明 BFF 进程存活，不替代下游依赖的 SLO 探测。
+启用可选 Living Wiki 时，还需配置 `WEB_BFF_KNOWLEDGE_WIKI_BASE_URL` 与
+`WEB_BFF_KNOWLEDGE_WIKI_SERVICE_KEY`。
 
 ## 生产部署要点
 

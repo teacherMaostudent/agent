@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://enterprise-agent-platform.local/contracts/knowledge-wiki-event.v1.json",
+  "title": "KnowledgeWikiOutboxEventV1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["event_id", "tenant_id", "event_type", "payload", "created_at"],
+  "properties": {
+    "event_id": {"type": "string", "pattern": "^wke_[a-f0-9]+$"},
+    "tenant_id": {"type": "string", "minLength": 1, "maxLength": 100},
+    "event_type": {
+      "enum": [
+        "wiki.page.published",
+        "wiki.rag.reindex.requested",
+        "wiki.evaluation.requested",
+        "wiki.release_gate.requested"
+      ]
+    },
+    "payload": {
+      "type": "object",
+      "required": ["page_id", "candidate_id", "content_sha256", "version"],
+      "properties": {
+        "page_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "candidate_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "content_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "version": {"type": "integer", "minimum": 1}
+      }
+    },
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"event_type": {"const": "wiki.rag.reindex.requested"}}},
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["title", "markdown", "approved_by", "source_ids"]
+          }
+        }
+      }
+    }
+  ]
+}

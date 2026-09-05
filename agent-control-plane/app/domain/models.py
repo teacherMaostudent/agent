@@ -13,6 +13,7 @@ from platform_sdk.contracts.execution_profile import (
     ToolPresentationMode,
 )
 from platform_sdk.contracts.orchestration import ReasoningPolicy
+from platform_sdk.contracts.rag import RetrievalProfilePolicy
 from platform_sdk.contracts.skills import (
     CapabilityProviderDescriptor,
     CapabilityRoutingPolicy,
@@ -191,7 +192,12 @@ class KnowledgeBinding(StrictModel):
     failure_mode: Literal["fail", "memory_only"] = "fail"
     # 发布态必须指向一个可比较的索引空间; 空值仅兼容旧快照, 生产校验会拒绝它。
     index_version: str = Field(default="", max_length=160)
+    # Build manifest proves the referenced immutable index was reconciled.
+    index_manifest_id: str = Field(default="", max_length=160)
     embedding_contract_id: str = Field(default="", max_length=80)
+    # Reranker changes can change Evidence ranks just like an index or embedding change;
+    # retain its immutable contract ID in the published knowledge binding.
+    reranker_contract_id: str = Field(default="", max_length=160)
     retrieval_evaluation_id: str = Field(default="", max_length=160)
 
 
@@ -286,7 +292,9 @@ class AgentDraftSpec(StrictModel):
     intent_catalog_version: str = Field(default="platform-default/v1", min_length=1, max_length=160)
     intent_catalog: IntentCatalogBinding | None = None
     labels: dict[str, str] = Field(default_factory=dict)
-    retrieval_policy: dict[str, Any] = Field(default_factory=dict)
+    # Control Plane owns the versioned allow-list; Runtime may select within it
+    # and RAG re-enforces it at execution time.
+    retrieval_policy: RetrievalProfilePolicy = Field(default_factory=RetrievalProfilePolicy)
     subagents: list[SubAgentBinding] = Field(default_factory=list)
     # 引用的是 Skill Registry 已发布版本的摘要, 而非可在运行时变动的名字或 URL。
     skills: list[SkillBinding] = Field(default_factory=list)

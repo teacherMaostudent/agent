@@ -16,7 +16,10 @@ class JobStatus(StrEnum):
 
 
 class JobCreateRequest(BaseModel):
-    job_type: str = Field(pattern="^(PARSE|OCR|REINDEX)$")
+    # Full knowledge-base rebuilds are distinct from one-document REINDEX jobs:
+    # the former intentionally has no document_id and only builds a new,
+    # versioned projection for later Control Plane activation.
+    job_type: str = Field(pattern="^(PARSE|OCR|REINDEX|REINDEX_KNOWLEDGE_BASE)$")
     document_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 

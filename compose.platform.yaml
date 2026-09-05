@@ -239,6 +239,8 @@ services:
       WEB_BFF_GOVERNANCE_BASE_URL: http://agent-governance:8081
       WEB_BFF_GOVERNANCE_AUDITOR_KEY: local-governance-auditor-key
       WEB_BFF_CONTROL_PLANE_BASE_URL: http://agent-control-plane:8080
+      WEB_BFF_KNOWLEDGE_WIKI_BASE_URL: http://knowledge-wiki-service:8094
+      WEB_BFF_KNOWLEDGE_WIKI_SERVICE_KEY: local-knowledge-wiki-key
       WEB_BFF_CONTROL_PLANE_ADMIN_KEY: local-control-plane-admin-key
       WEB_BFF_OIDC_ENABLED: "false"
       # Production must set the Authorization Code + PKCE fields and a dedicated Redis URL;
@@ -255,6 +257,8 @@ services:
     ports: ["9010:8010"]
     depends_on:
       agent-runtime:
+        condition: service_started
+      knowledge-wiki-service:
         condition: service_started
 
   agent-context-service:
@@ -312,9 +316,50 @@ services:
     volumes: ["tool-gateway-data:/service/data"]
     depends_on: [agent-control-plane, agent-governance, ingestion-api]
 
+  # Optional eighth domain service: compiles approved evidence and review outcomes into a
+  # versioned living Wiki. It never executes Agents and never writes the RAG index inline.
+  knowledge-wiki-service:
+    build:
+      context: .
+      dockerfile: knowledge-wiki-service/Dockerfile
+    environment: &knowledge-wiki-env
+      KNOWLEDGE_WIKI_ENVIRONMENT: local
+      KNOWLEDGE_WIKI_DATABASE_URL: postgresql+psycopg://platform:local-postgres-password@postgres:5432/agent_platform
+      KNOWLEDGE_WIKI_SERVICE_API_KEY: local-knowledge-wiki-key
+      KNOWLEDGE_WIKI_INGESTION_BASE_URL: http://ingestion-api:8004/api/v1
+      KNOWLEDGE_WIKI_INGESTION_SERVICE_KEY: local-rag-service-key
+      KNOWLEDGE_WIKI_GOVERNANCE_BASE_URL: http://agent-governance:8081
+      KNOWLEDGE_WIKI_GOVERNANCE_EVENT_KEY: local-governance-key
+      KNOWLEDGE_WIKI_GOVERNANCE_AUDITOR_KEY: local-governance-auditor-key
+    ports: ["9094:8094"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ingestion-api:
+        condition: service_started
+      agent-governance:
+        condition: service_started
+
+  knowledge-wiki-relay:
+    build:
+      context: .
+      dockerfile: knowledge-wiki-service/Dockerfile
+    command: ["knowledge-wiki-relay"]
+    environment:
+      <<: *knowledge-wiki-env
+      KNOWLEDGE_WIKI_PROCESS_ROLE: relay
+    depends_on:
+      knowledge-wiki-service:
+        condition: service_started
+
   model-lab:
-    build: ./model-lab
+    # Dockerfile imports shared platform packages, therefore its build context
+    # must be the repository root rather than model-lab/ alone.
+    build:
+      context: .
+      dockerfile: model-lab/Dockerfile
     restart: unless-stopped
+    profiles: ["labs"]
     ports:
       - "9091:8091"
 
@@ -323,6 +368,7 @@ services:
       context: .
       dockerfile: agent-lab/Dockerfile
     restart: unless-stopped
+    profiles: ["labs"]
     environment:
       # 本地联调显式选择 SQLite/同步队列；生产模板会强制切换为 PostgreSQL + Temporal。
       AGENT_LAB_ENVIRONMENT: local
@@ -356,6 +402,7 @@ services:
   agent-lab-data-init:
     image: busybox:1.37
     restart: "no"
+    profiles: ["labs"]
     command: ["sh", "-c", "chown -R 10006:10006 /data"]
     volumes: [agent-lab-data:/data]
 

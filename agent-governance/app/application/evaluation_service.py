@@ -6,6 +6,7 @@ execution facts but never decides whether a release passes a quality gate.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -37,6 +38,8 @@ CALIBRATION_RUN = "eval-calibration-run"
 GATE_DECISION = "governance-gate-decision"
 ONLINE_WINDOW = "online-metric-window"
 BAD_CASE = "governance-bad-case"
+RETRIEVAL_SHADOW_COMPARISON = "retrieval-shadow-comparison"
+KNOWLEDGE_CHANGE_GATE = "knowledge-change-gate"
 
 JUDGE_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -321,7 +324,11 @@ class EvaluationService:
         latencies = sorted(float(item.get("latencyMs") or 0) for item in samples)
         p95 = latencies[max(0, math.ceil(len(latencies) * 0.95) - 1)] if latencies else 0.0
         average_cost = _average(float(item.get("cost") or 0) for item in samples)
-        decision_labels = [item["decisionCorrect"] for item in samples if isinstance(item.get("decisionCorrect"), bool)]
+        decision_labels = [
+            item["decisionCorrect"]
+            for item in samples
+            if isinstance(item.get("decisionCorrect"), bool)
+        ]
         authorization_labels = [
             item["authorizationAgreement"]
             for item in samples
@@ -427,8 +434,16 @@ class EvaluationService:
             "errorRate": round(failures / len(samples), 4) if samples else 0.0,
             "p95LatencyMs": p95, "averageCost": average_cost,
             "observationDurationSeconds": round(observed_seconds, 3),
-            "decisionAgreement": _average(bool(value) for value in decision_labels) if decision_labels else None,
-            "authorizationAgreement": _average(bool(value) for value in authorization_labels) if authorization_labels else None,
+            "decisionAgreement": (
+                _average(bool(value) for value in decision_labels)
+                if decision_labels
+                else None
+            ),
+            "authorizationAgreement": (
+                _average(bool(value) for value in authorization_labels)
+                if authorization_labels
+                else None
+            ),
             "falseSideEffectRate": (
                 round(false_side_effects / len(side_effect_proposals), 4)
                 if side_effect_proposals else None
@@ -453,7 +468,9 @@ class EvaluationService:
             "reasons": reasons, "windowId": window["id"], "metrics": window,
             "createdAt": _now(),
         }
-        return await self._repository.upsert_document(tenant_id, GATE_DECISION, decision["id"], decision)
+        return await self._repository.upsert_document(
+            tenant_id, GATE_DECISION, decision["id"], decision
+        )
 
     async def get_gate_decision(self, tenant_id: str, decision_id: str) -> dict[str, Any]:
         """供 Release Controller 读取冻结治理结论；未知 ID 一律拒绝。"""
@@ -536,7 +553,8 @@ class EvaluationService:
         decision = str(request.get("decision") or "").upper()
         if decision in {"CONFIRMED_FAILURE", "GOLDEN_CANDIDATE"}:
             # A confirmed production failure is a durable governance asset first; Golden
-            # publication remains a separate expert decision so noisy feedback cannot pollute regression.
+            # publication remains a separate expert decision so noisy feedback cannot
+            # pollute regression.
             await self._repository.upsert_document(
                 tenant_id,
                 BAD_CASE,
@@ -668,6 +686,78 @@ class EvaluationService:
             },
         }
         return await self._repository.upsert_document(tenant_id, REGRESSION_RUN, run["id"], run)
+
+    async def request_knowledge_change_gate(
+        self, tenant_id: str, user_id: str, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Persist a mandatory RAG regression/gate work item for one approved Wiki version.
+
+        This endpoint deliberately does not mark the change as passed.  Agent Lab or an evaluation
+        worker must attach a Judge run and retrieval metrics before Control Plane can consume a
+        normal quality gate.  Persisting the request closes the trigger boundary without forging
+        evaluation success when a Golden Dataset is unavailable.
+        """
+        required = {"pageId", "contentSha256", "version", "reindexJobId"}
+        missing = sorted(required - request.keys())
+        if missing:
+            raise ValueError(f"knowledge change gate is missing fields: {missing}")
+        item = {
+            "id": f"knowledge_gate_{uuid4().hex}",
+            "tenantId": tenant_id,
+            "requestedBy": user_id,
+            "pageId": request["pageId"],
+            "contentSha256": request["contentSha256"],
+            "version": request["version"],
+            "reindexJobId": request["reindexJobId"],
+            "status": "PENDING_EVALUATION",
+            "requiredMetrics": ["Recall@K", "Precision@K", "MRR", "nDCG", "Faithfulness"],
+            "createdAt": _now(),
+        }
+        return await self._repository.upsert_document(
+            tenant_id, KNOWLEDGE_CHANGE_GATE, item["id"], item
+        )
+
+    async def record_retrieval_shadow(
+        self, tenant_id: str, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Persist a side-effect-free Retrieval Release comparison for promotion review.
+
+        The caller provides only IDs and bounded metadata, never raw source
+        content. A candidate with any observed ACL violation is ineligible for
+        Canary regardless of overlap, latency, or answer-quality averages.
+        """
+
+        required = {"baselineReleaseId", "candidateReleaseId", "query", "baseline", "candidate"}
+        missing = sorted(required - request.keys())
+        if missing:
+            raise ValueError(f"retrieval shadow comparison is missing fields: {missing}")
+        baseline = request["baseline"]
+        candidate = request["candidate"]
+        if not isinstance(baseline, dict) or not isinstance(candidate, dict):
+            raise ValueError("retrieval shadow baseline and candidate must be objects")
+        baseline_ids = {str(item) for item in baseline.get("candidateIds") or [] if str(item)}
+        candidate_ids = {str(item) for item in candidate.get("candidateIds") or [] if str(item)}
+        union = baseline_ids | candidate_ids
+        overlap = len(baseline_ids & candidate_ids) / len(union) if union else 1.0
+        acl_rate = float(candidate.get("aclLeakageRate") or 0.0)
+        item = {
+            "id": f"retrieval_shadow_{uuid4().hex}",
+            "tenantId": tenant_id,
+            "baselineReleaseId": str(request["baselineReleaseId"]),
+            "candidateReleaseId": str(request["candidateReleaseId"]),
+            "queryHash": hashlib.sha256(str(request["query"]).encode("utf-8")).hexdigest(),
+            "candidateOverlap": round(overlap, 4),
+            "aclLeakageRate": acl_rate,
+            "baselineLatencyMs": float(baseline.get("latencyMs") or 0.0),
+            "candidateLatencyMs": float(candidate.get("latencyMs") or 0.0),
+            "baselineCost": float(baseline.get("cost") or 0.0),
+            "candidateCost": float(candidate.get("cost") or 0.0),
+            "eligibleForCanary": acl_rate == 0.0,
+            "createdAt": _now(),
+        }
+        return await self._repository.upsert_document(
+            tenant_id, RETRIEVAL_SHADOW_COMPARISON, item["id"], item
+        )
 
     async def judge(
         self,
@@ -1015,6 +1105,10 @@ class EvaluationService:
                 reasons.append(f"{group} criticality group has failed cases")
         if (metrics.get("retrieval") or {}).get("recallAtK", 1) < 1:
             reasons.append("expected evidence Recall@K below 1.0")
+        if (metrics.get("retrieval") or {}).get("aclLeakageRate", 0) > 0:
+            # A single cross-tenant/unauthorized candidate is a confidentiality
+            # incident, not a quality trade-off that an average score may hide.
+            reasons.append("retrieval ACL leakage must be zero")
         red_team = metrics.get("redTeam") or {}
         if int(red_team.get("caseCount", 0)) == 0:
             reasons.append("prompt-injection red-team cases are required")
@@ -1030,7 +1124,9 @@ class EvaluationService:
             "calibrationRunId": calibration_id,
             "reasons": reasons,
         }
-        saved = await self._repository.upsert_document(tenant_id, QUALITY_GATE, result["id"], result)
+        saved = await self._repository.upsert_document(
+            tenant_id, QUALITY_GATE, result["id"], result
+        )
         # Offline decisions are stored separately from raw quality metrics so a release can
         # reference one immutable governance verdict instead of reinterpreting thresholds later.
         await self._repository.upsert_document(
@@ -1250,8 +1346,33 @@ def _retrieval_metrics(case: dict[str, Any], retrieved: list[dict[str, Any]]) ->
         for item in retrieved
     ]
     hits = [item for item in ids if item in expected]
+    total = len(retrieved)
+    safety = {
+        "aclLeakageRate": sum(
+            bool(item.get("authorizationViolation") or item.get("aclViolation"))
+            for item in retrieved
+        )
+        / total
+        if total
+        else 0.0,
+        "staleEvidenceRate": sum(
+            bool(item.get("stale") or item.get("expired")) for item in retrieved
+        )
+        / total
+        if total
+        else 0.0,
+        "conflictEvidenceRate": sum(bool(item.get("conflict")) for item in retrieved) / total
+        if total
+        else 0.0,
+    }
     if not expected:
-        return {"recallAtK": 1.0, "precisionAtK": 1.0, "mrr": 1.0, "ndcg": 1.0}
+        return {
+            "recallAtK": 1.0,
+            "precisionAtK": 1.0,
+            "mrr": 1.0,
+            "ndcg": 1.0,
+            **safety,
+        }
     first = next((index + 1 for index, item in enumerate(ids) if item in expected), None)
     dcg = sum(1 / math.log2(index + 2) for index, item in enumerate(ids) if item in expected)
     ideal = sum(1 / math.log2(index + 2) for index in range(min(len(expected), len(ids))))
@@ -1260,6 +1381,7 @@ def _retrieval_metrics(case: dict[str, Any], retrieved: list[dict[str, Any]]) ->
         "precisionAtK": len(hits) / len(ids) if ids else 0.0,
         "mrr": 1 / first if first else 0.0,
         "ndcg": dcg / ideal if ideal else 0.0,
+        **safety,
     }
 
 
@@ -1269,7 +1391,15 @@ def _average_retrieval(results: list[dict[str, Any]]) -> dict[str, float]:
     """
     return {
         key: _average(item["retrieval"][key] for item in results)
-        for key in ("recallAtK", "precisionAtK", "mrr", "ndcg")
+        for key in (
+            "recallAtK",
+            "precisionAtK",
+            "mrr",
+            "ndcg",
+            "aclLeakageRate",
+            "staleEvidenceRate",
+            "conflictEvidenceRate",
+        )
     }
 
 

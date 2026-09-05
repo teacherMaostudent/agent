@@ -5,11 +5,13 @@ from typing import Protocol
 import httpx
 from opentelemetry import trace
 
-from app.domain.models import Evidence
+from app.domain.models import RetrievalCandidate
 
 
 class Reranker(Protocol):
-    def rerank(self, query: str, candidates: list[Evidence], top_k: int) -> list[Evidence]:
+    def rerank(
+        self, query: str, candidates: list[RetrievalCandidate], top_k: int
+    ) -> list[RetrievalCandidate]:
         """在已有 ACL 过滤候选内重排，绝不能自行扩展证据集合。"""
         ...
 
@@ -23,7 +25,9 @@ class CrossEncoderReranker:
         self.batch_size = batch_size
         self._model = None
 
-    def rerank(self, query: str, candidates: list[Evidence], top_k: int) -> list[Evidence]:
+    def rerank(
+        self, query: str, candidates: list[RetrievalCandidate], top_k: int
+    ) -> list[RetrievalCandidate]:
         """对受控候选执行本地交叉编码精排，并保留召回分以便解释排序变化。"""
         if not candidates:
             return []
@@ -65,7 +69,9 @@ class VendorReranker:
         self.model = model
         self.timeout = timeout
 
-    def rerank(self, query: str, candidates: list[Evidence], top_k: int) -> list[Evidence]:
+    def rerank(
+        self, query: str, candidates: list[RetrievalCandidate], top_k: int
+    ) -> list[RetrievalCandidate]:
         """调用供应商精排；非法返回索引被丢弃，避免污染已有候选列表。"""
         if not candidates:
             return []
@@ -88,7 +94,7 @@ class VendorReranker:
             )
             response.raise_for_status()
             results = response.json().get("results", [])
-        reranked: list[Evidence] = []
+        reranked: list[RetrievalCandidate] = []
         for result in results:
             index = int(result["index"])
             if index < 0 or index >= len(candidates):

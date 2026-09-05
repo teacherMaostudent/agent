@@ -287,6 +287,48 @@ test("only a permitted manager can open the tenant-scoped reviewer picker", asyn
   } finally { win.close(); }
 });
 
+// 验证 Wiki 不是只存在于后端接口：具备知识审查权限的专家能够看到候选、打开审批门禁，
+// 普通业务用户则不会收到或渲染该管理能力。真正的授权仍由 BFF 和 Wiki 服务重复校验。
+test("knowledge reviewer sees governed Wiki candidates and opens the human gate", async () => {
+  const dom = new JSDOM(fs.readFileSync(path.join(root, "index.html"), "utf8"), {
+    url: "http://localhost/", runScripts: "outside-only",
+  });
+  const win = dom.window;
+  const requests = [];
+  win.setInterval = () => 0;
+  win.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  win.fetch = async (url) => {
+    requests.push(String(url));
+    return {
+      ok: true, status: 200, json: async () => {
+        if (url === "/api/session") return {
+          authentication: "oidc", user_id: "expert-a", tenant_id: "demo",
+          roles: ["agent-reviewer", "knowledge-reviewer"],
+          permissions: ["agent:review", "knowledge:review", "knowledge:compile"],
+        };
+        if (String(url).startsWith("/api/review/wiki/candidates")) return [{
+          candidate_id: "wiki-candidate-1", status: "pending_review", root_task_id: "run-1",
+          conclusion: "退款规则结论", sources: [{ level: "raw_evidence" }],
+          drafts: [{ title: "退款规则", summary: "经证据支持的规则候选" }],
+        }];
+        return { items: [] };
+      },
+    };
+  };
+  try {
+    win.eval(script);
+    await new Promise(setImmediate);
+    win.showView("review");
+    await new Promise(setImmediate);
+    assert.ok(requests.some((url) => url.startsWith("/api/review/wiki/candidates")));
+    assert.equal(win.document.querySelector("#wiki-review-section").hidden, false);
+    assert.match(win.document.querySelector("#wiki-candidate-list").textContent, /退款规则/);
+    win.document.querySelector("#wiki-candidate-list button").click();
+    assert.equal(win.document.querySelector("#wiki-review-dialog").open, true);
+    assert.match(win.document.querySelector("#wiki-review-summary").textContent, /wiki-candidate-1/);
+  } finally { win.close(); }
+});
+
 test("local identity mode does not present an editable IdP directory", () => {
   const source = fs.readFileSync(path.join(root, "app.js"), "utf8");
   assert.match(source, /用户目录尚未启用/);
